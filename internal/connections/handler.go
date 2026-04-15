@@ -64,11 +64,14 @@ func (h *Handler) SendRequest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var connID uuid.UUID
-	h.db.QueryRow(r.Context(),
+	if err := h.db.QueryRow(r.Context(),
 		`INSERT INTO connections (requester_id, addressee_id, status)
 		 VALUES ($1, $2, 'pending') RETURNING id`,
 		requesterID, input.AddresseeID,
-	).Scan(&connID)
+	).Scan(&connID); err != nil {
+		response.Error(w, http.StatusInternalServerError, "could not create connection")
+		return
+	}
 
 	response.Success(w, http.StatusCreated, map[string]any{"id": connID, "status": "pending"})
 }
@@ -85,7 +88,10 @@ func (h *Handler) UpdateStatus(w http.ResponseWriter, r *http.Request) {
 	var input struct {
 		Status string `json:"status"`
 	}
-	json.NewDecoder(r.Body).Decode(&input)
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		response.Error(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
 
 	if input.Status != "accepted" && input.Status != "declined" {
 		response.Error(w, http.StatusBadRequest, "status must be 'accepted' or 'declined'")

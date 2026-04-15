@@ -154,21 +154,30 @@ func (h *Handler) CreateConversation(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var convID uuid.UUID
-	h.db.QueryRow(r.Context(),
+	if err := h.db.QueryRow(r.Context(),
 		`INSERT INTO conversations (is_group, name, status) VALUES ($1, $2, $3) RETURNING id`,
 		isGroup, input.Name, status,
-	).Scan(&convID)
+	).Scan(&convID); err != nil {
+		response.Error(w, http.StatusInternalServerError, "could not create conversation")
+		return
+	}
 
 	// Creator is the requester, others are addressees
-	h.db.Exec(r.Context(),
+	if _, err := h.db.Exec(r.Context(),
 		`INSERT INTO conversation_members (conversation_id, user_id, role) VALUES ($1, $2, 'requester')`,
 		convID, userID,
-	)
+	); err != nil {
+		response.Error(w, http.StatusInternalServerError, "could not add members")
+		return
+	}
 	for _, memberID := range input.MemberIDs {
-		h.db.Exec(r.Context(),
+		if _, err := h.db.Exec(r.Context(),
 			`INSERT INTO conversation_members (conversation_id, user_id, role) VALUES ($1, $2, 'addressee')`,
 			convID, memberID,
-		)
+		); err != nil {
+			response.Error(w, http.StatusInternalServerError, "could not add members")
+			return
+		}
 	}
 
 	response.Success(w, http.StatusCreated, map[string]any{"id": convID, "is_group": isGroup, "status": status})
@@ -186,7 +195,10 @@ func (h *Handler) UpdateConversationStatus(w http.ResponseWriter, r *http.Reques
 	var input struct {
 		Status string `json:"status"` // "active" or "declined"
 	}
-	json.NewDecoder(r.Body).Decode(&input)
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		response.Error(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
 	if input.Status != "active" && input.Status != "declined" {
 		response.Error(w, http.StatusBadRequest, "status must be 'active' or 'declined'")
 		return
@@ -207,11 +219,17 @@ func (h *Handler) UpdateConversationStatus(w http.ResponseWriter, r *http.Reques
 
 	if input.Status == "declined" {
 		// Delete entirely so sender can try again
-		h.db.Exec(r.Context(), `DELETE FROM conversations WHERE id=$1`, convID)
+		if _, err := h.db.Exec(r.Context(), `DELETE FROM conversations WHERE id=$1`, convID); err != nil {
+			response.Error(w, http.StatusInternalServerError, "could not update conversation")
+			return
+		}
 	} else {
-		h.db.Exec(r.Context(),
+		if _, err := h.db.Exec(r.Context(),
 			`UPDATE conversations SET status='active' WHERE id=$1`, convID,
-		)
+		); err != nil {
+			response.Error(w, http.StatusInternalServerError, "could not update conversation")
+			return
+		}
 	}
 
 	response.Success(w, http.StatusOK, map[string]string{"status": input.Status})
@@ -299,10 +317,13 @@ func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var msgID uuid.UUID
-	h.db.QueryRow(r.Context(),
+	if err := h.db.QueryRow(r.Context(),
 		`INSERT INTO messages (conversation_id, sender_id, body) VALUES ($1, $2, $3) RETURNING id`,
 		convID, userID, input.Body,
-	).Scan(&msgID)
+	).Scan(&msgID); err != nil {
+		response.Error(w, http.StatusInternalServerError, "could not send message")
+		return
+	}
 
 	response.Success(w, http.StatusCreated, map[string]any{"id": msgID})
 }

@@ -3,7 +3,6 @@ package user
 import (
 	"context"
 	"encoding/json"
-	"log"
 	"net/http"
 	"time"
 
@@ -14,24 +13,34 @@ import (
 	"github.com/project_radeon/api/pkg/response"
 )
 
-type Handler struct {
-	db *pgxpool.Pool
+// CacheInvalidator is implemented by *discovery.Handler. Defined here so
+// internal/user does not import internal/discovery.
+type CacheInvalidator interface {
+	InvalidateSuggestions(userID uuid.UUID)
 }
 
-func NewHandler(db *pgxpool.Pool) *Handler {
-	return &Handler{db: db}
+type Handler struct {
+	db          *pgxpool.Pool
+	invalidator CacheInvalidator
+}
+
+func NewHandler(db *pgxpool.Pool, invalidator CacheInvalidator) *Handler {
+	return &Handler{db: db, invalidator: invalidator}
 }
 
 type User struct {
-	ID         uuid.UUID  `json:"id"`
-	FirstName  string     `json:"first_name"`
-	LastName   string     `json:"last_name"`
-	AvatarURL  *string    `json:"avatar_url"`
-	City       *string    `json:"city"`
-	Country    *string    `json:"country"`
-	SoberSince *time.Time `json:"sober_since"`
-	CreatedAt  time.Time  `json:"created_at"`
-	Interests  []string   `json:"interests"`
+	ID                 uuid.UUID  `json:"id"`
+	FirstName          string     `json:"first_name"`
+	LastName           string     `json:"last_name"`
+	AvatarURL          *string    `json:"avatar_url"`
+	City               *string    `json:"city"`
+	Country            *string    `json:"country"`
+	SoberSince         *time.Time `json:"sober_since"`
+	Lat                *float64   `json:"lat,omitempty"`
+	Lng                *float64   `json:"lng,omitempty"`
+	DiscoveryRadiusKm  int        `json:"discovery_radius_km"`
+	CreatedAt          time.Time  `json:"created_at"`
+	Interests          []string   `json:"interests"`
 }
 
 // GET /users/me
@@ -65,12 +74,15 @@ func (h *Handler) UpdateMe(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.CurrentUserID(r)
 
 	var input struct {
-		FirstName  *string `json:"first_name"`
-		LastName   *string `json:"last_name"`
-		City       *string `json:"city"`
-		Country    *string `json:"country"`
-		AvatarURL  *string `json:"avatar_url"`
-		SoberSince *string `json:"sober_since"`
+		FirstName         *string  `json:"first_name"`
+		LastName          *string  `json:"last_name"`
+		City              *string  `json:"city"`
+		Country           *string  `json:"country"`
+		AvatarURL         *string  `json:"avatar_url"`
+		SoberSince        *string  `json:"sober_since"`
+		Lat               *float64 `json:"lat"`
+		Lng               *float64 `json:"lng"`
+		DiscoveryRadiusKm *int     `json:"discovery_radius_km"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
@@ -78,20 +90,33 @@ func (h *Handler) UpdateMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Only update fields that are present in the request
+	if input.DiscoveryRadiusKm != nil && *input.DiscoveryRadiusKm < 1 {
+		response.Error(w, http.StatusBadRequest, "discovery_radius_km must be at least 1")
+		return
+	}
+
 	_, err := h.db.Exec(r.Context(),
 		`UPDATE users SET
-			first_name  = COALESCE($1, first_name),
-			last_name   = COALESCE($2, last_name),
-			city        = COALESCE($3, city),
-			country     = COALESCE($4, country),
-			avatar_url  = COALESCE($5, avatar_url)
-		WHERE id = $6`,
-		input.FirstName, input.LastName, input.City, input.Country, input.AvatarURL, userID,
+			first_name          = COALESCE($1, first_name),
+			last_name           = COALESCE($2, last_name),
+			city                = COALESCE($3, city),
+			country             = COALESCE($4, country),
+			avatar_url          = COALESCE($5, avatar_url),
+			lat                 = COALESCE($6, lat),
+			lng                 = COALESCE($7, lng),
+			discovery_radius_km = COALESCE($8, discovery_radius_km)
+		WHERE id = $9`,
+		input.FirstName, input.LastName, input.City, input.Country, input.AvatarURL,
+		input.Lat, input.Lng, input.DiscoveryRadiusKm, userID,
 	)
 	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "could not update profile")
 		return
+	}
+
+	// Location or radius change makes cached suggestions stale.
+	if input.Lat != nil || input.Lng != nil || input.DiscoveryRadiusKm != nil {
+		h.invalidator.InvalidateSuggestions(userID)
 	}
 
 	user, _ := h.fetchUser(r.Context(), userID)
@@ -101,19 +126,17 @@ func (h *Handler) UpdateMe(w http.ResponseWriter, r *http.Request) {
 // GET /users/discover?city=Dublin
 func (h *Handler) Discover(w http.ResponseWriter, r *http.Request) {
 	currentUserID := middleware.CurrentUserID(r)
-	log.Printf("%s", currentUserID)
 	city := r.URL.Query().Get("city")
-	log.Printf("discover called: city=%q", city)
 
 	rows, err := h.db.Query(r.Context(),
-		`SELECT u.id, u.first_name, u.last_name, u.avatar_url, u.city, u.country, u.sober_since, u.created_at
+		`SELECT u.id, u.first_name, u.last_name, u.avatar_url, u.city, u.country, u.sober_since, u.created_at, u.lat, u.lng
 		 FROM users u
 		 WHERE u.id != $1
 			AND NOT EXISTS (
-  				SELECT 1 FROM connections c
-  				WHERE (c.requester_id = $1 AND c.addressee_id = u.id)
-  				OR    (c.addressee_id = $1 AND c.requester_id = u.id)
-  				AND c.status IN ('pending', 'accepted')
+				SELECT 1 FROM connections c
+				WHERE (c.requester_id = $1 AND c.addressee_id = u.id)
+				OR    (c.addressee_id = $1 AND c.requester_id = u.id)
+				AND c.status IN ('pending', 'accepted')
 			)
 		 AND ($2 = '' OR u.city ILIKE $2)
 		 ORDER BY u.created_at DESC
@@ -129,7 +152,7 @@ func (h *Handler) Discover(w http.ResponseWriter, r *http.Request) {
 	var users []User
 	for rows.Next() {
 		var u User
-		rows.Scan(&u.ID, &u.FirstName, &u.LastName, &u.AvatarURL, &u.City, &u.Country, &u.SoberSince, &u.CreatedAt)
+		rows.Scan(&u.ID, &u.FirstName, &u.LastName, &u.AvatarURL, &u.City, &u.Country, &u.SoberSince, &u.CreatedAt, &u.Lat, &u.Lng)
 		u.Interests = h.fetchInterests(r.Context(), u.ID)
 		users = append(users, u)
 	}
@@ -142,9 +165,9 @@ func (h *Handler) Discover(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) fetchUser(ctx context.Context, id uuid.UUID) (*User, error) {
 	var u User
 	err := h.db.QueryRow(ctx,
-		`SELECT id, first_name, last_name, avatar_url, city, country, sober_since, created_at
+		`SELECT id, first_name, last_name, avatar_url, city, country, sober_since, created_at, lat, lng, discovery_radius_km
 		 FROM users WHERE id = $1`, id,
-	).Scan(&u.ID, &u.FirstName, &u.LastName, &u.AvatarURL, &u.City, &u.Country, &u.SoberSince, &u.CreatedAt)
+	).Scan(&u.ID, &u.FirstName, &u.LastName, &u.AvatarURL, &u.City, &u.Country, &u.SoberSince, &u.CreatedAt, &u.Lat, &u.Lng, &u.DiscoveryRadiusKm)
 	if err != nil {
 		return nil, err
 	}

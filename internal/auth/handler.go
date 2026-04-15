@@ -1,9 +1,7 @@
 package auth
 
 import (
-	"context"
 	"encoding/json"
-	"log"
 	"net/http"
 	"time"
 
@@ -59,7 +57,7 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 
 	// Check email not already taken
 	var exists bool
-	h.db.QueryRow(context.Background(),
+	h.db.QueryRow(r.Context(),
 		"SELECT EXISTS(SELECT 1 FROM users WHERE email = $1)", input.Email,
 	).Scan(&exists)
 	if exists {
@@ -85,7 +83,7 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 		soberSince = &t
 	}
 
-	err = h.db.QueryRow(context.Background(),
+	err = h.db.QueryRow(r.Context(),
 		`INSERT INTO users (first_name, last_name, email, password_hash, city, country, sober_since)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7)
 		 RETURNING id`,
@@ -120,12 +118,11 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	log.Println(input.Email, input.Password)
 
 	var userID uuid.UUID
 	var passwordHash string
 
-	err := h.db.QueryRow(context.Background(),
+	err := h.db.QueryRow(r.Context(),
 		"SELECT id, password_hash FROM users WHERE email = $1", input.Email,
 	).Scan(&userID, &passwordHash)
 	if err != nil {

@@ -133,11 +133,14 @@ func (h *Handler) CreateEvent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var eventID uuid.UUID
-	h.db.QueryRow(r.Context(),
+	if err := h.db.QueryRow(r.Context(),
 		`INSERT INTO events (organiser_id, title, description, city, starts_at, capacity)
 		 VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
 		userID, input.Title, input.Description, input.City, startsAt, input.Capacity,
-	).Scan(&eventID)
+	).Scan(&eventID); err != nil {
+		response.Error(w, http.StatusInternalServerError, "could not create event")
+		return
+	}
 
 	response.Success(w, http.StatusCreated, map[string]any{"id": eventID})
 }
@@ -194,13 +197,16 @@ func (h *Handler) RSVP(w http.ResponseWriter, r *http.Request) {
 	// Check capacity
 	var capacity *int
 	var attendeeCount int
-	h.db.QueryRow(r.Context(),
+	if err := h.db.QueryRow(r.Context(),
 		`SELECT e.capacity, COUNT(ea.user_id)
 		 FROM events e
 		 LEFT JOIN event_attendees ea ON ea.event_id = e.id
 		 WHERE e.id = $1
 		 GROUP BY e.capacity`, eventID,
-	).Scan(&capacity, &attendeeCount)
+	).Scan(&capacity, &attendeeCount); err != nil {
+		response.Error(w, http.StatusNotFound, "event not found")
+		return
+	}
 
 	if capacity != nil && attendeeCount >= *capacity {
 		response.Error(w, http.StatusConflict, "event is at capacity")
@@ -215,14 +221,20 @@ func (h *Handler) RSVP(w http.ResponseWriter, r *http.Request) {
 	).Scan(&alreadyRSVPd)
 
 	if alreadyRSVPd {
-		h.db.Exec(r.Context(),
+		if _, err := h.db.Exec(r.Context(),
 			`DELETE FROM event_attendees WHERE event_id=$1 AND user_id=$2`, eventID, userID,
-		)
+		); err != nil {
+			response.Error(w, http.StatusInternalServerError, "could not remove RSVP")
+			return
+		}
 		response.Success(w, http.StatusOK, map[string]bool{"attending": false})
 	} else {
-		h.db.Exec(r.Context(),
+		if _, err := h.db.Exec(r.Context(),
 			`INSERT INTO event_attendees (event_id, user_id) VALUES ($1, $2)`, eventID, userID,
-		)
+		); err != nil {
+			response.Error(w, http.StatusInternalServerError, "could not RSVP")
+			return
+		}
 		response.Success(w, http.StatusOK, map[string]bool{"attending": true})
 	}
 }

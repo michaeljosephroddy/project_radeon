@@ -1,7 +1,9 @@
 package interests
 
 import (
+	"context"
 	"encoding/json"
+	"log"
 	"net/http"
 
 	"github.com/google/uuid"
@@ -10,12 +12,20 @@ import (
 	"github.com/project_radeon/api/pkg/response"
 )
 
-type Handler struct {
-	db *pgxpool.Pool
+// DiscoveryUpdater is implemented by *discovery.Handler. Defined here so
+// internal/interests does not import internal/discovery.
+type DiscoveryUpdater interface {
+	RebuildVector(ctx context.Context, userID uuid.UUID) error
+	InvalidateSuggestions(userID uuid.UUID)
 }
 
-func NewHandler(db *pgxpool.Pool) *Handler {
-	return &Handler{db: db}
+type Handler struct {
+	db        *pgxpool.Pool
+	discovery DiscoveryUpdater
+}
+
+func NewHandler(db *pgxpool.Pool, discovery DiscoveryUpdater) *Handler {
+	return &Handler{db: db, discovery: discovery}
 }
 
 // GET /interests — returns the full fixed list
@@ -62,19 +72,35 @@ func (h *Handler) SetUserInterests(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback(r.Context())
 
-	tx.Exec(r.Context(), `DELETE FROM user_interests WHERE user_id = $1`, userID)
+	if _, err := tx.Exec(r.Context(), `DELETE FROM user_interests WHERE user_id = $1`, userID); err != nil {
+		response.Error(w, http.StatusInternalServerError, "could not update interests")
+		return
+	}
 
 	for _, id := range input.InterestIDs {
-		tx.Exec(r.Context(),
+		if _, err := tx.Exec(r.Context(),
 			`INSERT INTO user_interests (user_id, interest_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
 			userID, id,
-		)
+		); err != nil {
+			response.Error(w, http.StatusInternalServerError, "could not update interests")
+			return
+		}
 	}
 
 	if err := tx.Commit(r.Context()); err != nil {
 		response.Error(w, http.StatusInternalServerError, "could not save interests")
 		return
 	}
+
+	// Rebuild this user's interest vector and invalidate their cached suggestions
+	// asynchronously so the response is not blocked. context.Background() is
+	// intentional — the request context will be cancelled before the goroutine finishes.
+	go func() {
+		if err := h.discovery.RebuildVector(context.Background(), userID); err != nil {
+			log.Printf("vector rebuild failed for user %s: %v", userID, err)
+		}
+		h.discovery.InvalidateSuggestions(userID)
+	}()
 
 	response.Success(w, http.StatusOK, map[string]bool{"updated": true})
 }

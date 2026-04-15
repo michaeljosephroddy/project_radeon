@@ -37,8 +37,12 @@ func (h *Handler) GetFeed(w http.ResponseWriter, r *http.Request) {
 
 	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	if page < 1 { page = 1 }
-	if limit < 1 || limit > 50 { limit = 20 }
+	if page < 1 {
+		page = 1
+	}
+	if limit < 1 || limit > 50 {
+		limit = 20
+	}
 	offset := (page - 1) * limit
 
 	rows, err := h.db.Query(r.Context(),
@@ -172,8 +176,13 @@ func (h *Handler) ReactToPost(w http.ResponseWriter, r *http.Request) {
 	var input struct {
 		Type string `json:"type"` // e.g. "like", "heart"
 	}
-	json.NewDecoder(r.Body).Decode(&input)
-	if input.Type == "" { input.Type = "like" }
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		response.Error(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if input.Type == "" {
+		input.Type = "like"
+	}
 
 	// Upsert — reacting again with same type removes it (toggle)
 	var exists bool
@@ -183,16 +192,22 @@ func (h *Handler) ReactToPost(w http.ResponseWriter, r *http.Request) {
 	).Scan(&exists)
 
 	if exists {
-		h.db.Exec(r.Context(),
+		if _, err := h.db.Exec(r.Context(),
 			`DELETE FROM post_reactions WHERE post_id=$1 AND user_id=$2 AND type=$3`,
 			postID, userID, input.Type,
-		)
+		); err != nil {
+			response.Error(w, http.StatusInternalServerError, "could not remove reaction")
+			return
+		}
 		response.Success(w, http.StatusOK, map[string]bool{"reacted": false})
 	} else {
-		h.db.Exec(r.Context(),
+		if _, err := h.db.Exec(r.Context(),
 			`INSERT INTO post_reactions (post_id, user_id, type) VALUES ($1, $2, $3)`,
 			postID, userID, input.Type,
-		)
+		); err != nil {
+			response.Error(w, http.StatusInternalServerError, "could not add reaction")
+			return
+		}
 		response.Success(w, http.StatusOK, map[string]bool{"reacted": true})
 	}
 }
@@ -215,10 +230,13 @@ func (h *Handler) AddComment(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var commentID uuid.UUID
-	h.db.QueryRow(r.Context(),
+	if err := h.db.QueryRow(r.Context(),
 		`INSERT INTO comments (post_id, user_id, body) VALUES ($1, $2, $3) RETURNING id`,
 		postID, userID, input.Body,
-	).Scan(&commentID)
+	).Scan(&commentID); err != nil {
+		response.Error(w, http.StatusInternalServerError, "could not add comment")
+		return
+	}
 
 	response.Success(w, http.StatusCreated, map[string]any{"id": commentID})
 }

@@ -12,6 +12,7 @@ import (
 	"github.com/joho/godotenv"
 	"github.com/project_radeon/api/internal/auth"
 	"github.com/project_radeon/api/internal/connections"
+	"github.com/project_radeon/api/internal/discovery"
 	"github.com/project_radeon/api/internal/events"
 	"github.com/project_radeon/api/internal/feed"
 	"github.com/project_radeon/api/internal/interests"
@@ -33,13 +34,16 @@ func main() {
 	log.Println("connected to database")
 
 	// Initialise handlers
+	// discoveryHandler is created first — it is passed as a dependency to
+	// interestsHandler (vector rebuild) and userHandler (cache invalidation).
+	discoveryHandler := discovery.NewHandler(db)
 	authHandler := auth.NewHandler(db)
-	userHandler := user.NewHandler(db)
+	userHandler := user.NewHandler(db, discoveryHandler)
 	feedHandler := feed.NewHandler(db)
 	connectionHandler := connections.NewHandler(db)
 	eventsHandler := events.NewHandler(db)
 	messagesHandler := messages.NewHandler(db)
-	interestsHandler := interests.NewHandler(db)
+	interestsHandler := interests.NewHandler(db, discoveryHandler)
 
 	r := chi.NewRouter()
 
@@ -104,6 +108,10 @@ func main() {
 
 		// Interests
 		r.Get("/interests", interestsHandler.ListInterests)
+
+		// Discovery
+		r.Get("/users/suggestions", discoveryHandler.GetSuggestions)
+		r.Post("/users/{id}/dismiss", discoveryHandler.DismissUser)
 	})
 
 	port := os.Getenv("PORT")
