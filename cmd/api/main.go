@@ -16,13 +16,9 @@ import (
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/project_radeon/api/internal/auth"
-	"github.com/project_radeon/api/internal/connections"
-	"github.com/project_radeon/api/internal/discovery"
 	"github.com/project_radeon/api/internal/events"
 	"github.com/project_radeon/api/internal/feed"
 	"github.com/project_radeon/api/internal/follows"
-	"github.com/project_radeon/api/internal/interests"
-	"github.com/project_radeon/api/internal/likes"
 	"github.com/project_radeon/api/internal/messages"
 	"github.com/project_radeon/api/internal/user"
 	"github.com/project_radeon/api/pkg/database"
@@ -31,7 +27,6 @@ import (
 )
 
 func main() {
-	// Load .env in development
 	godotenv.Load()
 
 	db, err := database.Connect()
@@ -41,7 +36,6 @@ func main() {
 	defer db.Close()
 	log.Println("connected to database")
 
-	// Initialise S3 uploader for avatar storage.
 	awsRegion := strings.TrimSpace(os.Getenv("AWS_REGION"))
 	awsBucket := strings.TrimSpace(os.Getenv("AWS_S3_BUCKET"))
 
@@ -59,23 +53,15 @@ func main() {
 	s3Client := s3.NewFromConfig(awsCfg)
 	uploader := storage.NewS3Uploader(s3Client, awsBucket, awsRegion)
 
-	// Initialise handlers
-	// discoveryHandler is created first — it is passed as a dependency to
-	// interestsHandler (vector rebuild) and userHandler (cache invalidation).
-	discoveryHandler := discovery.NewHandler(db)
 	authHandler := auth.NewHandler(db)
-	userHandler := user.NewHandler(db, discoveryHandler, uploader)
+	userHandler := user.NewHandler(db, uploader)
 	feedHandler := feed.NewHandler(db)
-	connectionHandler := connections.NewHandler(db)
 	eventsHandler := events.NewHandler(db)
 	messagesHandler := messages.NewHandler(db)
-	likesHandler := likes.NewHandler(db, discoveryHandler)
-	interestsHandler := interests.NewHandler(db, discoveryHandler)
 	followsHandler := follows.NewHandler(db)
 
 	r := chi.NewRouter()
 
-	// Global middleware
 	r.Use(chimiddleware.Logger)
 	r.Use(chimiddleware.Recoverer)
 	r.Use(chimiddleware.RequestID)
@@ -114,16 +100,8 @@ func main() {
 		r.Get("/users/discover", userHandler.Discover)
 		r.Get("/users/{id}/posts", feedHandler.GetUserPosts)
 		r.Get("/users/{id}", userHandler.GetUser)
-		r.Put("/users/me/interests", interestsHandler.SetUserInterests)
 		r.Post("/users/{id}/follow", followsHandler.Follow)
 		r.Delete("/users/{id}/follow", followsHandler.Unfollow)
-
-		// Connections
-		r.Post("/connections", connectionHandler.SendRequest)
-		r.Get("/connections", connectionHandler.ListConnections)
-		r.Get("/connections/pending", connectionHandler.ListPending)
-		r.Patch("/connections/{id}", connectionHandler.UpdateStatus)
-		r.Delete("/connections/{id}", connectionHandler.RemoveConnection)
 
 		// Events
 		r.Get("/events", eventsHandler.ListEvents)
@@ -139,15 +117,6 @@ func main() {
 		r.Post("/conversations/{id}/messages", messagesHandler.SendMessage)
 		r.Get("/conversations/requests", messagesHandler.ListMessageRequests)
 		r.Patch("/conversations/{id}/status", messagesHandler.UpdateConversationStatus)
-
-		// Interests
-		r.Get("/interests", interestsHandler.ListInterests)
-
-		// Discovery
-		r.Get("/users/suggestions", discoveryHandler.GetSuggestions)
-		r.Post("/users/{id}/dismiss", discoveryHandler.DismissUser)
-		r.Get("/users/me/likes", likesHandler.GetMyLikes)
-		r.Post("/users/{id}/like", likesHandler.LikeUser)
 	})
 
 	port := os.Getenv("PORT")
