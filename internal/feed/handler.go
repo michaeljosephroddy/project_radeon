@@ -33,7 +33,47 @@ type Post struct {
 
 // GET /feed?page=1&limit=20
 func (h *Handler) GetFeed(w http.ResponseWriter, r *http.Request) {
-	userID := middleware.CurrentUserID(r)
+	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	if page < 1 {
+		page = 1
+	}
+	if limit < 1 || limit > 50 {
+		limit = 20
+	}
+	offset := (page - 1) * limit
+
+	rows, err := h.db.Query(r.Context(),
+		`SELECT p.id, p.user_id, u.first_name, u.last_name, u.avatar_url, p.body, p.created_at
+		 FROM posts p
+		 JOIN users u ON u.id = p.user_id
+		 ORDER BY p.created_at DESC
+		 LIMIT $1 OFFSET $2`,
+		limit, offset,
+	)
+	if err != nil {
+		response.Error(w, http.StatusInternalServerError, "could not fetch feed")
+		return
+	}
+	defer rows.Close()
+
+	var posts []Post
+	for rows.Next() {
+		var p Post
+		rows.Scan(&p.ID, &p.UserID, &p.FirstName, &p.LastName, &p.AvatarURL, &p.Body, &p.CreatedAt)
+		posts = append(posts, p)
+	}
+
+	response.Success(w, http.StatusOK, posts)
+}
+
+// GET /users/{id}/posts
+func (h *Handler) GetUserPosts(w http.ResponseWriter, r *http.Request) {
+	targetID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		response.Error(w, http.StatusBadRequest, "invalid user id")
+		return
+	}
 
 	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
@@ -49,22 +89,13 @@ func (h *Handler) GetFeed(w http.ResponseWriter, r *http.Request) {
 		`SELECT p.id, p.user_id, u.first_name, u.last_name, u.avatar_url, p.body, p.created_at
 		 FROM posts p
 		 JOIN users u ON u.id = p.user_id
-		 WHERE p.user_id IN (
-		   SELECT CASE
-		     WHEN c.requester_id = $1 THEN c.addressee_id
-		     ELSE c.requester_id
-		   END
-		   FROM connections c
-		   WHERE (c.requester_id = $1 OR c.addressee_id = $1)
-		   AND c.status = 'accepted'
-		 )
-		 OR p.user_id = $1
+		 WHERE p.user_id = $1
 		 ORDER BY p.created_at DESC
 		 LIMIT $2 OFFSET $3`,
-		userID, limit, offset,
+		targetID, limit, offset,
 	)
 	if err != nil {
-		response.Error(w, http.StatusInternalServerError, "could not fetch feed")
+		response.Error(w, http.StatusInternalServerError, "could not fetch posts")
 		return
 	}
 	defer rows.Close()

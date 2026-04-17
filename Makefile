@@ -6,6 +6,9 @@ GO := /usr/local/go/bin/go
 run:
 	$(GO) run ./cmd/api
 
+dev:
+	air
+
 build:
 	$(GO) build -o bin/project_radeon ./cmd/api
 
@@ -21,4 +24,4 @@ migrate2:
 migrate3:
 	psql $(DATABASE_URL) -f migrations/003_discovery_radius.sql
 
-.PHONY: run build tidy migrate migrate2 migrate3
+.PHONY: run dev build tidy migrate migrate2 migrate3

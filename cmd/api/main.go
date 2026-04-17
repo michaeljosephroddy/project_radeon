@@ -20,6 +20,7 @@ import (
 	"github.com/project_radeon/api/internal/discovery"
 	"github.com/project_radeon/api/internal/events"
 	"github.com/project_radeon/api/internal/feed"
+	"github.com/project_radeon/api/internal/follows"
 	"github.com/project_radeon/api/internal/interests"
 	"github.com/project_radeon/api/internal/likes"
 	"github.com/project_radeon/api/internal/messages"
@@ -70,6 +71,7 @@ func main() {
 	messagesHandler := messages.NewHandler(db)
 	likesHandler := likes.NewHandler(db, discoveryHandler)
 	interestsHandler := interests.NewHandler(db, discoveryHandler)
+	followsHandler := follows.NewHandler(db)
 
 	r := chi.NewRouter()
 
@@ -107,9 +109,14 @@ func main() {
 		r.Get("/users/me", userHandler.GetMe)
 		r.Patch("/users/me", userHandler.UpdateMe)
 		r.Post("/users/me/avatar", userHandler.UploadAvatar)
+		r.Get("/users/me/following", followsHandler.ListFollowing)
+		r.Get("/users/me/followers", followsHandler.ListFollowers)
 		r.Get("/users/discover", userHandler.Discover)
+		r.Get("/users/{id}/posts", feedHandler.GetUserPosts)
 		r.Get("/users/{id}", userHandler.GetUser)
 		r.Put("/users/me/interests", interestsHandler.SetUserInterests)
+		r.Post("/users/{id}/follow", followsHandler.Follow)
+		r.Delete("/users/{id}/follow", followsHandler.Unfollow)
 
 		// Connections
 		r.Post("/connections", connectionHandler.SendRequest)
