@@ -24,8 +24,7 @@ func NewHandler(db *pgxpool.Pool) *Handler {
 type Post struct {
 	ID        uuid.UUID `json:"id"`
 	UserID    uuid.UUID `json:"user_id"`
-	FirstName string    `json:"first_name"`
-	LastName  string    `json:"last_name"`
+	Username  string    `json:"username"`
 	AvatarURL *string   `json:"avatar_url"`
 	Body      string    `json:"body"`
 	CreatedAt time.Time `json:"created_at"`
@@ -44,7 +43,7 @@ func (h *Handler) GetFeed(w http.ResponseWriter, r *http.Request) {
 	offset := (page - 1) * limit
 
 	rows, err := h.db.Query(r.Context(),
-		`SELECT p.id, p.user_id, u.first_name, u.last_name, u.avatar_url, p.body, p.created_at
+		`SELECT p.id, p.user_id, u.username, u.avatar_url, p.body, p.created_at
 		 FROM posts p
 		 JOIN users u ON u.id = p.user_id
 		 ORDER BY p.created_at DESC
@@ -60,7 +59,7 @@ func (h *Handler) GetFeed(w http.ResponseWriter, r *http.Request) {
 	var posts []Post
 	for rows.Next() {
 		var p Post
-		rows.Scan(&p.ID, &p.UserID, &p.FirstName, &p.LastName, &p.AvatarURL, &p.Body, &p.CreatedAt)
+		rows.Scan(&p.ID, &p.UserID, &p.Username, &p.AvatarURL, &p.Body, &p.CreatedAt)
 		posts = append(posts, p)
 	}
 
@@ -86,7 +85,7 @@ func (h *Handler) GetUserPosts(w http.ResponseWriter, r *http.Request) {
 	offset := (page - 1) * limit
 
 	rows, err := h.db.Query(r.Context(),
-		`SELECT p.id, p.user_id, u.first_name, u.last_name, u.avatar_url, p.body, p.created_at
+		`SELECT p.id, p.user_id, u.username, u.avatar_url, p.body, p.created_at
 		 FROM posts p
 		 JOIN users u ON u.id = p.user_id
 		 WHERE p.user_id = $1
@@ -103,7 +102,7 @@ func (h *Handler) GetUserPosts(w http.ResponseWriter, r *http.Request) {
 	var posts []Post
 	for rows.Next() {
 		var p Post
-		rows.Scan(&p.ID, &p.UserID, &p.FirstName, &p.LastName, &p.AvatarURL, &p.Body, &p.CreatedAt)
+		rows.Scan(&p.ID, &p.UserID, &p.Username, &p.AvatarURL, &p.Body, &p.CreatedAt)
 		posts = append(posts, p)
 	}
 
@@ -164,7 +163,7 @@ func (h *Handler) GetReactions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	rows, err := h.db.Query(r.Context(),
-		`SELECT pr.id, pr.user_id, u.first_name, u.last_name, u.avatar_url, pr.type
+		`SELECT pr.id, pr.user_id, u.username, u.avatar_url, pr.type
 		 FROM post_reactions pr
 		 JOIN users u ON u.id = pr.user_id
 		 WHERE pr.post_id = $1
@@ -179,8 +178,7 @@ func (h *Handler) GetReactions(w http.ResponseWriter, r *http.Request) {
 	type Reaction struct {
 		ID        uuid.UUID `json:"id"`
 		UserID    uuid.UUID `json:"user_id"`
-		FirstName string    `json:"first_name"`
-		LastName  string    `json:"last_name"`
+		Username  string    `json:"username"`
 		AvatarURL *string   `json:"avatar_url"`
 		Type      string    `json:"type"`
 	}
@@ -188,7 +186,7 @@ func (h *Handler) GetReactions(w http.ResponseWriter, r *http.Request) {
 	var reactions []Reaction
 	for rows.Next() {
 		var re Reaction
-		rows.Scan(&re.ID, &re.UserID, &re.FirstName, &re.LastName, &re.AvatarURL, &re.Type)
+		rows.Scan(&re.ID, &re.UserID, &re.Username, &re.AvatarURL, &re.Type)
 		reactions = append(reactions, re)
 	}
 
@@ -281,7 +279,7 @@ func (h *Handler) GetComments(w http.ResponseWriter, r *http.Request) {
 	}
 
 	rows, err := h.db.Query(r.Context(),
-		`SELECT c.id, c.user_id, u.first_name, u.last_name, u.avatar_url, c.body, c.created_at
+		`SELECT c.id, c.user_id, u.username, u.avatar_url, c.body, c.created_at
 		 FROM comments c
 		 JOIN users u ON u.id = c.user_id
 		 WHERE c.post_id = $1
@@ -296,8 +294,7 @@ func (h *Handler) GetComments(w http.ResponseWriter, r *http.Request) {
 	type Comment struct {
 		ID        uuid.UUID `json:"id"`
 		UserID    uuid.UUID `json:"user_id"`
-		FirstName string    `json:"first_name"`
-		LastName  string    `json:"last_name"`
+		Username  string    `json:"username"`
 		AvatarURL *string   `json:"avatar_url"`
 		Body      string    `json:"body"`
 		CreatedAt time.Time `json:"created_at"`
@@ -306,7 +303,7 @@ func (h *Handler) GetComments(w http.ResponseWriter, r *http.Request) {
 	var comments []Comment
 	for rows.Next() {
 		var c Comment
-		rows.Scan(&c.ID, &c.UserID, &c.FirstName, &c.LastName, &c.AvatarURL, &c.Body, &c.CreatedAt)
+		rows.Scan(&c.ID, &c.UserID, &c.Username, &c.AvatarURL, &c.Body, &c.CreatedAt)
 		comments = append(comments, c)
 	}
 

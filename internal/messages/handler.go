@@ -20,8 +20,7 @@ type Conversation struct {
 	ID            uuid.UUID  `json:"id"`
 	IsGroup       bool       `json:"is_group"`
 	Name          *string    `json:"name"`
-	FirstName     *string    `json:"first_name"`
-	LastName      *string    `json:"last_name"`
+	Username      *string    `json:"username"`
 	CreatedAt     time.Time  `json:"created_at"`
 	LastMessage   *string    `json:"last_message"`
 	LastMessageAt *time.Time `json:"last_message_at"`
@@ -37,13 +36,13 @@ func (h *Handler) ListConversations(w http.ResponseWriter, r *http.Request) {
 
 	rows, err := h.db.Query(r.Context(),
 		`SELECT c.id, c.is_group, c.name,
-       other.first_name, other.last_name,
+       other.username,
        c.created_at,
        m.body AS last_message, m.sent_at AS last_message_at
      FROM conversations c
      JOIN conversation_members cm ON cm.conversation_id = c.id AND cm.user_id = $1
      LEFT JOIN LATERAL (
-       SELECT u.first_name, u.last_name
+       SELECT u.username
        FROM conversation_members cm2
        JOIN users u ON u.id = cm2.user_id
        WHERE cm2.conversation_id = c.id AND cm2.user_id != $1
@@ -66,7 +65,7 @@ func (h *Handler) ListConversations(w http.ResponseWriter, r *http.Request) {
 	var convs []Conversation
 	for rows.Next() {
 		var c Conversation
-		rows.Scan(&c.ID, &c.IsGroup, &c.Name, &c.FirstName, &c.LastName, &c.CreatedAt, &c.LastMessage, &c.LastMessageAt)
+		rows.Scan(&c.ID, &c.IsGroup, &c.Name, &c.Username, &c.CreatedAt, &c.LastMessage, &c.LastMessageAt)
 		convs = append(convs, c)
 	}
 
@@ -78,14 +77,14 @@ func (h *Handler) ListMessageRequests(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.CurrentUserID(r)
 	rows, err := h.db.Query(r.Context(),
 		`SELECT c.id, c.is_group, c.name,
-           other.first_name, other.last_name,
+           other.username,
            c.created_at,
            m.body AS last_message, m.sent_at AS last_message_at
          FROM conversations c
          JOIN conversation_members cm ON cm.conversation_id = c.id
            AND cm.user_id = $1 AND cm.role = 'addressee'
          LEFT JOIN LATERAL (
-           SELECT u.first_name, u.last_name
+           SELECT u.username
            FROM conversation_members cm2
            JOIN users u ON u.id = cm2.user_id
            WHERE cm2.conversation_id = c.id AND cm2.user_id != $1
@@ -108,7 +107,7 @@ func (h *Handler) ListMessageRequests(w http.ResponseWriter, r *http.Request) {
 	var convs []Conversation
 	for rows.Next() {
 		var c Conversation
-		rows.Scan(&c.ID, &c.IsGroup, &c.Name, &c.FirstName, &c.LastName, &c.CreatedAt, &c.LastMessage, &c.LastMessageAt)
+		rows.Scan(&c.ID, &c.IsGroup, &c.Name, &c.Username, &c.CreatedAt, &c.LastMessage, &c.LastMessageAt)
 		convs = append(convs, c)
 	}
 	response.Success(w, http.StatusOK, convs)
@@ -257,7 +256,7 @@ func (h *Handler) GetMessages(w http.ResponseWriter, r *http.Request) {
 	}
 
 	rows, err := h.db.Query(r.Context(),
-		`SELECT m.id, m.sender_id, u.first_name, u.last_name, u.avatar_url, m.body, m.sent_at
+		`SELECT m.id, m.sender_id, u.username, u.avatar_url, m.body, m.sent_at
 		 FROM messages m
 		 JOIN users u ON u.id = m.sender_id
 		 WHERE m.conversation_id = $1
@@ -272,8 +271,7 @@ func (h *Handler) GetMessages(w http.ResponseWriter, r *http.Request) {
 	type Message struct {
 		ID        uuid.UUID `json:"id"`
 		SenderID  uuid.UUID `json:"sender_id"`
-		FirstName string    `json:"first_name"`
-		LastName  string    `json:"last_name"`
+		Username  string    `json:"username"`
 		AvatarURL *string   `json:"avatar_url"`
 		Body      string    `json:"body"`
 		SentAt    time.Time `json:"sent_at"`
@@ -282,7 +280,7 @@ func (h *Handler) GetMessages(w http.ResponseWriter, r *http.Request) {
 	var msgs []Message
 	for rows.Next() {
 		var m Message
-		rows.Scan(&m.ID, &m.SenderID, &m.FirstName, &m.LastName, &m.AvatarURL, &m.Body, &m.SentAt)
+		rows.Scan(&m.ID, &m.SenderID, &m.Username, &m.AvatarURL, &m.Body, &m.SentAt)
 		msgs = append(msgs, m)
 	}
 

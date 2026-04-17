@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/project_radeon/api/pkg/middleware"
 	"github.com/project_radeon/api/pkg/response"
+	"github.com/project_radeon/api/pkg/username"
 )
 
 // Uploader is implemented by *storage.S3Uploader.
@@ -34,8 +35,7 @@ func NewHandler(db *pgxpool.Pool, uploader Uploader) *Handler {
 
 type User struct {
 	ID         uuid.UUID  `json:"id"`
-	FirstName  string     `json:"first_name"`
-	LastName   string     `json:"last_name"`
+	Username   string     `json:"username"`
 	AvatarURL  *string    `json:"avatar_url"`
 	City       *string    `json:"city"`
 	Country    *string    `json:"country"`
@@ -74,8 +74,7 @@ func (h *Handler) UpdateMe(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.CurrentUserID(r)
 
 	var input struct {
-		FirstName  *string `json:"first_name"`
-		LastName   *string `json:"last_name"`
+		Username   *string `json:"username"`
 		City       *string `json:"city"`
 		Country    *string `json:"country"`
 		SoberSince *string `json:"sober_since"`
@@ -86,14 +85,36 @@ func (h *Handler) UpdateMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if input.Username != nil {
+		normalized := username.Normalize(*input.Username)
+		if msg := username.ValidationError(normalized); msg != "" {
+			response.ValidationError(w, map[string]string{"username": msg})
+			return
+		}
+
+		var exists bool
+		if err := h.db.QueryRow(r.Context(),
+			`SELECT EXISTS(SELECT 1 FROM users WHERE username = $1 AND id != $2)`,
+			normalized, userID,
+		).Scan(&exists); err != nil {
+			response.Error(w, http.StatusInternalServerError, "could not validate username")
+			return
+		}
+		if exists {
+			response.Error(w, http.StatusConflict, "username already taken")
+			return
+		}
+
+		input.Username = &normalized
+	}
+
 	_, err := h.db.Exec(r.Context(),
 		`UPDATE users SET
-			first_name = COALESCE($1, first_name),
-			last_name  = COALESCE($2, last_name),
-			city       = COALESCE($3, city),
-			country    = COALESCE($4, country)
-		WHERE id = $5`,
-		input.FirstName, input.LastName, input.City, input.Country, userID,
+			username = COALESCE($1, username),
+			city     = COALESCE($2, city),
+			country  = COALESCE($3, country)
+		WHERE id = $4`,
+		input.Username, input.City, input.Country, userID,
 	)
 	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "could not update profile")
@@ -166,19 +187,23 @@ func (h *Handler) Discover(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query().Get("q")
 
 	rows, err := h.db.Query(r.Context(),
-		`SELECT u.id, u.first_name, u.last_name, u.avatar_url, u.city, u.country, u.sober_since, u.created_at
+		`SELECT u.id, u.username, u.avatar_url, u.city, u.country, u.sober_since, u.created_at
 		 FROM users u
 		 WHERE u.id != $1
 		 AND ($2 = '' OR u.city ILIKE $2)
 		 AND (
 		 	$3 = ''
-		 	OR CONCAT_WS(' ', u.first_name, u.last_name) ILIKE '%' || $3 || '%'
-		 	OR u.first_name ILIKE '%' || $3 || '%'
-		 	OR u.last_name ILIKE '%' || $3 || '%'
+		 	OR u.username ILIKE '%' || $3 || '%'
 		 )
-		 ORDER BY u.created_at DESC
+		 ORDER BY
+		 	CASE
+		 		WHEN u.username = $3 THEN 0
+		 		WHEN u.username ILIKE $3 || '%' THEN 1
+		 		ELSE 2
+		 	END,
+		 	u.created_at DESC
 		 LIMIT 20`,
-		currentUserID, city, query,
+		currentUserID, city, username.Normalize(query),
 	)
 	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "could not fetch users")
@@ -189,7 +214,7 @@ func (h *Handler) Discover(w http.ResponseWriter, r *http.Request) {
 	var users []User
 	for rows.Next() {
 		var u User
-		rows.Scan(&u.ID, &u.FirstName, &u.LastName, &u.AvatarURL, &u.City, &u.Country, &u.SoberSince, &u.CreatedAt)
+		rows.Scan(&u.ID, &u.Username, &u.AvatarURL, &u.City, &u.Country, &u.SoberSince, &u.CreatedAt)
 		users = append(users, u)
 	}
 
@@ -199,9 +224,9 @@ func (h *Handler) Discover(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) fetchUser(ctx context.Context, id uuid.UUID) (*User, error) {
 	var u User
 	err := h.db.QueryRow(ctx,
-		`SELECT id, first_name, last_name, avatar_url, city, country, sober_since, created_at
+		`SELECT id, username, avatar_url, city, country, sober_since, created_at
 		 FROM users WHERE id = $1`, id,
-	).Scan(&u.ID, &u.FirstName, &u.LastName, &u.AvatarURL, &u.City, &u.Country, &u.SoberSince, &u.CreatedAt)
+	).Scan(&u.ID, &u.Username, &u.AvatarURL, &u.City, &u.Country, &u.SoberSince, &u.CreatedAt)
 	if err != nil {
 		return nil, err
 	}

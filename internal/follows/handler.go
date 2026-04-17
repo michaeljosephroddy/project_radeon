@@ -21,8 +21,7 @@ func NewHandler(db *pgxpool.Pool) *Handler {
 
 type followUser struct {
 	UserID    uuid.UUID  `json:"user_id"`
-	FirstName string     `json:"first_name"`
-	LastName  string     `json:"last_name"`
+	Username  string     `json:"username"`
 	AvatarURL *string    `json:"avatar_url"`
 	City      *string    `json:"city"`
 	CreatedAt time.Time  `json:"created_at"`
@@ -80,7 +79,7 @@ func (h *Handler) ListFollowing(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.CurrentUserID(r)
 
 	rows, err := h.db.Query(r.Context(),
-		`SELECT u.id, u.first_name, u.last_name, u.avatar_url, u.city, f.created_at
+		`SELECT u.id, u.username, u.avatar_url, u.city, f.created_at
 		 FROM follows f
 		 JOIN users u ON u.id = f.following_id
 		 WHERE f.follower_id = $1
@@ -96,7 +95,7 @@ func (h *Handler) ListFollowing(w http.ResponseWriter, r *http.Request) {
 	var users []followUser
 	for rows.Next() {
 		var u followUser
-		if err := rows.Scan(&u.UserID, &u.FirstName, &u.LastName, &u.AvatarURL, &u.City, &u.CreatedAt); err != nil {
+		if err := rows.Scan(&u.UserID, &u.Username, &u.AvatarURL, &u.City, &u.CreatedAt); err != nil {
 			response.Error(w, http.StatusInternalServerError, "could not read following")
 			return
 		}
@@ -111,7 +110,7 @@ func (h *Handler) ListFollowers(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.CurrentUserID(r)
 
 	rows, err := h.db.Query(r.Context(),
-		`SELECT u.id, u.first_name, u.last_name, u.avatar_url, u.city, f.created_at
+		`SELECT u.id, u.username, u.avatar_url, u.city, f.created_at
 		 FROM follows f
 		 JOIN users u ON u.id = f.follower_id
 		 WHERE f.following_id = $1
@@ -127,7 +126,7 @@ func (h *Handler) ListFollowers(w http.ResponseWriter, r *http.Request) {
 	var users []followUser
 	for rows.Next() {
 		var u followUser
-		if err := rows.Scan(&u.UserID, &u.FirstName, &u.LastName, &u.AvatarURL, &u.City, &u.CreatedAt); err != nil {
+		if err := rows.Scan(&u.UserID, &u.Username, &u.AvatarURL, &u.City, &u.CreatedAt); err != nil {
 			response.Error(w, http.StatusInternalServerError, "could not read followers")
 			return
 		}

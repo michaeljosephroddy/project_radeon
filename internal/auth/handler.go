@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/project_radeon/api/pkg/response"
+	"github.com/project_radeon/api/pkg/username"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -22,8 +23,7 @@ func NewHandler(db *pgxpool.Pool) *Handler {
 // POST /auth/register
 func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 	var input struct {
-		FirstName  string  `json:"first_name"`
-		LastName   string  `json:"last_name"`
+		Username   string  `json:"username"`
 		Email      string  `json:"email"`
 		Password   string  `json:"password"`
 		City       string  `json:"city"`
@@ -38,11 +38,9 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 
 	// Basic validation
 	errs := map[string]string{}
-	if input.FirstName == "" {
-		errs["first_name"] = "required"
-	}
-	if input.LastName == "" {
-		errs["last_name"] = "required"
+	input.Username = username.Normalize(input.Username)
+	if msg := username.ValidationError(input.Username); msg != "" {
+		errs["username"] = msg
 	}
 	if input.Email == "" {
 		errs["email"] = "required"
@@ -65,6 +63,14 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	h.db.QueryRow(r.Context(),
+		"SELECT EXISTS(SELECT 1 FROM users WHERE username = $1)", input.Username,
+	).Scan(&exists)
+	if exists {
+		response.Error(w, http.StatusConflict, "username already taken")
+		return
+	}
+
 	hash, err := bcrypt.GenerateFromPassword([]byte(input.Password), bcrypt.DefaultCost)
 	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "could not hash password")
@@ -84,11 +90,10 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 	}
 
 	err = h.db.QueryRow(r.Context(),
-		`INSERT INTO users (first_name, last_name, email, password_hash, city, country, sober_since)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7)
+		`INSERT INTO users (username, email, password_hash, city, country, sober_since)
+		 VALUES ($1, $2, $3, $4, $5, $6)
 		 RETURNING id`,
-		input.FirstName, input.LastName, input.Email, string(hash),
-		input.City, input.Country, soberSince,
+		input.Username, input.Email, string(hash), input.City, input.Country, soberSince,
 	).Scan(&userID)
 	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "could not create user")

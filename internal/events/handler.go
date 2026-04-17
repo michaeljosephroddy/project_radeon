@@ -154,7 +154,7 @@ func (h *Handler) GetAttendees(w http.ResponseWriter, r *http.Request) {
 	}
 
 	rows, err := h.db.Query(r.Context(),
-		`SELECT u.id, u.first_name, u.last_name, u.avatar_url, u.city, ea.rsvp_at
+		`SELECT u.id, u.username, u.avatar_url, u.city, ea.rsvp_at
 		 FROM event_attendees ea
 		 JOIN users u ON u.id = ea.user_id
 		 WHERE ea.event_id = $1
@@ -168,8 +168,7 @@ func (h *Handler) GetAttendees(w http.ResponseWriter, r *http.Request) {
 
 	type Attendee struct {
 		ID        uuid.UUID `json:"id"`
-		FirstName string    `json:"first_name"`
-		LastName  string    `json:"last_name"`
+		Username  string    `json:"username"`
 		AvatarURL *string   `json:"avatar_url"`
 		City      *string   `json:"city"`
 		RSVPAt    time.Time `json:"rsvp_at"`
@@ -178,7 +177,7 @@ func (h *Handler) GetAttendees(w http.ResponseWriter, r *http.Request) {
 	var attendees []Attendee
 	for rows.Next() {
 		var a Attendee
-		rows.Scan(&a.ID, &a.FirstName, &a.LastName, &a.AvatarURL, &a.City, &a.RSVPAt)
+		rows.Scan(&a.ID, &a.Username, &a.AvatarURL, &a.City, &a.RSVPAt)
 		attendees = append(attendees, a)
 	}
 

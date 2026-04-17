@@ -18,19 +18,19 @@ DECLARE
 BEGIN
   pw := crypt('Password1!', gen_salt('bf'));
 
-  INSERT INTO users (id, first_name, last_name, email, password_hash, city, country, lat, lng, sober_since, discovery_radius_km)
+  INSERT INTO users (id, username, first_name, last_name, email, password_hash, city, country, lat, lng, sober_since, discovery_radius_km)
   VALUES
-    ('a1000000-0000-0000-0000-000000000001', 'Aoife',     'Murphy',   'aoife.murphy@example.com',     pw, 'Portlaoise',   'Ireland', 53.029160, -7.320510, '2022-01-15', 100),
-    ('a1000000-0000-0000-0000-000000000002', 'Ciaran',    'Ryan',     'ciaran.ryan@example.com',      pw, 'Carlow',       'Ireland', 52.840022, -6.927866, '2021-03-10', 100),
-    ('a1000000-0000-0000-0000-000000000003', 'Siobhan',   'O''Brien', 'siobhan.obrien@example.com',   pw, 'Dublin',       'Ireland', 53.349804, -6.260310, '2020-06-01', 100),
-    ('a1000000-0000-0000-0000-000000000004', 'Declan',    'Walsh',    'declan.walsh@example.com',     pw, 'Cork',         'Ireland', 51.896893, -8.486316, '2023-02-20', 100),
-    ('a1000000-0000-0000-0000-000000000005', 'Niamh',     'Byrne',    'niamh.byrne@example.com',      pw, 'Athy',         'Ireland', 52.993279, -6.981844, '2022-07-05', 100),
-    ('a1000000-0000-0000-0000-000000000006', 'Seamus',    'Kelly',    'seamus.kelly@example.com',     pw, 'Galway',       'Ireland', 53.276685, -9.045096, '2021-11-30', 100),
-    ('a1000000-0000-0000-0000-000000000007', 'Grainne',   'Doyle',    'grainne.doyle@example.com',    pw, 'Athlone',      'Ireland', 53.430401, -7.941021, '2020-09-14', 100),
-    ('a1000000-0000-0000-0000-000000000008', 'Padraic',   'Farrell',  'padraic.farrell@example.com',  pw, 'Monasterevin', 'Ireland', 53.142826, -7.064399, '2023-04-01', 100),
-    ('a1000000-0000-0000-0000-000000000009', 'Orla',      'Kavanagh', 'orla.kavanagh@example.com',    pw, 'Stradbally',   'Ireland', 53.014746, -7.148406, '2022-12-25', 100),
-    ('a1000000-0000-0000-0000-000000000010', 'Brendan',   'Dunne',    'brendan.dunne@example.com',    pw, 'Abbeyleix',    'Ireland', 52.914571, -7.350522, '2021-08-18', 100),
-    ('a1000000-0000-0000-0000-000000000011', 'Fionnuala', 'Phelan',   'fionnuala.phelan@example.com', pw, 'Kilkenny',     'Ireland', 52.654245, -7.244605, '2020-04-22', 100)
+    ('a1000000-0000-0000-0000-000000000001', 'aoifemurphy',     'Aoife',     'Murphy',   'aoife.murphy@example.com',     pw, 'Portlaoise',   'Ireland', 53.029160, -7.320510, '2022-01-15', 100),
+    ('a1000000-0000-0000-0000-000000000002', 'ciaranryan',      'Ciaran',    'Ryan',     'ciaran.ryan@example.com',      pw, 'Carlow',       'Ireland', 52.840022, -6.927866, '2021-03-10', 100),
+    ('a1000000-0000-0000-0000-000000000003', 'siobhanobrien',   'Siobhan',   'O''Brien', 'siobhan.obrien@example.com',   pw, 'Dublin',       'Ireland', 53.349804, -6.260310, '2020-06-01', 100),
+    ('a1000000-0000-0000-0000-000000000004', 'declanwalsh',     'Declan',    'Walsh',    'declan.walsh@example.com',     pw, 'Cork',         'Ireland', 51.896893, -8.486316, '2023-02-20', 100),
+    ('a1000000-0000-0000-0000-000000000005', 'niamhbyrne',      'Niamh',     'Byrne',    'niamh.byrne@example.com',      pw, 'Athy',         'Ireland', 52.993279, -6.981844, '2022-07-05', 100),
+    ('a1000000-0000-0000-0000-000000000006', 'seamuskelly',     'Seamus',    'Kelly',    'seamus.kelly@example.com',     pw, 'Galway',       'Ireland', 53.276685, -9.045096, '2021-11-30', 100),
+    ('a1000000-0000-0000-0000-000000000007', 'grainnedoyle',    'Grainne',   'Doyle',    'grainne.doyle@example.com',    pw, 'Athlone',      'Ireland', 53.430401, -7.941021, '2020-09-14', 100),
+    ('a1000000-0000-0000-0000-000000000008', 'padraicfarrell',  'Padraic',   'Farrell',  'padraic.farrell@example.com',  pw, 'Monasterevin', 'Ireland', 53.142826, -7.064399, '2023-04-01', 100),
+    ('a1000000-0000-0000-0000-000000000009', 'orlakavanagh',    'Orla',      'Kavanagh', 'orla.kavanagh@example.com',    pw, 'Stradbally',   'Ireland', 53.014746, -7.148406, '2022-12-25', 100),
+    ('a1000000-0000-0000-0000-000000000010', 'brendandunne',    'Brendan',   'Dunne',    'brendan.dunne@example.com',    pw, 'Abbeyleix',    'Ireland', 52.914571, -7.350522, '2021-08-18', 100),
+    ('a1000000-0000-0000-0000-000000000011', 'fionnualaphelan', 'Fionnuala', 'Phelan',   'fionnuala.phelan@example.com', pw, 'Kilkenny',     'Ireland', 52.654245, -7.244605, '2020-04-22', 100)
   ON CONFLICT (email) DO NOTHING;
 END;
 $$;
