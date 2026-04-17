@@ -141,6 +141,10 @@ func (h *Handler) buildSuggestions(ctx context.Context, userID uuid.UUID, topN i
 		   AND NOT EXISTS (
 		       SELECT 1 FROM dismissed_users d
 		       WHERE d.user_id = $1 AND d.dismissed_id = u.id
+		   )
+		   AND NOT EXISTS (
+		       SELECT 1 FROM likes l
+		       WHERE l.liker_id = $1 AND l.liked_id = u.id
 		   )`, userID,
 	)
 	if err != nil {

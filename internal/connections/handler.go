@@ -28,6 +28,7 @@ type Connection struct {
 	AvatarURL   *string   `json:"avatar_url"`
 	City        *string   `json:"city"`
 	Status      string    `json:"status"`
+	Type        string    `json:"type"`
 	ConnectedAt time.Time `json:"connected_at"`
 }
 
@@ -138,7 +139,7 @@ func (h *Handler) ListConnections(w http.ResponseWriter, r *http.Request) {
 		`SELECT c.id,
 		   CASE WHEN c.requester_id=$1 THEN c.addressee_id ELSE c.requester_id END AS other_id,
 		   u.first_name, u.last_name, u.avatar_url, u.city,
-		   c.status, c.created_at
+		   c.status, c.type, c.created_at
 		 FROM connections c
 		 JOIN users u ON u.id = CASE WHEN c.requester_id=$1 THEN c.addressee_id ELSE c.requester_id END
 		 WHERE (c.requester_id=$1 OR c.addressee_id=$1)
@@ -154,7 +155,7 @@ func (h *Handler) ListConnections(w http.ResponseWriter, r *http.Request) {
 	var conns []Connection
 	for rows.Next() {
 		var c Connection
-		rows.Scan(&c.ID, &c.UserID, &c.FirstName, &c.LastName, &c.AvatarURL, &c.City, &c.Status, &c.ConnectedAt)
+		rows.Scan(&c.ID, &c.UserID, &c.FirstName, &c.LastName, &c.AvatarURL, &c.City, &c.Status, &c.Type, &c.ConnectedAt)
 		conns = append(conns, c)
 	}
 
@@ -181,7 +182,7 @@ func (h *Handler) ListPending(w http.ResponseWriter, r *http.Request) {
 	var conns []Connection
 	for rows.Next() {
 		var c Connection
-		rows.Scan(&c.ID, &c.UserID, &c.FirstName, &c.LastName, &c.AvatarURL, &c.City, &c.Status, &c.ConnectedAt)
+		rows.Scan(&c.ID, &c.UserID, &c.FirstName, &c.LastName, &c.AvatarURL, &c.City, &c.Status, &c.Type, &c.ConnectedAt)
 		conns = append(conns, c)
 	}
 

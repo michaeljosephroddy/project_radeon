@@ -1,15 +1,17 @@
 include .env
 export
- 
+
+GO := /usr/local/go/bin/go
+
 run:
-	go run ./cmd/api
- 
+	$(GO) run ./cmd/api
+
 build:
-	go build -o bin/project_radeon ./cmd/api
- 
+	$(GO) build -o bin/project_radeon ./cmd/api
+
 tidy:
-	go mod tidy
- 
+	$(GO) mod tidy
+
 migrate:
 	psql $(DATABASE_URL) -f migrations/001_bootstrap.sql
 

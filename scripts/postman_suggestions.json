@@ -1,0 +1,139 @@
+{
+  "info": {
+    "name": "Project Radeon – Suggestions",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:8080",
+      "type": "string"
+    },
+    {
+      "key": "token",
+      "value": "",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "Get Suggestions",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{token}}"
+          }
+        ],
+        "url": {
+          "raw": "{{base_url}}/users/suggestions",
+          "host": ["{{base_url}}"],
+          "path": ["users", "suggestions"]
+        },
+        "description": "Returns up to 20 suggested users scored by interest similarity (65%) and proximity (35%). Results are cached per user for 24 hours."
+      },
+      "response": [
+        {
+          "name": "200 OK",
+          "status": "OK",
+          "code": 200,
+          "header": [
+            { "key": "Content-Type", "value": "application/json" }
+          ],
+          "body": "{\n  \"data\": [\n    {\n      \"id\": \"a1000000-0000-0000-0000-000000000005\",\n      \"first_name\": \"Niamh\",\n      \"last_name\": \"Byrne\",\n      \"avatar_url\": null,\n      \"city\": \"Athy\",\n      \"score\": 0.587\n    },\n    {\n      \"id\": \"a1000000-0000-0000-0000-000000000008\",\n      \"first_name\": \"Padraic\",\n      \"last_name\": \"Farrell\",\n      \"avatar_url\": null,\n      \"city\": \"Monasterevin\",\n      \"score\": 0.554\n    }\n  ]\n}"
+        },
+        {
+          "name": "401 Unauthorized",
+          "status": "Unauthorized",
+          "code": 401,
+          "header": [
+            { "key": "Content-Type", "value": "application/json" }
+          ],
+          "body": "{\n  \"error\": \"unauthorized\"\n}"
+        },
+        {
+          "name": "500 Internal Server Error",
+          "status": "Internal Server Error",
+          "code": 500,
+          "header": [
+            { "key": "Content-Type", "value": "application/json" }
+          ],
+          "body": "{\n  \"error\": \"could not fetch suggestions\"\n}"
+        }
+      ]
+    },
+    {
+      "name": "Dismiss User",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{token}}"
+          }
+        ],
+        "url": {
+          "raw": "{{base_url}}/users/:id/dismiss",
+          "host": ["{{base_url}}"],
+          "path": ["users", ":id", "dismiss"],
+          "variable": [
+            {
+              "key": "id",
+              "value": "a1000000-0000-0000-0000-000000000004",
+              "description": "UUID of the user to dismiss"
+            }
+          ]
+        },
+        "description": "Dismisses a suggested user so they no longer appear in the caller's suggestions. Idempotent — dismissing the same user twice is safe. Invalidates the caller's suggestion cache."
+      },
+      "response": [
+        {
+          "name": "200 OK",
+          "status": "OK",
+          "code": 200,
+          "header": [
+            { "key": "Content-Type", "value": "application/json" }
+          ],
+          "body": "{\n  \"data\": {\n    \"dismissed\": true\n  }\n}"
+        },
+        {
+          "name": "400 Invalid UUID",
+          "status": "Bad Request",
+          "code": 400,
+          "header": [
+            { "key": "Content-Type", "value": "application/json" }
+          ],
+          "body": "{\n  \"error\": \"invalid user id\"\n}"
+        },
+        {
+          "name": "400 Cannot Dismiss Self",
+          "status": "Bad Request",
+          "code": 400,
+          "header": [
+            { "key": "Content-Type", "value": "application/json" }
+          ],
+          "body": "{\n  \"error\": \"cannot dismiss yourself\"\n}"
+        },
+        {
+          "name": "401 Unauthorized",
+          "status": "Unauthorized",
+          "code": 401,
+          "header": [
+            { "key": "Content-Type", "value": "application/json" }
+          ],
+          "body": "{\n  \"error\": \"unauthorized\"\n}"
+        },
+        {
+          "name": "500 Internal Server Error",
+          "status": "Internal Server Error",
+          "code": 500,
+          "header": [
+            { "key": "Content-Type", "value": "application/json" }
+          ],
+          "body": "{\n  \"error\": \"could not dismiss user\"\n}"
+        }
+      ]
+    }
+  ]
+}

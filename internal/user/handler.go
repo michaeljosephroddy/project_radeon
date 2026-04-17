@@ -1,11 +1,16 @@
 package user
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
+	"log"
 	"net/http"
 	"time"
 
+	"github.com/disintegration/imaging"
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -19,28 +24,35 @@ type CacheInvalidator interface {
 	InvalidateSuggestions(userID uuid.UUID)
 }
 
+// Uploader is implemented by *storage.S3Uploader.
+type Uploader interface {
+	Upload(ctx context.Context, key, contentType string, body io.Reader) (string, error)
+}
+
 type Handler struct {
 	db          *pgxpool.Pool
 	invalidator CacheInvalidator
+	uploader    Uploader
 }
 
-func NewHandler(db *pgxpool.Pool, invalidator CacheInvalidator) *Handler {
-	return &Handler{db: db, invalidator: invalidator}
+func NewHandler(db *pgxpool.Pool, invalidator CacheInvalidator, uploader Uploader) *Handler {
+	return &Handler{db: db, invalidator: invalidator, uploader: uploader}
 }
 
 type User struct {
-	ID                 uuid.UUID  `json:"id"`
-	FirstName          string     `json:"first_name"`
-	LastName           string     `json:"last_name"`
-	AvatarURL          *string    `json:"avatar_url"`
-	City               *string    `json:"city"`
-	Country            *string    `json:"country"`
-	SoberSince         *time.Time `json:"sober_since"`
-	Lat                *float64   `json:"lat,omitempty"`
-	Lng                *float64   `json:"lng,omitempty"`
-	DiscoveryRadiusKm  int        `json:"discovery_radius_km"`
-	CreatedAt          time.Time  `json:"created_at"`
-	Interests          []string   `json:"interests"`
+	ID                uuid.UUID  `json:"id"`
+	FirstName         string     `json:"first_name"`
+	LastName          string     `json:"last_name"`
+	AvatarURL         *string    `json:"avatar_url"`
+	AvatarURLBlurred  *string    `json:"avatar_url_blurred"`
+	City              *string    `json:"city"`
+	Country           *string    `json:"country"`
+	SoberSince        *time.Time `json:"sober_since"`
+	Lat               *float64   `json:"lat,omitempty"`
+	Lng               *float64   `json:"lng,omitempty"`
+	DiscoveryRadiusKm int        `json:"discovery_radius_km"`
+	CreatedAt         time.Time  `json:"created_at"`
+	Interests         []string   `json:"interests"`
 }
 
 // GET /users/me
@@ -123,6 +135,85 @@ func (h *Handler) UpdateMe(w http.ResponseWriter, r *http.Request) {
 	response.Success(w, http.StatusOK, user)
 }
 
+// POST /users/me/avatar — upload a profile photo
+//
+// Accepts multipart/form-data with an "avatar" field (JPEG or PNG, max 10 MB).
+// Resizes to 1024px max dimension, then generates a heavily blurred copy.
+// Both are uploaded to S3 and the URLs are stored on the user record.
+func (h *Handler) UploadAvatar(w http.ResponseWriter, r *http.Request) {
+	userID := middleware.CurrentUserID(r)
+
+	if err := r.ParseMultipartForm(10 << 20); err != nil {
+		response.Error(w, http.StatusBadRequest, "file too large or invalid form data")
+		return
+	}
+
+	file, header, err := r.FormFile("avatar")
+	if err != nil {
+		response.Error(w, http.StatusBadRequest, "avatar field is required")
+		return
+	}
+	defer file.Close()
+
+	contentType := header.Header.Get("Content-Type")
+	if contentType != "image/jpeg" && contentType != "image/png" {
+		response.Error(w, http.StatusBadRequest, "avatar must be a JPEG or PNG image")
+		return
+	}
+
+	img, err := imaging.Decode(file)
+	if err != nil {
+		response.Error(w, http.StatusBadRequest, "could not decode image")
+		return
+	}
+
+	// Cap at 1024px on the longest side to avoid storing giant originals.
+	img = imaging.Fit(img, 1024, 1024, imaging.Lanczos)
+
+	var origBuf bytes.Buffer
+	if err := imaging.Encode(&origBuf, img, imaging.JPEG); err != nil {
+		response.Error(w, http.StatusInternalServerError, "could not encode image")
+		return
+	}
+
+	blurred := imaging.Blur(img, 100)
+	var blurBuf bytes.Buffer
+	if err := imaging.Encode(&blurBuf, blurred, imaging.JPEG); err != nil {
+		response.Error(w, http.StatusInternalServerError, "could not encode blurred image")
+		return
+	}
+
+	origKey := fmt.Sprintf("avatars/%s/original.jpg", userID)
+	blurKey := fmt.Sprintf("avatars/%s/blurred.jpg", userID)
+
+	origURL, err := h.uploader.Upload(r.Context(), origKey, "image/jpeg", &origBuf)
+	if err != nil {
+		log.Printf("avatar upload failed (original) for user %s: %v", userID, err)
+		response.Error(w, http.StatusInternalServerError, "could not upload image")
+		return
+	}
+
+	blurURL, err := h.uploader.Upload(r.Context(), blurKey, "image/jpeg", &blurBuf)
+	if err != nil {
+		log.Printf("avatar upload failed (blurred) for user %s: %v", userID, err)
+		response.Error(w, http.StatusInternalServerError, "could not upload blurred image")
+		return
+	}
+
+	if _, err := h.db.Exec(r.Context(),
+		`UPDATE users SET avatar_url = $1, avatar_url_blurred = $2 WHERE id = $3`,
+		origURL, blurURL, userID,
+	); err != nil {
+		response.Error(w, http.StatusInternalServerError, "could not save avatar")
+		return
+	}
+
+	response.Success(w, http.StatusOK, map[string]string{
+		"avatar_url":         origURL,
+		"avatar_url_blurred": blurURL,
+	})
+}
+
 // GET /users/discover?city=Dublin
 func (h *Handler) Discover(w http.ResponseWriter, r *http.Request) {
 	currentUserID := middleware.CurrentUserID(r)
@@ -165,9 +256,9 @@ func (h *Handler) Discover(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) fetchUser(ctx context.Context, id uuid.UUID) (*User, error) {
 	var u User
 	err := h.db.QueryRow(ctx,
-		`SELECT id, first_name, last_name, avatar_url, city, country, sober_since, created_at, lat, lng, discovery_radius_km
+		`SELECT id, first_name, last_name, avatar_url, avatar_url_blurred, city, country, sober_since, created_at, lat, lng, discovery_radius_km
 		 FROM users WHERE id = $1`, id,
-	).Scan(&u.ID, &u.FirstName, &u.LastName, &u.AvatarURL, &u.City, &u.Country, &u.SoberSince, &u.CreatedAt, &u.Lat, &u.Lng, &u.DiscoveryRadiusKm)
+	).Scan(&u.ID, &u.FirstName, &u.LastName, &u.AvatarURL, &u.AvatarURLBlurred, &u.City, &u.Country, &u.SoberSince, &u.CreatedAt, &u.Lat, &u.Lng, &u.DiscoveryRadiusKm)
 	if err != nil {
 		return nil, err
 	}

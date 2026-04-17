@@ -97,3 +97,8 @@ Validation: `{"errors": {"field": "message"}}`
 - Prefer short, focused functions; if a function requires a comment to explain what it does (not why), it should probably be split
 - Avoid naked returns and named return values except in very short functions where they clearly improve readability
 - Use `context.Context` as the first parameter on every function that performs I/O
+
+### Workflow
+- Always plan before writing code
+- Present a plan and wait for approval before implementing
+- Break tasks into steps and confirm each one

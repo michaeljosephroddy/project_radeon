@@ -17,14 +17,15 @@ type Handler struct {
 }
 
 type Conversation struct {
-	ID            uuid.UUID  `json:"id"`
-	IsGroup       bool       `json:"is_group"`
-	Name          *string    `json:"name"`
-	FirstName     *string    `json:"first_name"`
-	LastName      *string    `json:"last_name"`
-	CreatedAt     time.Time  `json:"created_at"`
-	LastMessage   *string    `json:"last_message"`
-	LastMessageAt *time.Time `json:"last_message_at"`
+	ID             uuid.UUID  `json:"id"`
+	IsGroup        bool       `json:"is_group"`
+	Name           *string    `json:"name"`
+	FirstName      *string    `json:"first_name"`
+	LastName       *string    `json:"last_name"`
+	CreatedAt      time.Time  `json:"created_at"`
+	LastMessage    *string    `json:"last_message"`
+	LastMessageAt  *time.Time `json:"last_message_at"`
+	ConnectionType *string    `json:"connection_type"`
 }
 
 func NewHandler(db *pgxpool.Pool) *Handler {
@@ -39,11 +40,12 @@ func (h *Handler) ListConversations(w http.ResponseWriter, r *http.Request) {
 		`SELECT c.id, c.is_group, c.name,
        other.first_name, other.last_name,
        c.created_at,
-       m.body AS last_message, m.sent_at AS last_message_at
+       m.body AS last_message, m.sent_at AS last_message_at,
+       conn.type AS connection_type
      FROM conversations c
      JOIN conversation_members cm ON cm.conversation_id = c.id AND cm.user_id = $1
      LEFT JOIN LATERAL (
-       SELECT u.first_name, u.last_name
+       SELECT u.id AS user_id, u.first_name, u.last_name
        FROM conversation_members cm2
        JOIN users u ON u.id = cm2.user_id
        WHERE cm2.conversation_id = c.id AND cm2.user_id != $1
@@ -54,6 +56,15 @@ func (h *Handler) ListConversations(w http.ResponseWriter, r *http.Request) {
        WHERE conversation_id = c.id
        ORDER BY sent_at DESC LIMIT 1
      ) m ON true
+     LEFT JOIN LATERAL (
+       SELECT type FROM connections
+       WHERE status = 'accepted'
+         AND (
+           (requester_id = $1 AND addressee_id = other.user_id)
+           OR (requester_id = other.user_id AND addressee_id = $1)
+         )
+       LIMIT 1
+     ) conn ON other.user_id IS NOT NULL
      WHERE c.status = 'active'
      ORDER BY COALESCE(m.sent_at, c.created_at) DESC`, userID,
 	)
@@ -66,7 +77,7 @@ func (h *Handler) ListConversations(w http.ResponseWriter, r *http.Request) {
 	var convs []Conversation
 	for rows.Next() {
 		var c Conversation
-		rows.Scan(&c.ID, &c.IsGroup, &c.Name, &c.FirstName, &c.LastName, &c.CreatedAt, &c.LastMessage, &c.LastMessageAt)
+		rows.Scan(&c.ID, &c.IsGroup, &c.Name, &c.FirstName, &c.LastName, &c.CreatedAt, &c.LastMessage, &c.LastMessageAt, &c.ConnectionType)
 		convs = append(convs, c)
 	}
 
@@ -80,12 +91,13 @@ func (h *Handler) ListMessageRequests(w http.ResponseWriter, r *http.Request) {
 		`SELECT c.id, c.is_group, c.name,
            other.first_name, other.last_name,
            c.created_at,
-           m.body AS last_message, m.sent_at AS last_message_at
+           m.body AS last_message, m.sent_at AS last_message_at,
+           conn.type AS connection_type
          FROM conversations c
          JOIN conversation_members cm ON cm.conversation_id = c.id
            AND cm.user_id = $1 AND cm.role = 'addressee'
          LEFT JOIN LATERAL (
-           SELECT u.first_name, u.last_name
+           SELECT u.id AS user_id, u.first_name, u.last_name
            FROM conversation_members cm2
            JOIN users u ON u.id = cm2.user_id
            WHERE cm2.conversation_id = c.id AND cm2.user_id != $1
@@ -96,6 +108,15 @@ func (h *Handler) ListMessageRequests(w http.ResponseWriter, r *http.Request) {
            WHERE conversation_id = c.id
            ORDER BY sent_at DESC LIMIT 1
          ) m ON true
+         LEFT JOIN LATERAL (
+           SELECT type FROM connections
+           WHERE status = 'accepted'
+             AND (
+               (requester_id = $1 AND addressee_id = other.user_id)
+               OR (requester_id = other.user_id AND addressee_id = $1)
+             )
+           LIMIT 1
+         ) conn ON other.user_id IS NOT NULL
          WHERE c.status = 'request'
          ORDER BY c.created_at DESC`, userID,
 	)
@@ -108,7 +129,7 @@ func (h *Handler) ListMessageRequests(w http.ResponseWriter, r *http.Request) {
 	var convs []Conversation
 	for rows.Next() {
 		var c Conversation
-		rows.Scan(&c.ID, &c.IsGroup, &c.Name, &c.FirstName, &c.LastName, &c.CreatedAt, &c.LastMessage, &c.LastMessageAt)
+		rows.Scan(&c.ID, &c.IsGroup, &c.Name, &c.FirstName, &c.LastName, &c.CreatedAt, &c.LastMessage, &c.LastMessageAt, &c.ConnectionType)
 		convs = append(convs, c)
 	}
 	response.Success(w, http.StatusOK, convs)
@@ -148,10 +169,11 @@ func (h *Handler) CreateConversation(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// New DM starts as a request, group chats are immediately active
+	// they shoudld all be active
 	status := "active"
-	if !isGroup {
-		status = "request"
-	}
+	// if !isGroup {
+	// 	status = "request"
+	// }
 
 	var convID uuid.UUID
 	if err := h.db.QueryRow(r.Context(),

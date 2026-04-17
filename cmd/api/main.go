@@ -1,25 +1,32 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	chimiddleware "github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
 	"github.com/joho/godotenv"
+	"github.com/aws/aws-sdk-go-v2/credentials"
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/project_radeon/api/internal/auth"
 	"github.com/project_radeon/api/internal/connections"
 	"github.com/project_radeon/api/internal/discovery"
 	"github.com/project_radeon/api/internal/events"
 	"github.com/project_radeon/api/internal/feed"
 	"github.com/project_radeon/api/internal/interests"
+	"github.com/project_radeon/api/internal/likes"
 	"github.com/project_radeon/api/internal/messages"
 	"github.com/project_radeon/api/internal/user"
 	"github.com/project_radeon/api/pkg/database"
 	"github.com/project_radeon/api/pkg/middleware"
+	"github.com/project_radeon/api/pkg/storage"
 )
 
 func main() {
@@ -33,16 +40,35 @@ func main() {
 	defer db.Close()
 	log.Println("connected to database")
 
+	// Initialise S3 uploader for avatar storage.
+	awsRegion := strings.TrimSpace(os.Getenv("AWS_REGION"))
+	awsBucket := strings.TrimSpace(os.Getenv("AWS_S3_BUCKET"))
+
+	awsCfg, err := awsconfig.LoadDefaultConfig(context.Background(),
+		awsconfig.WithRegion(awsRegion),
+		awsconfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(
+			strings.TrimSpace(os.Getenv("AWS_ACCESS_KEY_ID")),
+			strings.TrimSpace(os.Getenv("AWS_SECRET_ACCESS_KEY")),
+			"",
+		)),
+	)
+	if err != nil {
+		log.Fatalf("failed to load AWS config: %v", err)
+	}
+	s3Client := s3.NewFromConfig(awsCfg)
+	uploader := storage.NewS3Uploader(s3Client, awsBucket, awsRegion)
+
 	// Initialise handlers
 	// discoveryHandler is created first — it is passed as a dependency to
 	// interestsHandler (vector rebuild) and userHandler (cache invalidation).
 	discoveryHandler := discovery.NewHandler(db)
 	authHandler := auth.NewHandler(db)
-	userHandler := user.NewHandler(db, discoveryHandler)
+	userHandler := user.NewHandler(db, discoveryHandler, uploader)
 	feedHandler := feed.NewHandler(db)
 	connectionHandler := connections.NewHandler(db)
 	eventsHandler := events.NewHandler(db)
 	messagesHandler := messages.NewHandler(db)
+	likesHandler := likes.NewHandler(db, discoveryHandler)
 	interestsHandler := interests.NewHandler(db, discoveryHandler)
 
 	r := chi.NewRouter()
@@ -80,6 +106,7 @@ func main() {
 		// Users
 		r.Get("/users/me", userHandler.GetMe)
 		r.Patch("/users/me", userHandler.UpdateMe)
+		r.Post("/users/me/avatar", userHandler.UploadAvatar)
 		r.Get("/users/discover", userHandler.Discover)
 		r.Get("/users/{id}", userHandler.GetUser)
 		r.Put("/users/me/interests", interestsHandler.SetUserInterests)
@@ -112,6 +139,8 @@ func main() {
 		// Discovery
 		r.Get("/users/suggestions", discoveryHandler.GetSuggestions)
 		r.Post("/users/{id}/dismiss", discoveryHandler.DismissUser)
+		r.Get("/users/me/likes", likesHandler.GetMyLikes)
+		r.Post("/users/{id}/like", likesHandler.LikeUser)
 	})
 
 	port := os.Getenv("PORT")
