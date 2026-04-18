@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -22,12 +23,13 @@ func NewHandler(db *pgxpool.Pool) *Handler {
 }
 
 type Post struct {
-	ID        uuid.UUID `json:"id"`
-	UserID    uuid.UUID `json:"user_id"`
-	Username  string    `json:"username"`
-	AvatarURL *string   `json:"avatar_url"`
-	Body      string    `json:"body"`
-	CreatedAt time.Time `json:"created_at"`
+	ID           uuid.UUID `json:"id"`
+	UserID       uuid.UUID `json:"user_id"`
+	Username     string    `json:"username"`
+	AvatarURL    *string   `json:"avatar_url"`
+	Body         string    `json:"body"`
+	CreatedAt    time.Time `json:"created_at"`
+	CommentCount int       `json:"comment_count"`
 }
 
 func parsePagination(r *http.Request) (limit, offset int) {
@@ -54,9 +56,12 @@ func (h *Handler) GetFeed(w http.ResponseWriter, r *http.Request) {
 			u.username,
 			u.avatar_url,
 			p.body,
-			p.created_at
+			p.created_at,
+			COALESCE(COUNT(c.id), 0) AS comment_count
 		FROM posts p
 		JOIN users u ON u.id = p.user_id
+		LEFT JOIN comments c ON c.post_id = p.id
+		GROUP BY p.id, u.username, u.avatar_url
 		ORDER BY p.created_at DESC
 		LIMIT $1 OFFSET $2`,
 		limit, offset,
@@ -70,7 +75,7 @@ func (h *Handler) GetFeed(w http.ResponseWriter, r *http.Request) {
 	var posts []Post
 	for rows.Next() {
 		var p Post
-		if err := rows.Scan(&p.ID, &p.UserID, &p.Username, &p.AvatarURL, &p.Body, &p.CreatedAt); err != nil {
+		if err := rows.Scan(&p.ID, &p.UserID, &p.Username, &p.AvatarURL, &p.Body, &p.CreatedAt, &p.CommentCount); err != nil {
 			response.Error(w, http.StatusInternalServerError, "could not read feed")
 			return
 		}
@@ -101,10 +106,13 @@ func (h *Handler) GetUserPosts(w http.ResponseWriter, r *http.Request) {
 			u.username,
 			u.avatar_url,
 			p.body,
-			p.created_at
+			p.created_at,
+			COALESCE(COUNT(c.id), 0) AS comment_count
 		FROM posts p
 		JOIN users u ON u.id = p.user_id
+		LEFT JOIN comments c ON c.post_id = p.id
 		WHERE p.user_id = $1
+		GROUP BY p.id, u.username, u.avatar_url
 		ORDER BY p.created_at DESC
 		LIMIT $2 OFFSET $3`,
 		targetID, limit, offset,
@@ -118,7 +126,7 @@ func (h *Handler) GetUserPosts(w http.ResponseWriter, r *http.Request) {
 	var posts []Post
 	for rows.Next() {
 		var p Post
-		if err := rows.Scan(&p.ID, &p.UserID, &p.Username, &p.AvatarURL, &p.Body, &p.CreatedAt); err != nil {
+		if err := rows.Scan(&p.ID, &p.UserID, &p.Username, &p.AvatarURL, &p.Body, &p.CreatedAt, &p.CommentCount); err != nil {
 			response.Error(w, http.StatusInternalServerError, "could not read posts")
 			return
 		}
@@ -139,7 +147,13 @@ func (h *Handler) CreatePost(w http.ResponseWriter, r *http.Request) {
 	var input struct {
 		Body string `json:"body"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&input); err != nil || input.Body == "" {
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		response.Error(w, http.StatusBadRequest, "body is required")
+		return
+	}
+
+	input.Body = strings.TrimSpace(input.Body)
+	if input.Body == "" {
 		response.Error(w, http.StatusBadRequest, "body is required")
 		return
 	}

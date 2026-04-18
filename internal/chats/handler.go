@@ -1,0 +1,432 @@
+package chats
+
+import (
+	"encoding/json"
+	"net/http"
+	"strings"
+	"time"
+
+	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/project_radeon/api/pkg/middleware"
+	"github.com/project_radeon/api/pkg/response"
+)
+
+type Handler struct {
+	db *pgxpool.Pool
+}
+
+type Chat struct {
+	ID            uuid.UUID  `json:"id"`
+	IsGroup       bool       `json:"is_group"`
+	Name          *string    `json:"name"`
+	Username      *string    `json:"username"`
+	CreatedAt     time.Time  `json:"created_at"`
+	LastMessage   *string    `json:"last_message"`
+	LastMessageAt *time.Time `json:"last_message_at"`
+}
+
+func NewHandler(db *pgxpool.Pool) *Handler {
+	return &Handler{db: db}
+}
+
+// GET /chats
+func (h *Handler) ListChats(w http.ResponseWriter, r *http.Request) {
+	userID := middleware.CurrentUserID(r)
+
+	rows, err := h.db.Query(r.Context(),
+		`SELECT
+			ch.id,
+			ch.is_group,
+			ch.name,
+			other.username,
+			ch.created_at,
+			m.body AS last_message,
+			m.sent_at AS last_message_at
+		FROM chats ch
+		JOIN chat_members cm
+			ON cm.chat_id = ch.id
+			AND cm.user_id = $1
+		LEFT JOIN LATERAL (
+			SELECT u.username
+			FROM chat_members cm2
+			JOIN users u ON u.id = cm2.user_id
+			WHERE cm2.chat_id = ch.id
+				AND cm2.user_id != $1
+			LIMIT 1
+		) other ON NOT ch.is_group
+		LEFT JOIN LATERAL (
+			SELECT
+				body,
+				sent_at
+			FROM messages
+			WHERE chat_id = ch.id
+			ORDER BY sent_at DESC
+			LIMIT 1
+		) m ON true
+		WHERE ch.status = 'active'
+		ORDER BY COALESCE(m.sent_at, ch.created_at) DESC`,
+		userID,
+	)
+	if err != nil {
+		response.Error(w, http.StatusInternalServerError, "could not fetch chats")
+		return
+	}
+	defer rows.Close()
+
+	var chats []Chat
+	for rows.Next() {
+		var ch Chat
+		if err := rows.Scan(&ch.ID, &ch.IsGroup, &ch.Name, &ch.Username, &ch.CreatedAt, &ch.LastMessage, &ch.LastMessageAt); err != nil {
+			response.Error(w, http.StatusInternalServerError, "could not read chats")
+			return
+		}
+		chats = append(chats, ch)
+	}
+	if err := rows.Err(); err != nil {
+		response.Error(w, http.StatusInternalServerError, "could not read chats")
+		return
+	}
+
+	response.Success(w, http.StatusOK, chats)
+}
+
+// GET /chats/requests
+func (h *Handler) ListChatRequests(w http.ResponseWriter, r *http.Request) {
+	userID := middleware.CurrentUserID(r)
+	rows, err := h.db.Query(r.Context(),
+		`SELECT
+			ch.id,
+			ch.is_group,
+			ch.name,
+			other.username,
+			ch.created_at,
+			m.body AS last_message,
+			m.sent_at AS last_message_at
+		FROM chats ch
+		JOIN chat_members cm
+			ON cm.chat_id = ch.id
+			AND cm.user_id = $1
+			AND cm.role = 'addressee'
+		LEFT JOIN LATERAL (
+			SELECT u.username
+			FROM chat_members cm2
+			JOIN users u ON u.id = cm2.user_id
+			WHERE cm2.chat_id = ch.id
+				AND cm2.user_id != $1
+			LIMIT 1
+		) other ON NOT ch.is_group
+		LEFT JOIN LATERAL (
+			SELECT
+				body,
+				sent_at
+			FROM messages
+			WHERE chat_id = ch.id
+			ORDER BY sent_at DESC
+			LIMIT 1
+		) m ON true
+		WHERE ch.status = 'request'
+		ORDER BY ch.created_at DESC`,
+		userID,
+	)
+	if err != nil {
+		response.Error(w, http.StatusInternalServerError, "could not fetch chat requests")
+		return
+	}
+	defer rows.Close()
+
+	var chats []Chat
+	for rows.Next() {
+		var ch Chat
+		if err := rows.Scan(&ch.ID, &ch.IsGroup, &ch.Name, &ch.Username, &ch.CreatedAt, &ch.LastMessage, &ch.LastMessageAt); err != nil {
+			response.Error(w, http.StatusInternalServerError, "could not read chat requests")
+			return
+		}
+		chats = append(chats, ch)
+	}
+	if err := rows.Err(); err != nil {
+		response.Error(w, http.StatusInternalServerError, "could not read chat requests")
+		return
+	}
+	response.Success(w, http.StatusOK, chats)
+}
+
+// POST /chats
+func (h *Handler) CreateChat(w http.ResponseWriter, r *http.Request) {
+	userID := middleware.CurrentUserID(r)
+
+	var input struct {
+		MemberIDs []uuid.UUID `json:"member_ids"`
+		Name      *string     `json:"name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		response.Error(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	isGroup := len(input.MemberIDs) > 1
+
+	if !isGroup && len(input.MemberIDs) == 1 {
+		var existingID uuid.UUID
+		err := h.db.QueryRow(r.Context(),
+			`SELECT ch.id
+			FROM chats ch
+			JOIN chat_members cm1
+				ON cm1.chat_id = ch.id
+				AND cm1.user_id = $1
+			JOIN chat_members cm2
+				ON cm2.chat_id = ch.id
+				AND cm2.user_id = $2
+			WHERE ch.is_group = false
+			LIMIT 1`,
+			userID, input.MemberIDs[0],
+		).Scan(&existingID)
+		if err == nil {
+			response.Success(w, http.StatusOK, map[string]any{"id": existingID, "is_group": false})
+			return
+		}
+	}
+
+	status := "active"
+
+	var chatID uuid.UUID
+	if err := h.db.QueryRow(r.Context(),
+		`INSERT INTO chats (
+			is_group,
+			name,
+			status
+		)
+		VALUES ($1, $2, $3)
+		RETURNING id`,
+		isGroup, input.Name, status,
+	).Scan(&chatID); err != nil {
+		response.Error(w, http.StatusInternalServerError, "could not create chat")
+		return
+	}
+
+	if _, err := h.db.Exec(r.Context(),
+		`INSERT INTO chat_members (
+			chat_id,
+			user_id,
+			role
+		)
+		VALUES ($1, $2, 'requester')`,
+		chatID, userID,
+	); err != nil {
+		response.Error(w, http.StatusInternalServerError, "could not add members")
+		return
+	}
+	for _, memberID := range input.MemberIDs {
+		if _, err := h.db.Exec(r.Context(),
+			`INSERT INTO chat_members (
+				chat_id,
+				user_id,
+				role
+			)
+			VALUES ($1, $2, 'addressee')`,
+			chatID, memberID,
+		); err != nil {
+			response.Error(w, http.StatusInternalServerError, "could not add members")
+			return
+		}
+	}
+
+	response.Success(w, http.StatusCreated, map[string]any{"id": chatID, "is_group": isGroup, "status": status})
+}
+
+// PATCH /chats/{id}/status
+func (h *Handler) UpdateChatStatus(w http.ResponseWriter, r *http.Request) {
+	userID := middleware.CurrentUserID(r)
+	chatID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		response.Error(w, http.StatusBadRequest, "invalid chat id")
+		return
+	}
+
+	var input struct {
+		Status string `json:"status"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		response.Error(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if input.Status != "active" && input.Status != "declined" {
+		response.Error(w, http.StatusBadRequest, "status must be 'active' or 'declined'")
+		return
+	}
+
+	var isMember bool
+	if err := h.db.QueryRow(r.Context(),
+		`SELECT EXISTS(
+			SELECT 1
+			FROM chat_members
+			WHERE chat_id = $1
+				AND user_id = $2
+				AND role = 'addressee'
+		)`,
+		chatID, userID,
+	).Scan(&isMember); err != nil {
+		response.Error(w, http.StatusInternalServerError, "could not check chat membership")
+		return
+	}
+	if !isMember {
+		response.Error(w, http.StatusForbidden, "not authorised")
+		return
+	}
+
+	if input.Status == "declined" {
+		if _, err := h.db.Exec(r.Context(),
+			`DELETE FROM chats
+			WHERE id = $1`,
+			chatID,
+		); err != nil {
+			response.Error(w, http.StatusInternalServerError, "could not update chat")
+			return
+		}
+	} else {
+		if _, err := h.db.Exec(r.Context(),
+			`UPDATE chats
+			SET status = 'active'
+			WHERE id = $1`,
+			chatID,
+		); err != nil {
+			response.Error(w, http.StatusInternalServerError, "could not update chat")
+			return
+		}
+	}
+
+	response.Success(w, http.StatusOK, map[string]string{"status": input.Status})
+}
+
+// GET /chats/{id}/messages
+func (h *Handler) GetMessages(w http.ResponseWriter, r *http.Request) {
+	userID := middleware.CurrentUserID(r)
+	chatID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		response.Error(w, http.StatusBadRequest, "invalid chat id")
+		return
+	}
+
+	var isMember bool
+	if err := h.db.QueryRow(r.Context(),
+		`SELECT EXISTS(
+			SELECT 1
+			FROM chat_members
+			WHERE chat_id = $1
+				AND user_id = $2
+		)`,
+		chatID, userID,
+	).Scan(&isMember); err != nil {
+		response.Error(w, http.StatusInternalServerError, "could not check chat membership")
+		return
+	}
+	if !isMember {
+		response.Error(w, http.StatusForbidden, "not a member of this chat")
+		return
+	}
+
+	rows, err := h.db.Query(r.Context(),
+		`SELECT
+			m.id,
+			m.sender_id,
+			u.username,
+			u.avatar_url,
+			m.body,
+			m.sent_at
+		FROM messages m
+		JOIN users u ON u.id = m.sender_id
+		WHERE m.chat_id = $1
+		ORDER BY m.sent_at ASC`,
+		chatID,
+	)
+	if err != nil {
+		response.Error(w, http.StatusInternalServerError, "could not fetch messages")
+		return
+	}
+	defer rows.Close()
+
+	type Message struct {
+		ID        uuid.UUID `json:"id"`
+		SenderID  uuid.UUID `json:"sender_id"`
+		Username  string    `json:"username"`
+		AvatarURL *string   `json:"avatar_url"`
+		Body      string    `json:"body"`
+		SentAt    time.Time `json:"sent_at"`
+	}
+
+	var msgs []Message
+	for rows.Next() {
+		var m Message
+		if err := rows.Scan(&m.ID, &m.SenderID, &m.Username, &m.AvatarURL, &m.Body, &m.SentAt); err != nil {
+			response.Error(w, http.StatusInternalServerError, "could not read messages")
+			return
+		}
+		msgs = append(msgs, m)
+	}
+	if err := rows.Err(); err != nil {
+		response.Error(w, http.StatusInternalServerError, "could not read messages")
+		return
+	}
+
+	response.Success(w, http.StatusOK, msgs)
+}
+
+// POST /chats/{id}/messages
+func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
+	userID := middleware.CurrentUserID(r)
+	chatID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		response.Error(w, http.StatusBadRequest, "invalid chat id")
+		return
+	}
+
+	var isMember bool
+	if err := h.db.QueryRow(r.Context(),
+		`SELECT EXISTS(
+			SELECT 1
+			FROM chat_members
+			WHERE chat_id = $1
+				AND user_id = $2
+		)`,
+		chatID, userID,
+	).Scan(&isMember); err != nil {
+		response.Error(w, http.StatusInternalServerError, "could not check chat membership")
+		return
+	}
+	if !isMember {
+		response.Error(w, http.StatusForbidden, "not a member of this chat")
+		return
+	}
+
+	var input struct {
+		Body string `json:"body"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		response.Error(w, http.StatusBadRequest, "body is required")
+		return
+	}
+
+	input.Body = strings.TrimSpace(input.Body)
+	if input.Body == "" {
+		response.Error(w, http.StatusBadRequest, "body is required")
+		return
+	}
+
+	var msgID uuid.UUID
+	if err := h.db.QueryRow(r.Context(),
+		`INSERT INTO messages (
+			chat_id,
+			sender_id,
+			body
+		)
+		VALUES ($1, $2, $3)
+		RETURNING id`,
+		chatID, userID, input.Body,
+	).Scan(&msgID); err != nil {
+		response.Error(w, http.StatusInternalServerError, "could not send message")
+		return
+	}
+
+	response.Success(w, http.StatusCreated, map[string]any{"id": msgID})
+}

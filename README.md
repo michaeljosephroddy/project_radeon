@@ -29,8 +29,8 @@ Go REST API for a sober social network and people discovery app.
 - `user` — profile, avatar, discovery
 - `feed` — posts, comments, reactions
 - `connections` — friend requests
-- `events` — create, RSVP, attendees
-- `messages` — conversations, message requests
+- `meetups` — create, RSVP, attendees
+- `chats` — messages, chat requests
 - `interests` — seeded list, user preferences
 - `discovery` — suggestions, likes, dismissals
 

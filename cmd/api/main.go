@@ -16,10 +16,10 @@ import (
 	"github.com/go-chi/cors"
 	"github.com/joho/godotenv"
 	"github.com/project_radeon/api/internal/auth"
-	"github.com/project_radeon/api/internal/events"
 	"github.com/project_radeon/api/internal/feed"
 	"github.com/project_radeon/api/internal/follows"
-	"github.com/project_radeon/api/internal/messages"
+	"github.com/project_radeon/api/internal/meetups"
+	"github.com/project_radeon/api/internal/chats"
 	"github.com/project_radeon/api/internal/user"
 	"github.com/project_radeon/api/pkg/database"
 	"github.com/project_radeon/api/pkg/middleware"
@@ -56,8 +56,8 @@ func main() {
 	authHandler := auth.NewHandler(db)
 	userHandler := user.NewHandler(db, uploader)
 	feedHandler := feed.NewHandler(db)
-	eventsHandler := events.NewHandler(db)
-	messagesHandler := messages.NewHandler(db)
+	meetupsHandler := meetups.NewHandler(db)
+	chatsHandler := chats.NewHandler(db)
 	followsHandler := follows.NewHandler(db)
 
 	r := chi.NewRouter()
@@ -103,20 +103,20 @@ func main() {
 		r.Post("/users/{id}/follow", followsHandler.Follow)
 		r.Delete("/users/{id}/follow", followsHandler.Unfollow)
 
-		// Events
-		r.Get("/events", eventsHandler.ListEvents)
-		r.Post("/events", eventsHandler.CreateEvent)
-		r.Get("/events/{id}", eventsHandler.GetEvent)
-		r.Post("/events/{id}/rsvp", eventsHandler.RSVP)
-		r.Get("/events/{id}/attendees", eventsHandler.GetAttendees)
+		// Meetups
+		r.Get("/meetups", meetupsHandler.ListMeetups)
+		r.Post("/meetups", meetupsHandler.CreateMeetup)
+		r.Get("/meetups/{id}", meetupsHandler.GetMeetup)
+		r.Post("/meetups/{id}/rsvp", meetupsHandler.RSVP)
+		r.Get("/meetups/{id}/attendees", meetupsHandler.GetAttendees)
 
-		// Messages
-		r.Get("/conversations", messagesHandler.ListConversations)
-		r.Post("/conversations", messagesHandler.CreateConversation)
-		r.Get("/conversations/{id}/messages", messagesHandler.GetMessages)
-		r.Post("/conversations/{id}/messages", messagesHandler.SendMessage)
-		r.Get("/conversations/requests", messagesHandler.ListMessageRequests)
-		r.Patch("/conversations/{id}/status", messagesHandler.UpdateConversationStatus)
+		// Chats
+		r.Get("/chats", chatsHandler.ListChats)
+		r.Post("/chats", chatsHandler.CreateChat)
+		r.Get("/chats/{id}/messages", chatsHandler.GetMessages)
+		r.Post("/chats/{id}/messages", chatsHandler.SendMessage)
+		r.Get("/chats/requests", chatsHandler.ListChatRequests)
+		r.Patch("/chats/{id}/status", chatsHandler.UpdateChatStatus)
 	})
 
 	port := os.Getenv("PORT")

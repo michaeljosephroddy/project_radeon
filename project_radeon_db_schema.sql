@@ -63,8 +63,8 @@ CREATE TABLE comments (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- EVENTS
-CREATE TABLE events (
+-- MEETUPS
+CREATE TABLE meetups (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     organiser_id UUID REFERENCES users(id) ON DELETE CASCADE,
     title TEXT NOT NULL,
@@ -74,34 +74,34 @@ CREATE TABLE events (
     capacity INT
 );
 
--- EVENT_ATTENDEES
-CREATE TABLE event_attendees (
-    event_id UUID REFERENCES events(id) ON DELETE CASCADE,
+-- MEETUP_ATTENDEES
+CREATE TABLE meetup_attendees (
+    meetup_id UUID REFERENCES meetups(id) ON DELETE CASCADE,
     user_id UUID REFERENCES users(id) ON DELETE CASCADE,
     rsvp_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (event_id, user_id)
+    PRIMARY KEY (meetup_id, user_id)
 );
 
--- CONVERSATIONS (chat threads)
-CREATE TABLE conversations (
+-- CHATS
+CREATE TABLE chats (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     is_group BOOLEAN DEFAULT FALSE,
     name TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- CONVERSATION_MEMBERS
-CREATE TABLE conversation_members (
-    conversation_id UUID REFERENCES conversations(id) ON DELETE CASCADE,
+-- CHAT_MEMBERS
+CREATE TABLE chat_members (
+    chat_id UUID REFERENCES chats(id) ON DELETE CASCADE,
     user_id UUID REFERENCES users(id) ON DELETE CASCADE,
     joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (conversation_id, user_id)
+    PRIMARY KEY (chat_id, user_id)
 );
 
 -- MESSAGES
 CREATE TABLE messages (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    conversation_id UUID REFERENCES conversations(id) ON DELETE CASCADE,
+    chat_id UUID REFERENCES chats(id) ON DELETE CASCADE,
     sender_id UUID REFERENCES users(id) ON DELETE CASCADE,
     body TEXT,
     sent_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -111,12 +111,14 @@ CREATE TABLE messages (
 
 CREATE INDEX idx_posts_user_id ON posts(user_id);
 CREATE INDEX idx_posts_created_at ON posts(created_at);
+CREATE INDEX idx_comments_post_id_created_at ON comments(post_id, created_at);
+CREATE INDEX idx_comments_user_id ON comments(user_id);
 
 CREATE INDEX idx_connections_requester ON connections(requester_id);
 CREATE INDEX idx_connections_addressee ON connections(addressee_id);
 
-CREATE INDEX idx_messages_conversation_id ON messages(conversation_id);
+CREATE INDEX idx_messages_chat_id ON messages(chat_id);
 CREATE INDEX idx_messages_sent_at ON messages(sent_at);
 
-CREATE INDEX idx_events_city ON events(city);
-CREATE INDEX idx_events_starts_at ON events(starts_at);
+CREATE INDEX idx_meetups_city ON meetups(city);
+CREATE INDEX idx_meetups_starts_at ON meetups(starts_at);
