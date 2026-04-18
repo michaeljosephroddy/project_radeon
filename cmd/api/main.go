@@ -101,6 +101,7 @@ func main() {
 		r.Get("/users/me", userHandler.GetMe)
 		r.Patch("/users/me", userHandler.UpdateMe)
 		r.Post("/users/me/avatar", userHandler.UploadAvatar)
+		r.Get("/users/me/meetups", meetupsHandler.ListMyMeetups)
 		r.Get("/users/me/following", followsHandler.ListFollowing)
 		r.Get("/users/me/followers", followsHandler.ListFollowers)
 		r.Get("/users/discover", userHandler.Discover)

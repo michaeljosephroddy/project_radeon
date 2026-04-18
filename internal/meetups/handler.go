@@ -3,6 +3,7 @@ package meetups
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -31,6 +32,14 @@ type Meetup struct {
 	Capacity    *int      `json:"capacity"`
 	AttendeeCt  int       `json:"attendee_count"`
 	IsAttending bool      `json:"is_attending"`
+}
+
+type meetupInput struct {
+	Title       string  `json:"title"`
+	Description *string `json:"description"`
+	City        string  `json:"city"`
+	StartsAt    string  `json:"starts_at"`
+	Capacity    *int    `json:"capacity"`
 }
 
 // ListMeetups returns upcoming meetups, optionally filtered by city, with attendee state for the caller.
@@ -83,6 +92,51 @@ func (h *Handler) ListMeetups(w http.ResponseWriter, r *http.Request) {
 	response.Success(w, http.StatusOK, meetups)
 }
 
+// ListMyMeetups returns the meetups organised by the authenticated user.
+func (h *Handler) ListMyMeetups(w http.ResponseWriter, r *http.Request) {
+	userID := middleware.CurrentUserID(r)
+
+	rows, err := h.db.Query(r.Context(),
+		`SELECT
+			m.id,
+			m.organiser_id,
+			m.title,
+			m.description,
+			m.city,
+			m.starts_at,
+			m.capacity,
+			COUNT(ma.user_id) AS attendee_count,
+			COALESCE(BOOL_OR(ma.user_id = $1), false) AS is_attending
+		FROM meetups m
+		LEFT JOIN meetup_attendees ma ON ma.meetup_id = m.id
+		WHERE m.organiser_id = $1
+		GROUP BY m.id
+		ORDER BY m.starts_at ASC`,
+		userID,
+	)
+	if err != nil {
+		response.Error(w, http.StatusInternalServerError, "could not fetch your meetups")
+		return
+	}
+	defer rows.Close()
+
+	var meetups []Meetup
+	for rows.Next() {
+		var meetup Meetup
+		if err := rows.Scan(&meetup.ID, &meetup.OrganizerID, &meetup.Title, &meetup.Description, &meetup.City, &meetup.StartsAt, &meetup.Capacity, &meetup.AttendeeCt, &meetup.IsAttending); err != nil {
+			response.Error(w, http.StatusInternalServerError, "could not read your meetups")
+			return
+		}
+		meetups = append(meetups, meetup)
+	}
+	if err := rows.Err(); err != nil {
+		response.Error(w, http.StatusInternalServerError, "could not read your meetups")
+		return
+	}
+
+	response.Success(w, http.StatusOK, meetups)
+}
+
 // GetMeetup returns the full details for a single meetup and the caller's RSVP state.
 func (h *Handler) GetMeetup(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.CurrentUserID(r)
@@ -122,17 +176,17 @@ func (h *Handler) GetMeetup(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) CreateMeetup(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.CurrentUserID(r)
 
-	var input struct {
-		Title       string  `json:"title"`
-		Description *string `json:"description"`
-		City        string  `json:"city"`
-		StartsAt    string  `json:"starts_at"`
-		Capacity    *int    `json:"capacity"`
-	}
-
+	var input meetupInput
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 		response.Error(w, http.StatusBadRequest, "invalid request body")
 		return
+	}
+
+	input.Title = strings.TrimSpace(input.Title)
+	input.City = strings.TrimSpace(input.City)
+	if input.Description != nil {
+		description := strings.TrimSpace(*input.Description)
+		input.Description = &description
 	}
 
 	errs := map[string]string{}
@@ -155,11 +209,22 @@ func (h *Handler) CreateMeetup(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, http.StatusBadRequest, "starts_at must be ISO 8601 (e.g. 2025-06-01T19:00:00Z)")
 		return
 	}
+	if input.Capacity != nil && *input.Capacity < 1 {
+		response.ValidationError(w, map[string]string{"capacity": "must be greater than 0"})
+		return
+	}
 
-	// Meetups store the parsed timestamp directly so the database becomes the
-	// source of truth for timezone-aware scheduling.
-	var meetupID uuid.UUID
-	if err := h.db.QueryRow(r.Context(),
+	// Creation and the organiser RSVP happen together so newly created meetups
+	// are immediately visible as events the organiser is attending.
+	tx, err := h.db.Begin(r.Context())
+	if err != nil {
+		response.Error(w, http.StatusInternalServerError, "could not create meetup")
+		return
+	}
+	defer tx.Rollback(r.Context())
+
+	var meetup Meetup
+	if err := tx.QueryRow(r.Context(),
 		`INSERT INTO meetups (
 			organiser_id,
 			title,
@@ -169,14 +234,41 @@ func (h *Handler) CreateMeetup(w http.ResponseWriter, r *http.Request) {
 			capacity
 		)
 		VALUES ($1, $2, $3, $4, $5, $6)
-		RETURNING id`,
+		RETURNING
+			id,
+			organiser_id,
+			title,
+			description,
+			city,
+			starts_at,
+			capacity`,
 		userID, input.Title, input.Description, input.City, startsAt, input.Capacity,
-	).Scan(&meetupID); err != nil {
+	).Scan(&meetup.ID, &meetup.OrganizerID, &meetup.Title, &meetup.Description, &meetup.City, &meetup.StartsAt, &meetup.Capacity); err != nil {
 		response.Error(w, http.StatusInternalServerError, "could not create meetup")
 		return
 	}
 
-	response.Success(w, http.StatusCreated, map[string]any{"id": meetupID})
+	if _, err := tx.Exec(r.Context(),
+		`INSERT INTO meetup_attendees (
+			meetup_id,
+			user_id
+		)
+		VALUES ($1, $2)`,
+		meetup.ID, userID,
+	); err != nil {
+		response.Error(w, http.StatusInternalServerError, "could not create meetup")
+		return
+	}
+
+	if err := tx.Commit(r.Context()); err != nil {
+		response.Error(w, http.StatusInternalServerError, "could not create meetup")
+		return
+	}
+
+	meetup.AttendeeCt = 1
+	meetup.IsAttending = true
+
+	response.Success(w, http.StatusCreated, meetup)
 }
 
 // GetAttendees returns the users who have RSVP'd to a meetup.
