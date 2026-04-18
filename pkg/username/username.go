@@ -33,10 +33,12 @@ var (
 	}
 )
 
+// Normalize trims and lowercases a username before validation or storage.
 func Normalize(value string) string {
 	return strings.ToLower(strings.TrimSpace(value))
 }
 
+// ValidationError returns the first username rule violation or an empty string when valid.
 func ValidationError(value string) string {
 	// The first matching rule wins so callers get one actionable validation
 	// message instead of a noisy list of overlapping username errors.
@@ -54,6 +56,7 @@ func ValidationError(value string) string {
 	}
 }
 
+// IsReserved reports whether a username is blocked for product or routing reasons.
 func IsReserved(value string) bool {
 	_, ok := reserved[value]
 	return ok

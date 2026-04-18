@@ -16,6 +16,7 @@ type Handler struct {
 	db *pgxpool.Pool
 }
 
+// NewHandler builds a meetups handler backed by the shared database pool.
 func NewHandler(db *pgxpool.Pool) *Handler {
 	return &Handler{db: db}
 }
@@ -32,7 +33,7 @@ type Meetup struct {
 	IsAttending bool      `json:"is_attending"`
 }
 
-// GET /meetups?city=Dublin
+// ListMeetups returns upcoming meetups, optionally filtered by city, with attendee state for the caller.
 func (h *Handler) ListMeetups(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.CurrentUserID(r)
 	city := r.URL.Query().Get("city")
@@ -82,7 +83,7 @@ func (h *Handler) ListMeetups(w http.ResponseWriter, r *http.Request) {
 	response.Success(w, http.StatusOK, meetups)
 }
 
-// GET /meetups/{id}
+// GetMeetup returns the full details for a single meetup and the caller's RSVP state.
 func (h *Handler) GetMeetup(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.CurrentUserID(r)
 	meetupID, err := uuid.Parse(chi.URLParam(r, "id"))
@@ -117,7 +118,7 @@ func (h *Handler) GetMeetup(w http.ResponseWriter, r *http.Request) {
 	response.Success(w, http.StatusOK, meetup)
 }
 
-// POST /meetups
+// CreateMeetup validates meetup input and inserts a new meetup owned by the caller.
 func (h *Handler) CreateMeetup(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.CurrentUserID(r)
 
@@ -178,7 +179,7 @@ func (h *Handler) CreateMeetup(w http.ResponseWriter, r *http.Request) {
 	response.Success(w, http.StatusCreated, map[string]any{"id": meetupID})
 }
 
-// GET /meetups/{id}/attendees
+// GetAttendees returns the users who have RSVP'd to a meetup.
 func (h *Handler) GetAttendees(w http.ResponseWriter, r *http.Request) {
 	meetupID, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
@@ -230,7 +231,7 @@ func (h *Handler) GetAttendees(w http.ResponseWriter, r *http.Request) {
 	response.Success(w, http.StatusOK, attendees)
 }
 
-// POST /meetups/{id}/rsvp
+// RSVP toggles the caller's attendance for a meetup while enforcing capacity limits.
 func (h *Handler) RSVP(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.CurrentUserID(r)
 	meetupID, err := uuid.Parse(chi.URLParam(r, "id"))

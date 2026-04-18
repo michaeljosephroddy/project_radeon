@@ -29,6 +29,7 @@ type Handler struct {
 	uploader Uploader
 }
 
+// NewHandler builds a user handler with database access and avatar upload support.
 func NewHandler(db *pgxpool.Pool, uploader Uploader) *Handler {
 	return &Handler{db: db, uploader: uploader}
 }
@@ -43,7 +44,7 @@ type User struct {
 	CreatedAt  time.Time  `json:"created_at"`
 }
 
-// GET /users/me
+// GetMe returns the authenticated user's profile record.
 func (h *Handler) GetMe(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.CurrentUserID(r)
 	user, err := h.fetchUser(r.Context(), userID)
@@ -54,7 +55,7 @@ func (h *Handler) GetMe(w http.ResponseWriter, r *http.Request) {
 	response.Success(w, http.StatusOK, user)
 }
 
-// GET /users/{id}
+// GetUser returns a public profile record for the requested user ID.
 func (h *Handler) GetUser(w http.ResponseWriter, r *http.Request) {
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
@@ -69,7 +70,7 @@ func (h *Handler) GetUser(w http.ResponseWriter, r *http.Request) {
 	response.Success(w, http.StatusOK, user)
 }
 
-// PATCH /users/me
+// UpdateMe applies profile edits for the authenticated user and returns the updated record.
 func (h *Handler) UpdateMe(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.CurrentUserID(r)
 
@@ -127,7 +128,7 @@ func (h *Handler) UpdateMe(w http.ResponseWriter, r *http.Request) {
 	response.Success(w, http.StatusOK, user)
 }
 
-// POST /users/me/avatar
+// UploadAvatar validates, resizes, uploads, and saves the caller's avatar image.
 func (h *Handler) UploadAvatar(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.CurrentUserID(r)
 
@@ -186,7 +187,7 @@ func (h *Handler) UploadAvatar(w http.ResponseWriter, r *http.Request) {
 	response.Success(w, http.StatusOK, map[string]string{"avatar_url": avatarURL})
 }
 
-// GET /users/discover?city=Dublin
+// Discover returns other users matching the optional city and username search filters.
 func (h *Handler) Discover(w http.ResponseWriter, r *http.Request) {
 	currentUserID := middleware.CurrentUserID(r)
 	city := r.URL.Query().Get("city")
@@ -243,6 +244,7 @@ func (h *Handler) Discover(w http.ResponseWriter, r *http.Request) {
 	response.Success(w, http.StatusOK, users)
 }
 
+// fetchUser loads a single user profile row by ID for handler reuse.
 func (h *Handler) fetchUser(ctx context.Context, id uuid.UUID) (*User, error) {
 	var u User
 	// Centralising the profile query keeps /users/me and /users/{id} in sync and

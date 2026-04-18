@@ -28,11 +28,12 @@ type Chat struct {
 	LastMessageAt *time.Time `json:"last_message_at"`
 }
 
+// NewHandler builds a chats handler backed by the shared database pool.
 func NewHandler(db *pgxpool.Pool) *Handler {
 	return &Handler{db: db}
 }
 
-// GET /chats
+// ListChats returns the authenticated user's active chats with preview metadata.
 func (h *Handler) ListChats(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.CurrentUserID(r)
 
@@ -98,7 +99,7 @@ func (h *Handler) ListChats(w http.ResponseWriter, r *http.Request) {
 	response.Success(w, http.StatusOK, chats)
 }
 
-// GET /chats/requests
+// ListChatRequests returns pending direct-message requests addressed to the current user.
 func (h *Handler) ListChatRequests(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.CurrentUserID(r)
 	// Requests are limited to chats where the caller is an addressee, which
@@ -163,7 +164,7 @@ func (h *Handler) ListChatRequests(w http.ResponseWriter, r *http.Request) {
 	response.Success(w, http.StatusOK, chats)
 }
 
-// POST /chats
+// CreateChat creates a new direct or group chat unless an equivalent direct chat already exists.
 func (h *Handler) CreateChat(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.CurrentUserID(r)
 
@@ -248,7 +249,7 @@ func (h *Handler) CreateChat(w http.ResponseWriter, r *http.Request) {
 	response.Success(w, http.StatusCreated, map[string]any{"id": chatID, "is_group": isGroup, "status": status})
 }
 
-// PATCH /chats/{id}/status
+// UpdateChatStatus lets an addressee accept or decline a pending chat request.
 func (h *Handler) UpdateChatStatus(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.CurrentUserID(r)
 	chatID, err := uuid.Parse(chi.URLParam(r, "id"))
@@ -314,7 +315,7 @@ func (h *Handler) UpdateChatStatus(w http.ResponseWriter, r *http.Request) {
 	response.Success(w, http.StatusOK, map[string]string{"status": input.Status})
 }
 
-// GET /chats/{id}/messages
+// GetMessages returns the message history for a chat if the caller is a member.
 func (h *Handler) GetMessages(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.CurrentUserID(r)
 	chatID, err := uuid.Parse(chi.URLParam(r, "id"))
@@ -389,7 +390,7 @@ func (h *Handler) GetMessages(w http.ResponseWriter, r *http.Request) {
 	response.Success(w, http.StatusOK, msgs)
 }
 
-// POST /chats/{id}/messages
+// SendMessage appends a new text message to a chat for an authorised member.
 func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.CurrentUserID(r)
 	chatID, err := uuid.Parse(chi.URLParam(r, "id"))

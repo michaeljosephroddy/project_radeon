@@ -26,6 +26,8 @@ import (
 	"github.com/project_radeon/api/pkg/storage"
 )
 
+// main loads infrastructure dependencies, wires the HTTP handlers, and starts
+// the API server.
 func main() {
 	godotenv.Load()
 

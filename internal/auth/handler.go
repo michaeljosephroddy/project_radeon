@@ -16,11 +16,12 @@ type Handler struct {
 	db *pgxpool.Pool
 }
 
+// NewHandler builds an auth handler backed by the shared database pool.
 func NewHandler(db *pgxpool.Pool) *Handler {
 	return &Handler{db: db}
 }
 
-// POST /auth/register
+// Register validates signup input, creates the user record, and returns a JWT.
 func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 	var input struct {
 		Username   string  `json:"username"`
@@ -128,7 +129,7 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// POST /auth/login
+// Login verifies email and password credentials and returns a fresh JWT.
 func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	var input struct {
 		Email    string `json:"email"`

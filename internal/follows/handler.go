@@ -15,6 +15,7 @@ type Handler struct {
 	db *pgxpool.Pool
 }
 
+// NewHandler builds a follows handler backed by the shared database pool.
 func NewHandler(db *pgxpool.Pool) *Handler {
 	return &Handler{db: db}
 }
@@ -27,7 +28,7 @@ type followUser struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
-// POST /users/{id}/follow
+// Follow creates or preserves the current user's follow relationship to another user.
 func (h *Handler) Follow(w http.ResponseWriter, r *http.Request) {
 	followerID := middleware.CurrentUserID(r)
 	followingID, err := uuid.Parse(chi.URLParam(r, "id"))
@@ -60,7 +61,7 @@ func (h *Handler) Follow(w http.ResponseWriter, r *http.Request) {
 	response.Success(w, http.StatusCreated, map[string]bool{"following": true})
 }
 
-// DELETE /users/{id}/follow
+// Unfollow removes the current user's follow relationship to another user.
 func (h *Handler) Unfollow(w http.ResponseWriter, r *http.Request) {
 	followerID := middleware.CurrentUserID(r)
 	followingID, err := uuid.Parse(chi.URLParam(r, "id"))
@@ -83,7 +84,7 @@ func (h *Handler) Unfollow(w http.ResponseWriter, r *http.Request) {
 	response.Success(w, http.StatusOK, map[string]bool{"following": false})
 }
 
-// GET /users/me/following
+// ListFollowing returns the users the current user is following.
 func (h *Handler) ListFollowing(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.CurrentUserID(r)
 
@@ -125,7 +126,7 @@ func (h *Handler) ListFollowing(w http.ResponseWriter, r *http.Request) {
 	response.Success(w, http.StatusOK, users)
 }
 
-// GET /users/me/followers
+// ListFollowers returns the users who currently follow the authenticated user.
 func (h *Handler) ListFollowers(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.CurrentUserID(r)
 

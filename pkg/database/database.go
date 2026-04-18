@@ -8,6 +8,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// Connect opens the PostgreSQL connection pool and verifies it with an initial ping.
 func Connect() (*pgxpool.Pool, error) {
 	url := os.Getenv("DATABASE_URL")
 	if url == "" {

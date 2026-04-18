@@ -15,6 +15,7 @@ type Claims struct {
 	jwt.RegisteredClaims
 }
 
+// GenerateToken creates a signed JWT for the supplied user ID.
 func GenerateToken(userID uuid.UUID) (string, error) {
 	secret := os.Getenv("JWT_SECRET")
 	hours, _ := strconv.Atoi(os.Getenv("JWT_EXPIRY_HOURS"))
@@ -36,6 +37,7 @@ func GenerateToken(userID uuid.UUID) (string, error) {
 	return token.SignedString([]byte(secret))
 }
 
+// ParseToken validates a JWT string and returns the decoded claims.
 func ParseToken(tokenString string) (*Claims, error) {
 	secret := os.Getenv("JWT_SECRET")
 

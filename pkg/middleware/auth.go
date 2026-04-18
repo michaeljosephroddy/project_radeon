@@ -14,7 +14,7 @@ type contextKey string
 
 const UserIDKey contextKey = "userID"
 
-// Authenticate validates the JWT and injects the user ID into the request context.
+// Authenticate validates the bearer token and injects the authenticated user ID into the request context.
 func Authenticate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		authHeader := r.Header.Get("Authorization")
@@ -35,7 +35,7 @@ func Authenticate(next http.Handler) http.Handler {
 	})
 }
 
-// CurrentUserID extracts the authenticated user's ID from context.
+// CurrentUserID extracts the authenticated user's ID from request context.
 func CurrentUserID(r *http.Request) uuid.UUID {
 	return r.Context().Value(UserIDKey).(uuid.UUID)
 }

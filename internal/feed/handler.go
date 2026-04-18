@@ -18,6 +18,7 @@ type Handler struct {
 	db *pgxpool.Pool
 }
 
+// NewHandler builds a feed handler backed by the shared database pool.
 func NewHandler(db *pgxpool.Pool) *Handler {
 	return &Handler{db: db}
 }
@@ -33,6 +34,7 @@ type Post struct {
 	LikeCount    int       `json:"like_count"`
 }
 
+// parsePagination extracts page and limit query parameters with sane defaults and bounds.
 func parsePagination(r *http.Request) (limit, offset int) {
 	// Pagination is intentionally forgiving: malformed values fall back to a
 	// stable default instead of producing validation errors on list endpoints.
@@ -48,7 +50,7 @@ func parsePagination(r *http.Request) (limit, offset int) {
 	return limit, (page - 1) * limit
 }
 
-// GET /feed?page=1&limit=20
+// GetFeed returns the global post feed with author metadata and aggregate counts.
 func (h *Handler) GetFeed(w http.ResponseWriter, r *http.Request) {
 	limit, offset := parsePagination(r)
 
@@ -102,7 +104,7 @@ func (h *Handler) GetFeed(w http.ResponseWriter, r *http.Request) {
 	response.Success(w, http.StatusOK, posts)
 }
 
-// GET /users/{id}/posts
+// GetUserPosts returns a single user's posts with the same shape as the main feed.
 func (h *Handler) GetUserPosts(w http.ResponseWriter, r *http.Request) {
 	targetID, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
@@ -163,7 +165,7 @@ func (h *Handler) GetUserPosts(w http.ResponseWriter, r *http.Request) {
 	response.Success(w, http.StatusOK, posts)
 }
 
-// POST /posts
+// CreatePost validates and inserts a new post for the authenticated user.
 func (h *Handler) CreatePost(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.CurrentUserID(r)
 
@@ -199,7 +201,7 @@ func (h *Handler) CreatePost(w http.ResponseWriter, r *http.Request) {
 	response.Success(w, http.StatusCreated, map[string]any{"id": postID})
 }
 
-// DELETE /posts/{id}
+// DeletePost removes a post only when it belongs to the authenticated user.
 func (h *Handler) DeletePost(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.CurrentUserID(r)
 	postID, err := uuid.Parse(chi.URLParam(r, "id"))
@@ -219,7 +221,7 @@ func (h *Handler) DeletePost(w http.ResponseWriter, r *http.Request) {
 	response.Success(w, http.StatusOK, map[string]bool{"deleted": true})
 }
 
-// GET /posts/{id}/reactions
+// GetReactions returns all recorded reactions for a post with reacting user details.
 func (h *Handler) GetReactions(w http.ResponseWriter, r *http.Request) {
 	postID, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
@@ -271,7 +273,7 @@ func (h *Handler) GetReactions(w http.ResponseWriter, r *http.Request) {
 	response.Success(w, http.StatusOK, reactions)
 }
 
-// POST /posts/{id}/react
+// ReactToPost toggles a specific reaction type for the authenticated user on a post.
 func (h *Handler) ReactToPost(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.CurrentUserID(r)
 	postID, err := uuid.Parse(chi.URLParam(r, "id"))
@@ -337,7 +339,7 @@ func (h *Handler) ReactToPost(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// POST /posts/{id}/comments
+// AddComment validates and inserts a new comment on the requested post.
 func (h *Handler) AddComment(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.CurrentUserID(r)
 	postID, err := uuid.Parse(chi.URLParam(r, "id"))
@@ -374,7 +376,7 @@ func (h *Handler) AddComment(w http.ResponseWriter, r *http.Request) {
 	response.Success(w, http.StatusCreated, map[string]any{"id": commentID})
 }
 
-// GET /posts/{id}/comments
+// GetComments returns a post's comments in conversation order with author details.
 func (h *Handler) GetComments(w http.ResponseWriter, r *http.Request) {
 	postID, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {

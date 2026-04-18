@@ -16,11 +16,12 @@ type S3Uploader struct {
 	region string
 }
 
+// NewS3Uploader builds the S3-backed uploader used for avatar storage.
 func NewS3Uploader(client *s3.Client, bucket, region string) *S3Uploader {
 	return &S3Uploader{client: client, bucket: bucket, region: region}
 }
 
-// Upload writes body to S3 at the given key and returns the public URL.
+// Upload writes the provided content to S3 and returns the object's public URL.
 // The bucket must have a public-read policy for the URL to be accessible.
 func (u *S3Uploader) Upload(ctx context.Context, key, contentType string, body io.Reader) (string, error) {
 	// The SDK requires a seekable/re-readable body in some flows, so the upload
