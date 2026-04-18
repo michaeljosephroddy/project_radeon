@@ -55,6 +55,8 @@ func (h *Handler) Follow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Following is idempotent: duplicate requests still report success and leave
+	// the relationship in the desired state.
 	response.Success(w, http.StatusCreated, map[string]bool{"following": true})
 }
 
@@ -85,6 +87,8 @@ func (h *Handler) Unfollow(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) ListFollowing(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.CurrentUserID(r)
 
+	// The response is ordered by follow creation time so clients can show the
+	// newest follow relationships first without additional sorting.
 	rows, err := h.db.Query(r.Context(),
 		`SELECT
 			u.id,
@@ -125,6 +129,8 @@ func (h *Handler) ListFollowing(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) ListFollowers(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.CurrentUserID(r)
 
+	// Followers and following share the same payload shape to simplify client
+	// rendering for both lists.
 	rows, err := h.db.Query(r.Context(),
 		`SELECT
 			u.id,

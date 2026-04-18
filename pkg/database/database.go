@@ -14,6 +14,8 @@ func Connect() (*pgxpool.Pool, error) {
 		return nil, fmt.Errorf("DATABASE_URL not set")
 	}
 
+	// Startup fails fast on connection issues so the API never begins serving
+	// requests with a half-initialised database dependency.
 	pool, err := pgxpool.New(context.Background(), url)
 	if err != nil {
 		return nil, fmt.Errorf("unable to create connection pool: %w", err)

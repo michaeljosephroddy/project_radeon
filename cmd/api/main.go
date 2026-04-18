@@ -16,10 +16,10 @@ import (
 	"github.com/go-chi/cors"
 	"github.com/joho/godotenv"
 	"github.com/project_radeon/api/internal/auth"
+	"github.com/project_radeon/api/internal/chats"
 	"github.com/project_radeon/api/internal/feed"
 	"github.com/project_radeon/api/internal/follows"
 	"github.com/project_radeon/api/internal/meetups"
-	"github.com/project_radeon/api/internal/chats"
 	"github.com/project_radeon/api/internal/user"
 	"github.com/project_radeon/api/pkg/database"
 	"github.com/project_radeon/api/pkg/middleware"
@@ -39,6 +39,8 @@ func main() {
 	awsRegion := strings.TrimSpace(os.Getenv("AWS_REGION"))
 	awsBucket := strings.TrimSpace(os.Getenv("AWS_S3_BUCKET"))
 
+	// The API only needs a single S3 uploader, so main wires the AWS client once
+	// and passes the thin abstraction into the user handler.
 	awsCfg, err := awsconfig.LoadDefaultConfig(context.Background(),
 		awsconfig.WithRegion(awsRegion),
 		awsconfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(
@@ -62,6 +64,8 @@ func main() {
 
 	r := chi.NewRouter()
 
+	// Global middleware is applied before route grouping so both public and
+	// authenticated endpoints get request IDs, panic recovery, and CORS headers.
 	r.Use(chimiddleware.Logger)
 	r.Use(chimiddleware.Recoverer)
 	r.Use(chimiddleware.RequestID)

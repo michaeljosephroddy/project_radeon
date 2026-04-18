@@ -22,6 +22,8 @@ func GenerateToken(userID uuid.UUID) (string, error) {
 		hours = 168 // 7 days default
 	}
 
+	// Tokens only carry the user ID plus standard JWT timestamps so the server
+	// can treat the database as the source of truth for the rest of the profile.
 	claims := Claims{
 		UserID: userID,
 		RegisteredClaims: jwt.RegisteredClaims{
@@ -37,6 +39,8 @@ func GenerateToken(userID uuid.UUID) (string, error) {
 func ParseToken(tokenString string) (*Claims, error) {
 	secret := os.Getenv("JWT_SECRET")
 
+	// Reject non-HMAC algorithms so callers cannot swap the signing method and
+	// trick the parser into accepting an unsigned or differently signed token.
 	token, err := jwt.ParseWithClaims(tokenString, &Claims{}, func(t *jwt.Token) (any, error) {
 		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, fmt.Errorf("unexpected signing method: %v", t.Header["alg"])

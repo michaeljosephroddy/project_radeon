@@ -23,6 +23,8 @@ func NewS3Uploader(client *s3.Client, bucket, region string) *S3Uploader {
 // Upload writes body to S3 at the given key and returns the public URL.
 // The bucket must have a public-read policy for the URL to be accessible.
 func (u *S3Uploader) Upload(ctx context.Context, key, contentType string, body io.Reader) (string, error) {
+	// The SDK requires a seekable/re-readable body in some flows, so the upload
+	// helper eagerly buffers the content once before handing it to S3.
 	data, err := io.ReadAll(body)
 	if err != nil {
 		return "", fmt.Errorf("read upload body: %w", err)

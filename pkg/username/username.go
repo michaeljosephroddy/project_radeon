@@ -11,6 +11,8 @@ const (
 )
 
 var (
+	// Keeping the regex in one place ensures registration, profile edits, and
+	// search normalization all enforce the same username contract.
 	pattern  = regexp.MustCompile(`^[a-z0-9._]{3,20}$`)
 	reserved = map[string]struct{}{
 		"admin":     {},
@@ -36,6 +38,8 @@ func Normalize(value string) string {
 }
 
 func ValidationError(value string) string {
+	// The first matching rule wins so callers get one actionable validation
+	// message instead of a noisy list of overlapping username errors.
 	switch {
 	case value == "":
 		return "required"

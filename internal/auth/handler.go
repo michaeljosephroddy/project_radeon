@@ -53,7 +53,8 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check email not already taken
+	// Uniqueness checks stay explicit so the handler can return field-specific
+	// API errors instead of a generic database constraint failure.
 	var exists bool
 	if err := h.db.QueryRow(r.Context(),
 		"SELECT EXISTS(SELECT 1 FROM users WHERE email = $1)", input.Email,
@@ -87,6 +88,8 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 	var soberSince *time.Time
 
 	if input.SoberSince != nil {
+		// The API accepts a date-only value and stores it as a timestamp to match
+		// the nullable schema column used elsewhere in the app.
 		t, err := time.Parse("2006-01-02", *input.SoberSince)
 		if err != nil {
 			response.Error(w, http.StatusBadRequest, "sober_since must be YYYY-MM-DD")
@@ -154,6 +157,8 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Login issues a fresh JWT on every successful password check; there is no
+	// server-side session table to update or revoke here.
 	token, err := GenerateToken(userID)
 	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "could not generate token")

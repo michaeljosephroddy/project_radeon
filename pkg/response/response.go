@@ -8,6 +8,8 @@ import (
 type envelope map[string]any
 
 func JSON(w http.ResponseWriter, status int, data any) {
+	// All handlers go through this helper so the API's JSON content type and
+	// status-writing behavior stay consistent.
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(data)

@@ -37,6 +37,8 @@ func (h *Handler) ListMeetups(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.CurrentUserID(r)
 	city := r.URL.Query().Get("city")
 
+	// The attendee count and current-user RSVP flag are derived in the query so
+	// the list endpoint can render cards without follow-up requests.
 	rows, err := h.db.Query(r.Context(),
 		`SELECT
 			m.id,
@@ -153,6 +155,8 @@ func (h *Handler) CreateMeetup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Meetups store the parsed timestamp directly so the database becomes the
+	// source of truth for timezone-aware scheduling.
 	var meetupID uuid.UUID
 	if err := h.db.QueryRow(r.Context(),
 		`INSERT INTO meetups (
@@ -256,6 +260,8 @@ func (h *Handler) RSVP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// RSVP acts as a toggle: posting again removes the attendee row instead of
+	// requiring a separate DELETE endpoint.
 	var alreadyRSVPd bool
 	if err := h.db.QueryRow(r.Context(),
 		`SELECT EXISTS(

@@ -91,6 +91,8 @@ func (h *Handler) UpdateMe(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		// Username updates keep the same normalization and uniqueness rules as
+		// registration so profile edits cannot bypass signup constraints.
 		var exists bool
 		if err := h.db.QueryRow(r.Context(),
 			`SELECT EXISTS(SELECT 1 FROM users WHERE username = $1 AND id != $2)`,
@@ -153,6 +155,8 @@ func (h *Handler) UploadAvatar(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Images are resized server-side before upload so the app does not depend on
+	// clients to enforce avatar dimensions or output format.
 	img = imaging.Fit(img, 1024, 1024, imaging.Lanczos)
 
 	var buf bytes.Buffer
@@ -188,6 +192,8 @@ func (h *Handler) Discover(w http.ResponseWriter, r *http.Request) {
 	city := r.URL.Query().Get("city")
 	query := r.URL.Query().Get("q")
 
+	// The ORDER BY prioritises exact and prefix username matches before falling
+	// back to newest users, which gives search results a predictable ranking.
 	rows, err := h.db.Query(r.Context(),
 		`SELECT
 			u.id,
@@ -239,6 +245,8 @@ func (h *Handler) Discover(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) fetchUser(ctx context.Context, id uuid.UUID) (*User, error) {
 	var u User
+	// Centralising the profile query keeps /users/me and /users/{id} in sync and
+	// avoids subtly diverging response fields over time.
 	err := h.db.QueryRow(ctx,
 		`SELECT
 			id,

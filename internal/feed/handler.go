@@ -34,6 +34,8 @@ type Post struct {
 }
 
 func parsePagination(r *http.Request) (limit, offset int) {
+	// Pagination is intentionally forgiving: malformed values fall back to a
+	// stable default instead of producing validation errors on list endpoints.
 	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
 	limit, _ = strconv.Atoi(r.URL.Query().Get("limit"))
 	if page < 1 {
@@ -50,6 +52,8 @@ func parsePagination(r *http.Request) (limit, offset int) {
 func (h *Handler) GetFeed(w http.ResponseWriter, r *http.Request) {
 	limit, offset := parsePagination(r)
 
+	// Counts are projected with correlated subqueries so the API can return the
+	// feed in a single round trip without separate aggregate fetches.
 	rows, err := h.db.Query(r.Context(),
 		`SELECT
 			p.id,
@@ -108,6 +112,8 @@ func (h *Handler) GetUserPosts(w http.ResponseWriter, r *http.Request) {
 
 	limit, offset := parsePagination(r)
 
+	// This mirrors GetFeed so profile timelines and the global feed share the
+	// same response shape and derived counters.
 	rows, err := h.db.Query(r.Context(),
 		`SELECT
 			p.id,
@@ -285,7 +291,8 @@ func (h *Handler) ReactToPost(w http.ResponseWriter, r *http.Request) {
 		input.Type = "like"
 	}
 
-	// Upsert — reacting again with same type removes it (toggle)
+	// Re-sending the same reaction toggles it off. Different reaction types are
+	// stored as separate rows, so the check stays scoped to post/user/type.
 	var exists bool
 	if err := h.db.QueryRow(r.Context(),
 		`SELECT EXISTS(
@@ -347,6 +354,8 @@ func (h *Handler) AddComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Comments only return the new ID; clients are expected to refresh or append
+	// locally rather than relying on the server to hydrate the full record here.
 	var commentID uuid.UUID
 	if err := h.db.QueryRow(r.Context(),
 		`INSERT INTO comments (

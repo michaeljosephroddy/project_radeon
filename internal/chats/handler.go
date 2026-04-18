@@ -36,6 +36,8 @@ func NewHandler(db *pgxpool.Pool) *Handler {
 func (h *Handler) ListChats(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.CurrentUserID(r)
 
+	// LATERAL joins let the query derive the "other participant" metadata for
+	// direct messages and the latest message preview without extra queries.
 	rows, err := h.db.Query(r.Context(),
 		`SELECT
 			ch.id,
@@ -99,6 +101,8 @@ func (h *Handler) ListChats(w http.ResponseWriter, r *http.Request) {
 // GET /chats/requests
 func (h *Handler) ListChatRequests(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.CurrentUserID(r)
+	// Requests are limited to chats where the caller is an addressee, which
+	// prevents requesters from seeing their own pending invites in this list.
 	rows, err := h.db.Query(r.Context(),
 		`SELECT
 			ch.id,
@@ -175,6 +179,8 @@ func (h *Handler) CreateChat(w http.ResponseWriter, r *http.Request) {
 	isGroup := len(input.MemberIDs) > 1
 
 	if !isGroup && len(input.MemberIDs) == 1 {
+		// Direct chats are reused instead of duplicated so message history stays
+		// attached to a single conversation between two members.
 		var existingID uuid.UUID
 		err := h.db.QueryRow(r.Context(),
 			`SELECT ch.id
@@ -283,6 +289,8 @@ func (h *Handler) UpdateChatStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if input.Status == "declined" {
+		// Declining removes the chat outright because pending requests have no
+		// independent message history worth preserving yet.
 		if _, err := h.db.Exec(r.Context(),
 			`DELETE FROM chats
 			WHERE id = $1`,
@@ -333,6 +341,8 @@ func (h *Handler) GetMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Messages are returned oldest-first so clients can append new messages in
+	// natural conversation order without reversing the array.
 	rows, err := h.db.Query(r.Context(),
 		`SELECT
 			m.id,
@@ -420,6 +430,8 @@ func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// SendMessage only persists plain text content; any delivery state or unread
+	// tracking would need to be layered on top of this schema.
 	var msgID uuid.UUID
 	if err := h.db.QueryRow(r.Context(),
 		`INSERT INTO messages (
