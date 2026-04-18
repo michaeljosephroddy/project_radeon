@@ -1,6 +1,7 @@
 package friends
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/project_radeon/api/pkg/middleware"
+	"github.com/project_radeon/api/pkg/pagination"
 	"github.com/project_radeon/api/pkg/response"
 )
 
@@ -231,8 +233,9 @@ func (h *Handler) RemoveFriend(w http.ResponseWriter, r *http.Request) {
 // ListFriends returns the caller's accepted friends ordered by acceptance time.
 func (h *Handler) ListFriends(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.CurrentUserID(r)
+	params := pagination.Parse(r, 25, 100)
 
-	rows, err := h.db.Query(r.Context(),
+	users, err := h.queryFriendUsers(r.Context(),
 		`SELECT
 			u.id,
 			u.username,
@@ -246,30 +249,16 @@ func (h *Handler) ListFriends(w http.ResponseWriter, r *http.Request) {
 		END
 		WHERE (f.user_a_id = $1 OR f.user_b_id = $1)
 			AND f.status = 'accepted'
-		ORDER BY COALESCE(f.accepted_at, f.created_at) DESC`,
-		userID,
+		ORDER BY COALESCE(f.accepted_at, f.created_at) DESC
+		LIMIT $2 OFFSET $3`,
+		userID, params.Limit+1, params.Offset,
 	)
 	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "could not fetch friends")
 		return
 	}
-	defer rows.Close()
 
-	var users []friendUser
-	for rows.Next() {
-		var u friendUser
-		if err := rows.Scan(&u.UserID, &u.Username, &u.AvatarURL, &u.City, &u.CreatedAt); err != nil {
-			response.Error(w, http.StatusInternalServerError, "could not read friends")
-			return
-		}
-		users = append(users, u)
-	}
-	if err := rows.Err(); err != nil {
-		response.Error(w, http.StatusInternalServerError, "could not read friends")
-		return
-	}
-
-	response.Success(w, http.StatusOK, users)
+	response.Success(w, http.StatusOK, pagination.Slice(users, params))
 }
 
 // ListIncomingRequests returns pending requests addressed to the caller.
@@ -284,6 +273,7 @@ func (h *Handler) ListOutgoingRequests(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) listPendingRequests(w http.ResponseWriter, r *http.Request, outgoing bool) {
 	userID := middleware.CurrentUserID(r)
+	params := pagination.Parse(r, 25, 100)
 
 	query := `SELECT
 		u.id,
@@ -299,7 +289,8 @@ func (h *Handler) listPendingRequests(w http.ResponseWriter, r *http.Request, ou
 	WHERE (f.user_a_id = $1 OR f.user_b_id = $1)
 		AND f.status = 'pending'
 		AND f.requester_id != $1
-	ORDER BY f.created_at DESC`
+	ORDER BY f.created_at DESC
+	LIMIT $2 OFFSET $3`
 	if outgoing {
 		query = `SELECT
 			u.id,
@@ -315,13 +306,25 @@ func (h *Handler) listPendingRequests(w http.ResponseWriter, r *http.Request, ou
 		WHERE (f.user_a_id = $1 OR f.user_b_id = $1)
 			AND f.status = 'pending'
 			AND f.requester_id = $1
-		ORDER BY f.created_at DESC`
+		ORDER BY f.created_at DESC
+		LIMIT $2 OFFSET $3`
 	}
 
-	rows, err := h.db.Query(r.Context(), query, userID)
+	users, err := h.queryFriendUsers(r.Context(), query, userID, params.Limit+1, params.Offset)
 	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "could not fetch friend requests")
 		return
+	}
+
+	response.Success(w, http.StatusOK, pagination.Slice(users, params))
+}
+
+// queryFriendUsers keeps the paging scan logic in one place for accepted
+// friends and pending-request lists, which all share the same row shape.
+func (h *Handler) queryFriendUsers(ctx context.Context, query string, args ...any) ([]friendUser, error) {
+	rows, err := h.db.Query(ctx, query, args...)
+	if err != nil {
+		return nil, err
 	}
 	defer rows.Close()
 
@@ -329,15 +332,13 @@ func (h *Handler) listPendingRequests(w http.ResponseWriter, r *http.Request, ou
 	for rows.Next() {
 		var u friendUser
 		if err := rows.Scan(&u.UserID, &u.Username, &u.AvatarURL, &u.City, &u.CreatedAt); err != nil {
-			response.Error(w, http.StatusInternalServerError, "could not read friend requests")
-			return
+			return nil, err
 		}
 		users = append(users, u)
 	}
 	if err := rows.Err(); err != nil {
-		response.Error(w, http.StatusInternalServerError, "could not read friend requests")
-		return
+		return nil, err
 	}
 
-	response.Success(w, http.StatusOK, users)
+	return users, nil
 }

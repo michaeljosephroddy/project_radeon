@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/project_radeon/api/pkg/middleware"
+	"github.com/project_radeon/api/pkg/pagination"
 	"github.com/project_radeon/api/pkg/response"
 )
 
@@ -28,14 +29,33 @@ type Chat struct {
 	LastMessageAt *time.Time `json:"last_message_at"`
 }
 
+type Message struct {
+	ID        uuid.UUID `json:"id"`
+	SenderID  uuid.UUID `json:"sender_id"`
+	Username  string    `json:"username"`
+	AvatarURL *string   `json:"avatar_url"`
+	Body      string    `json:"body"`
+	SentAt    time.Time `json:"sent_at"`
+}
+
+type MessagePage struct {
+	Items      []Message  `json:"items"`
+	Limit      int        `json:"limit"`
+	HasMore    bool       `json:"has_more"`
+	NextBefore *time.Time `json:"next_before,omitempty"`
+}
+
 // NewHandler builds a chats handler backed by the shared database pool.
 func NewHandler(db *pgxpool.Pool) *Handler {
 	return &Handler{db: db}
 }
 
-// ListChats returns the authenticated user's active chats with preview metadata.
+// ListChats returns one page of the caller's active chats and lets the backend
+// own inbox search so the client never filters an unbounded chat array.
 func (h *Handler) ListChats(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.CurrentUserID(r)
+	params := pagination.Parse(r, 20, 50)
+	query := strings.TrimSpace(r.URL.Query().Get("q"))
 
 	// LATERAL joins let the query derive the "other participant" metadata for
 	// direct messages and the latest message preview without extra queries.
@@ -73,8 +93,20 @@ func (h *Handler) ListChats(w http.ResponseWriter, r *http.Request) {
 			LIMIT 1
 		) m ON true
 		WHERE ch.status = 'active'
-		ORDER BY COALESCE(m.sent_at, ch.created_at) DESC`,
-		userID,
+			AND (
+				$2 = ''
+				OR (
+					ch.is_group = true
+					AND COALESCE(ch.name, '') ILIKE '%' || $2 || '%'
+				)
+				OR (
+					ch.is_group = false
+					AND COALESCE(other.username, '') ILIKE '%' || $2 || '%'
+				)
+			)
+		ORDER BY COALESCE(m.sent_at, ch.created_at) DESC
+		LIMIT $3 OFFSET $4`,
+		userID, query, params.Limit+1, params.Offset,
 	)
 	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "could not fetch chats")
@@ -96,7 +128,7 @@ func (h *Handler) ListChats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	response.Success(w, http.StatusOK, chats)
+	response.Success(w, http.StatusOK, pagination.Slice(chats, params))
 }
 
 // ListChatRequests returns pending direct-message requests addressed to the current user.
@@ -315,7 +347,8 @@ func (h *Handler) UpdateChatStatus(w http.ResponseWriter, r *http.Request) {
 	response.Success(w, http.StatusOK, map[string]string{"status": input.Status})
 }
 
-// GetMessages returns the message history for a chat if the caller is a member.
+// GetMessages pages backwards through a chat transcript using an optional
+// "before" cursor so long histories stay incremental on the client.
 func (h *Handler) GetMessages(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.CurrentUserID(r)
 	chatID, err := uuid.Parse(chi.URLParam(r, "id"))
@@ -342,8 +375,21 @@ func (h *Handler) GetMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Messages are returned oldest-first so clients can append new messages in
-	// natural conversation order without reversing the array.
+	limit := 50
+	if parsed := pagination.Parse(r, 50, 100); parsed.Limit > 0 {
+		limit = parsed.Limit
+	}
+
+	var before *time.Time
+	if beforeRaw := strings.TrimSpace(r.URL.Query().Get("before")); beforeRaw != "" {
+		parsed, parseErr := time.Parse(time.RFC3339, beforeRaw)
+		if parseErr != nil {
+			response.Error(w, http.StatusBadRequest, "before must be an RFC3339 timestamp")
+			return
+		}
+		before = &parsed
+	}
+
 	rows, err := h.db.Query(r.Context(),
 		`SELECT
 			m.id,
@@ -355,23 +401,16 @@ func (h *Handler) GetMessages(w http.ResponseWriter, r *http.Request) {
 		FROM messages m
 		JOIN users u ON u.id = m.sender_id
 		WHERE m.chat_id = $1
-		ORDER BY m.sent_at ASC`,
-		chatID,
+			AND ($2::timestamptz IS NULL OR m.sent_at < $2)
+		ORDER BY m.sent_at DESC
+		LIMIT $3`,
+		chatID, before, limit+1,
 	)
 	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "could not fetch messages")
 		return
 	}
 	defer rows.Close()
-
-	type Message struct {
-		ID        uuid.UUID `json:"id"`
-		SenderID  uuid.UUID `json:"sender_id"`
-		Username  string    `json:"username"`
-		AvatarURL *string   `json:"avatar_url"`
-		Body      string    `json:"body"`
-		SentAt    time.Time `json:"sent_at"`
-	}
 
 	var msgs []Message
 	for rows.Next() {
@@ -387,7 +426,26 @@ func (h *Handler) GetMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	response.Success(w, http.StatusOK, msgs)
+	hasMore := len(msgs) > limit
+	if hasMore {
+		msgs = msgs[:limit]
+	}
+	for left, right := 0, len(msgs)-1; left < right; left, right = left+1, right-1 {
+		msgs[left], msgs[right] = msgs[right], msgs[left]
+	}
+
+	var nextBefore *time.Time
+	if hasMore && len(msgs) > 0 {
+		oldest := msgs[0].SentAt
+		nextBefore = &oldest
+	}
+
+	response.Success(w, http.StatusOK, MessagePage{
+		Items:      msgs,
+		Limit:      limit,
+		HasMore:    hasMore,
+		NextBefore: nextBefore,
+	})
 }
 
 // SendMessage appends a new text message to a chat for an authorised member.

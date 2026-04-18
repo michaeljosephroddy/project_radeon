@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/project_radeon/api/pkg/middleware"
+	"github.com/project_radeon/api/pkg/pagination"
 	"github.com/project_radeon/api/pkg/response"
 )
 
@@ -46,6 +47,7 @@ type meetupInput struct {
 func (h *Handler) ListMeetups(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.CurrentUserID(r)
 	city := r.URL.Query().Get("city")
+	params := pagination.Parse(r, 20, 50)
 
 	// The attendee count and current-user RSVP flag are derived in the query so
 	// the list endpoint can render cards without follow-up requests.
@@ -66,8 +68,8 @@ func (h *Handler) ListMeetups(w http.ResponseWriter, r *http.Request) {
 			AND ($2 = '' OR m.city ILIKE $2)
 		GROUP BY m.id
 		ORDER BY m.starts_at ASC
-		LIMIT 50`,
-		userID, city,
+		LIMIT $3 OFFSET $4`,
+		userID, city, params.Limit+1, params.Offset,
 	)
 	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "could not fetch meetups")
@@ -89,12 +91,13 @@ func (h *Handler) ListMeetups(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	response.Success(w, http.StatusOK, meetups)
+	response.Success(w, http.StatusOK, pagination.Slice(meetups, params))
 }
 
 // ListMyMeetups returns the meetups organised by the authenticated user.
 func (h *Handler) ListMyMeetups(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.CurrentUserID(r)
+	params := pagination.Parse(r, 20, 50)
 
 	rows, err := h.db.Query(r.Context(),
 		`SELECT
@@ -111,8 +114,9 @@ func (h *Handler) ListMyMeetups(w http.ResponseWriter, r *http.Request) {
 		LEFT JOIN meetup_attendees ma ON ma.meetup_id = m.id
 		WHERE m.organiser_id = $1
 		GROUP BY m.id
-		ORDER BY m.starts_at ASC`,
-		userID,
+		ORDER BY m.starts_at ASC
+		LIMIT $2 OFFSET $3`,
+		userID, params.Limit+1, params.Offset,
 	)
 	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "could not fetch your meetups")
@@ -134,7 +138,7 @@ func (h *Handler) ListMyMeetups(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	response.Success(w, http.StatusOK, meetups)
+	response.Success(w, http.StatusOK, pagination.Slice(meetups, params))
 }
 
 // GetMeetup returns the full details for a single meetup and the caller's RSVP state.

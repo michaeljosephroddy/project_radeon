@@ -3,7 +3,6 @@ package feed
 import (
 	"encoding/json"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
@@ -11,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/project_radeon/api/pkg/middleware"
+	"github.com/project_radeon/api/pkg/pagination"
 	"github.com/project_radeon/api/pkg/response"
 )
 
@@ -34,25 +34,9 @@ type Post struct {
 	LikeCount    int       `json:"like_count"`
 }
 
-// parsePagination extracts page and limit query parameters with sane defaults and bounds.
-func parsePagination(r *http.Request) (limit, offset int) {
-	// Pagination is intentionally forgiving: malformed values fall back to a
-	// stable default instead of producing validation errors on list endpoints.
-	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
-	limit, _ = strconv.Atoi(r.URL.Query().Get("limit"))
-	if page < 1 {
-		page = 1
-	}
-	if limit < 1 || limit > 50 {
-		limit = 20
-	}
-
-	return limit, (page - 1) * limit
-}
-
 // GetFeed returns the global post feed with author metadata and aggregate counts.
 func (h *Handler) GetFeed(w http.ResponseWriter, r *http.Request) {
-	limit, offset := parsePagination(r)
+	params := pagination.Parse(r, 20, 50)
 
 	// Counts are projected with correlated subqueries so the API can return the
 	// feed in a single round trip without separate aggregate fetches.
@@ -79,7 +63,7 @@ func (h *Handler) GetFeed(w http.ResponseWriter, r *http.Request) {
 		JOIN users u ON u.id = p.user_id
 		ORDER BY p.created_at DESC
 		LIMIT $1 OFFSET $2`,
-		limit, offset,
+		params.Limit+1, params.Offset,
 	)
 	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "could not fetch feed")
@@ -101,7 +85,7 @@ func (h *Handler) GetFeed(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	response.Success(w, http.StatusOK, posts)
+	response.Success(w, http.StatusOK, pagination.Slice(posts, params))
 }
 
 // GetUserPosts returns a single user's posts with the same shape as the main feed.
@@ -112,7 +96,7 @@ func (h *Handler) GetUserPosts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	limit, offset := parsePagination(r)
+	params := pagination.Parse(r, 20, 50)
 
 	// This mirrors GetFeed so profile timelines and the global feed share the
 	// same response shape and derived counters.
@@ -140,7 +124,7 @@ func (h *Handler) GetUserPosts(w http.ResponseWriter, r *http.Request) {
 		WHERE p.user_id = $1
 		ORDER BY p.created_at DESC
 		LIMIT $2 OFFSET $3`,
-		targetID, limit, offset,
+		targetID, params.Limit+1, params.Offset,
 	)
 	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "could not fetch posts")
@@ -162,7 +146,7 @@ func (h *Handler) GetUserPosts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	response.Success(w, http.StatusOK, posts)
+	response.Success(w, http.StatusOK, pagination.Slice(posts, params))
 }
 
 // CreatePost validates and inserts a new post for the authenticated user.

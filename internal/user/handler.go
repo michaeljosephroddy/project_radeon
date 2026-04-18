@@ -15,6 +15,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/project_radeon/api/pkg/middleware"
+	"github.com/project_radeon/api/pkg/pagination"
 	"github.com/project_radeon/api/pkg/response"
 	"github.com/project_radeon/api/pkg/username"
 )
@@ -35,19 +36,23 @@ func NewHandler(db *pgxpool.Pool, uploader Uploader) *Handler {
 }
 
 type User struct {
-	ID         uuid.UUID  `json:"id"`
-	Username   string     `json:"username"`
-	AvatarURL  *string    `json:"avatar_url"`
-	City       *string    `json:"city"`
-	Country    *string    `json:"country"`
-	SoberSince *time.Time `json:"sober_since"`
-	CreatedAt  time.Time  `json:"created_at"`
+	ID                      uuid.UUID  `json:"id"`
+	Username                string     `json:"username"`
+	AvatarURL               *string    `json:"avatar_url"`
+	City                    *string    `json:"city"`
+	Country                 *string    `json:"country"`
+	SoberSince              *time.Time `json:"sober_since"`
+	CreatedAt               time.Time  `json:"created_at"`
+	FriendshipStatus        string     `json:"friendship_status"`
+	FriendCount             int        `json:"friend_count"`
+	IncomingFriendRequestCt int        `json:"incoming_friend_request_count"`
+	OutgoingFriendRequestCt int        `json:"outgoing_friend_request_count"`
 }
 
 // GetMe returns the authenticated user's profile record.
 func (h *Handler) GetMe(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.CurrentUserID(r)
-	user, err := h.fetchUser(r.Context(), userID)
+	user, err := h.fetchUser(r.Context(), userID, userID)
 	if err != nil {
 		response.Error(w, http.StatusNotFound, "user not found")
 		return
@@ -57,12 +62,13 @@ func (h *Handler) GetMe(w http.ResponseWriter, r *http.Request) {
 
 // GetUser returns a public profile record for the requested user ID.
 func (h *Handler) GetUser(w http.ResponseWriter, r *http.Request) {
+	viewerID := middleware.CurrentUserID(r)
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
 		response.Error(w, http.StatusBadRequest, "invalid user id")
 		return
 	}
-	user, err := h.fetchUser(r.Context(), id)
+	user, err := h.fetchUser(r.Context(), viewerID, id)
 	if err != nil {
 		response.Error(w, http.StatusNotFound, "user not found")
 		return
@@ -124,7 +130,7 @@ func (h *Handler) UpdateMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user, _ := h.fetchUser(r.Context(), userID)
+	user, _ := h.fetchUser(r.Context(), userID, userID)
 	response.Success(w, http.StatusOK, user)
 }
 
@@ -187,11 +193,13 @@ func (h *Handler) UploadAvatar(w http.ResponseWriter, r *http.Request) {
 	response.Success(w, http.StatusOK, map[string]string{"avatar_url": avatarURL})
 }
 
-// Discover returns other users matching the optional city and username search filters.
+// Discover returns one page of ranked user search results plus the caller's
+// friendship state for each row so the app does not need global friend sets.
 func (h *Handler) Discover(w http.ResponseWriter, r *http.Request) {
 	currentUserID := middleware.CurrentUserID(r)
 	city := r.URL.Query().Get("city")
 	query := r.URL.Query().Get("q")
+	params := pagination.Parse(r, 20, 50)
 
 	// The ORDER BY prioritises exact and prefix username matches before falling
 	// back to newest users, which gives search results a predictable ranking.
@@ -203,8 +211,19 @@ func (h *Handler) Discover(w http.ResponseWriter, r *http.Request) {
 			u.city,
 			u.country,
 			u.sober_since,
-			u.created_at
+			u.created_at,
+			CASE
+				WHEN f.status = 'accepted' THEN 'friends'
+				WHEN f.requester_id = $1 THEN 'outgoing'
+				WHEN f.requester_id = u.id THEN 'incoming'
+				ELSE 'none'
+			END AS friendship_status
 		FROM users u
+		LEFT JOIN friendships f
+			ON (
+				(f.user_a_id = $1 AND f.user_b_id = u.id)
+				OR (f.user_b_id = $1 AND f.user_a_id = u.id)
+			)
 		WHERE u.id != $1
 			AND ($2 = '' OR u.city ILIKE $2)
 			AND (
@@ -218,8 +237,8 @@ func (h *Handler) Discover(w http.ResponseWriter, r *http.Request) {
 				ELSE 2
 			END,
 			u.created_at DESC
-		LIMIT 20`,
-		currentUserID, city, username.Normalize(query),
+		LIMIT $4 OFFSET $5`,
+		currentUserID, city, username.Normalize(query), params.Limit+1, params.Offset,
 	)
 	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "could not fetch users")
@@ -230,7 +249,7 @@ func (h *Handler) Discover(w http.ResponseWriter, r *http.Request) {
 	var users []User
 	for rows.Next() {
 		var u User
-		if err := rows.Scan(&u.ID, &u.Username, &u.AvatarURL, &u.City, &u.Country, &u.SoberSince, &u.CreatedAt); err != nil {
+		if err := rows.Scan(&u.ID, &u.Username, &u.AvatarURL, &u.City, &u.Country, &u.SoberSince, &u.CreatedAt, &u.FriendshipStatus); err != nil {
 			response.Error(w, http.StatusInternalServerError, "could not read users")
 			return
 		}
@@ -241,27 +260,74 @@ func (h *Handler) Discover(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	response.Success(w, http.StatusOK, users)
+	response.Success(w, http.StatusOK, pagination.Slice(users, params))
 }
 
-// fetchUser loads a single user profile row by ID for handler reuse.
-func (h *Handler) fetchUser(ctx context.Context, id uuid.UUID) (*User, error) {
+// fetchUser hydrates one profile plus relationship and summary fields used by
+// both /users/me and /users/{id} without separate follow-up queries.
+func (h *Handler) fetchUser(ctx context.Context, viewerID uuid.UUID, id uuid.UUID) (*User, error) {
 	var u User
 	// Centralising the profile query keeps /users/me and /users/{id} in sync and
 	// avoids subtly diverging response fields over time.
 	err := h.db.QueryRow(ctx,
 		`SELECT
-			id,
-			username,
-			avatar_url,
-			city,
-			country,
-			sober_since,
-			created_at
-		FROM users
-		WHERE id = $1`,
-		id,
-	).Scan(&u.ID, &u.Username, &u.AvatarURL, &u.City, &u.Country, &u.SoberSince, &u.CreatedAt)
+			u.id,
+			u.username,
+			u.avatar_url,
+			u.city,
+			u.country,
+			u.sober_since,
+			u.created_at,
+			CASE
+				WHEN u.id = $1 THEN 'self'
+				WHEN f.status = 'accepted' THEN 'friends'
+				WHEN f.requester_id = $1 THEN 'outgoing'
+				WHEN f.requester_id = u.id THEN 'incoming'
+				ELSE 'none'
+			END AS friendship_status,
+			(
+				SELECT COUNT(*)
+				FROM friendships f2
+				WHERE (f2.user_a_id = u.id OR f2.user_b_id = u.id)
+					AND f2.status = 'accepted'
+			) AS friend_count,
+			(
+				SELECT COUNT(*)
+				FROM friendships f3
+				WHERE (f3.user_a_id = u.id OR f3.user_b_id = u.id)
+					AND f3.status = 'pending'
+					AND u.id = $1
+					AND f3.requester_id != u.id
+			) AS incoming_friend_request_count,
+			(
+				SELECT COUNT(*)
+				FROM friendships f4
+				WHERE (f4.user_a_id = u.id OR f4.user_b_id = u.id)
+					AND f4.status = 'pending'
+					AND u.id = $1
+					AND f4.requester_id = u.id
+			) AS outgoing_friend_request_count
+		FROM users u
+		LEFT JOIN friendships f
+			ON (
+				(f.user_a_id = $1 AND f.user_b_id = u.id)
+				OR (f.user_b_id = $1 AND f.user_a_id = u.id)
+			)
+		WHERE u.id = $2`,
+		viewerID, id,
+	).Scan(
+		&u.ID,
+		&u.Username,
+		&u.AvatarURL,
+		&u.City,
+		&u.Country,
+		&u.SoberSince,
+		&u.CreatedAt,
+		&u.FriendshipStatus,
+		&u.FriendCount,
+		&u.IncomingFriendRequestCt,
+		&u.OutgoingFriendRequestCt,
+	)
 	if err != nil {
 		return nil, err
 	}

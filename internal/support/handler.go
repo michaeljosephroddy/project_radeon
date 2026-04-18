@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/project_radeon/api/pkg/middleware"
+	"github.com/project_radeon/api/pkg/pagination"
 	"github.com/project_radeon/api/pkg/response"
 )
 
@@ -75,6 +76,15 @@ type SupportResponse struct {
 	ResponseType     string    `json:"response_type"`
 	Message          *string   `json:"message"`
 	CreatedAt        time.Time `json:"created_at"`
+}
+
+type SupportRequestsPage struct {
+	Items                   []SupportRequest `json:"items"`
+	Page                    int              `json:"page"`
+	Limit                   int              `json:"limit"`
+	HasMore                 bool             `json:"has_more"`
+	OpenRequestCount        *int             `json:"open_request_count,omitempty"`
+	AvailableToSupportCount *int             `json:"available_to_support_count,omitempty"`
 }
 
 // GetMySupportProfile returns the caller's support availability settings.
@@ -209,6 +219,7 @@ func (h *Handler) CreateSupportRequest(w http.ResponseWriter, r *http.Request) {
 // ListMySupportRequests returns support requests created by the authenticated user.
 func (h *Handler) ListMySupportRequests(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.CurrentUserID(r)
+	params := pagination.Parse(r, 20, 50)
 
 	requests, err := h.listSupportRequests(r.Context(),
 		`SELECT
@@ -236,26 +247,49 @@ func (h *Handler) ListMySupportRequests(w http.ResponseWriter, r *http.Request) 
 		FROM support_requests sr
 		JOIN users u ON u.id = sr.requester_id
 		WHERE sr.requester_id = $1
-		ORDER BY sr.created_at DESC`,
-		userID,
+		ORDER BY sr.created_at DESC
+		LIMIT $2 OFFSET $3`,
+		userID, params.Limit+1, params.Offset,
 	)
 	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "could not fetch support requests")
 		return
 	}
 
-	response.Success(w, http.StatusOK, requests)
+	page := pagination.Slice(requests, params)
+	response.Success(w, http.StatusOK, SupportRequestsPage{
+		Items:   page.Items,
+		Page:    page.Page,
+		Limit:   page.Limit,
+		HasMore: page.HasMore,
+	})
 }
 
-// ListSupportRequests returns open support requests visible to the authenticated user.
+// ListSupportRequests returns the visible support page plus the lightweight tab
+// summary counts the mobile client shows above the request cards.
 func (h *Handler) ListSupportRequests(w http.ResponseWriter, r *http.Request) {
-	requests, err := h.ListVisibleSupportRequests(r)
+	params := pagination.Parse(r, 20, 50)
+	requests, err := h.ListVisibleSupportRequests(r, params)
 	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "could not fetch support requests")
 		return
 	}
 
-	response.Success(w, http.StatusOK, requests)
+	openCount, availableCount, err := h.fetchSupportSummary(r.Context(), middleware.CurrentUserID(r))
+	if err != nil {
+		response.Error(w, http.StatusInternalServerError, "could not fetch support requests")
+		return
+	}
+
+	page := pagination.Slice(requests, params)
+	response.Success(w, http.StatusOK, SupportRequestsPage{
+		Items:                   page.Items,
+		Page:                    page.Page,
+		Limit:                   page.Limit,
+		HasMore:                 page.HasMore,
+		OpenRequestCount:        &openCount,
+		AvailableToSupportCount: &availableCount,
+	})
 }
 
 // GetSupportRequest returns one support request with viewer-specific metadata.
@@ -473,7 +507,9 @@ func (h *Handler) ListSupportResponses(w http.ResponseWriter, r *http.Request) {
 }
 
 // ListVisibleSupportRequests returns open support requests that should appear in the caller's feed.
-func (h *Handler) ListVisibleSupportRequests(r *http.Request) ([]SupportRequest, error) {
+// ListVisibleSupportRequests applies the same audience rules as the support
+// feed while keeping pagination inside the main visibility query.
+func (h *Handler) ListVisibleSupportRequests(r *http.Request, params pagination.Params) ([]SupportRequest, error) {
 	userID := middleware.CurrentUserID(r)
 	return h.listSupportRequests(r.Context(),
 		`SELECT
@@ -520,9 +556,55 @@ func (h *Handler) ListVisibleSupportRequests(r *http.Request) ([]SupportRequest,
 			)
 			)
 		ORDER BY sr.created_at DESC
-		LIMIT 25`,
-		userID,
+		LIMIT $2 OFFSET $3`,
+		userID, params.Limit+1, params.Offset,
 	)
+}
+
+// fetchSupportSummary computes the support-tab header counts separately from
+// the card page so the UI can show aggregates without downloading more rows.
+func (h *Handler) fetchSupportSummary(ctx context.Context, viewerID uuid.UUID) (int, int, error) {
+	var openCount int
+	err := h.db.QueryRow(ctx,
+		`SELECT COUNT(*)
+		FROM support_requests sr
+		JOIN users u ON u.id = sr.requester_id
+		WHERE sr.status = 'open'
+			AND sr.expires_at > NOW()
+			AND sr.requester_id != $1
+			AND (
+				sr.audience = 'community'
+				OR (sr.audience = 'city' AND u.city IS NOT NULL AND u.city = (SELECT city FROM users WHERE id = $1))
+				OR (
+					sr.audience = 'friends'
+					AND EXISTS(
+						SELECT 1
+						FROM friendships f
+						WHERE (f.user_a_id = $1 OR f.user_b_id = $1)
+							AND (f.user_a_id = sr.requester_id OR f.user_b_id = sr.requester_id)
+							AND f.status = 'accepted'
+					)
+				)
+			)`,
+		viewerID,
+	).Scan(&openCount)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	var availableCount int
+	err = h.db.QueryRow(ctx,
+		`SELECT COUNT(*)
+		FROM users
+		WHERE id != $1
+			AND is_available_to_support = true`,
+		viewerID,
+	).Scan(&availableCount)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	return openCount, availableCount, nil
 }
 
 func (h *Handler) createSupportRequest(ctx context.Context, userID uuid.UUID, requestType string, message *string, audience string, expiresAt time.Time) (*SupportRequest, error) {
