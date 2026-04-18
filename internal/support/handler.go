@@ -26,7 +26,7 @@ var validSupportTypes = map[string]bool{
 }
 
 var validSupportAudiences = map[string]bool{
-	"followers": true,
+	"friends":   true,
 	"city":      true,
 	"community": true,
 }
@@ -509,14 +509,15 @@ func (h *Handler) ListVisibleSupportRequests(r *http.Request) ([]SupportRequest,
 				sr.audience = 'community'
 				OR (sr.audience = 'city' AND u.city IS NOT NULL AND u.city = (SELECT city FROM users WHERE id = $1))
 				OR (
-					sr.audience = 'followers'
-					AND EXISTS(
-						SELECT 1
-						FROM follows f
-						WHERE f.follower_id = $1
-							AND f.following_id = sr.requester_id
-					)
+				sr.audience = 'friends'
+				AND EXISTS(
+					SELECT 1
+					FROM friendships f
+					WHERE (f.user_a_id = $1 OR f.user_b_id = $1)
+						AND (f.user_a_id = sr.requester_id OR f.user_b_id = sr.requester_id)
+						AND f.status = 'accepted'
 				)
+			)
 			)
 		ORDER BY sr.created_at DESC
 		LIMIT 25`,

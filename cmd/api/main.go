@@ -18,7 +18,7 @@ import (
 	"github.com/project_radeon/api/internal/auth"
 	"github.com/project_radeon/api/internal/chats"
 	"github.com/project_radeon/api/internal/feed"
-	"github.com/project_radeon/api/internal/follows"
+	"github.com/project_radeon/api/internal/friends"
 	"github.com/project_radeon/api/internal/meetups"
 	"github.com/project_radeon/api/internal/support"
 	"github.com/project_radeon/api/internal/user"
@@ -63,7 +63,7 @@ func main() {
 	feedHandler := feed.NewHandler(db)
 	meetupsHandler := meetups.NewHandler(db)
 	chatsHandler := chats.NewHandler(db)
-	followsHandler := follows.NewHandler(db)
+	friendsHandler := friends.NewHandler(db)
 	supportHandler := support.NewHandler(db)
 
 	r := chi.NewRouter()
@@ -104,13 +104,16 @@ func main() {
 		r.Patch("/users/me", userHandler.UpdateMe)
 		r.Post("/users/me/avatar", userHandler.UploadAvatar)
 		r.Get("/users/me/meetups", meetupsHandler.ListMyMeetups)
-		r.Get("/users/me/following", followsHandler.ListFollowing)
-		r.Get("/users/me/followers", followsHandler.ListFollowers)
+		r.Get("/users/me/friends", friendsHandler.ListFriends)
+		r.Get("/users/me/friend-requests/incoming", friendsHandler.ListIncomingRequests)
+		r.Get("/users/me/friend-requests/outgoing", friendsHandler.ListOutgoingRequests)
 		r.Get("/users/discover", userHandler.Discover)
 		r.Get("/users/{id}/posts", feedHandler.GetUserPosts)
 		r.Get("/users/{id}", userHandler.GetUser)
-		r.Post("/users/{id}/follow", followsHandler.Follow)
-		r.Delete("/users/{id}/follow", followsHandler.Unfollow)
+		r.Post("/users/{id}/friend-request", friendsHandler.SendRequest)
+		r.Patch("/users/{id}/friend-request", friendsHandler.UpdateRequest)
+		r.Delete("/users/{id}/friend-request", friendsHandler.CancelRequest)
+		r.Delete("/users/{id}/friend", friendsHandler.RemoveFriend)
 
 		// Meetups
 		r.Get("/meetups", meetupsHandler.ListMeetups)
