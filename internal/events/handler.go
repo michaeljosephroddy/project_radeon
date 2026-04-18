@@ -38,16 +38,23 @@ func (h *Handler) ListEvents(w http.ResponseWriter, r *http.Request) {
 	city := r.URL.Query().Get("city")
 
 	rows, err := h.db.Query(r.Context(),
-		`SELECT e.id, e.organiser_id, e.title, e.description, e.city, e.starts_at, e.capacity,
-		   COUNT(ea.user_id) AS attendee_count,
-		   BOOL_OR(ea.user_id = $1) AS is_attending
-		 FROM events e
-		 LEFT JOIN event_attendees ea ON ea.event_id = e.id
-		 WHERE e.starts_at > NOW()
-		 AND ($2 = '' OR e.city ILIKE $2)
-		 GROUP BY e.id
-		 ORDER BY e.starts_at ASC
-		 LIMIT 50`,
+		`SELECT
+			e.id,
+			e.organiser_id,
+			e.title,
+			e.description,
+			e.city,
+			e.starts_at,
+			e.capacity,
+			COUNT(ea.user_id) AS attendee_count,
+			BOOL_OR(ea.user_id = $1) AS is_attending
+		FROM events e
+		LEFT JOIN event_attendees ea ON ea.event_id = e.id
+		WHERE e.starts_at > NOW()
+			AND ($2 = '' OR e.city ILIKE $2)
+		GROUP BY e.id
+		ORDER BY e.starts_at ASC
+		LIMIT 50`,
 		userID, city,
 	)
 	if err != nil {
@@ -59,8 +66,15 @@ func (h *Handler) ListEvents(w http.ResponseWriter, r *http.Request) {
 	var events []Event
 	for rows.Next() {
 		var e Event
-		rows.Scan(&e.ID, &e.OrganizerID, &e.Title, &e.Description, &e.City, &e.StartsAt, &e.Capacity, &e.AttendeeCt, &e.IsAttending)
+		if err := rows.Scan(&e.ID, &e.OrganizerID, &e.Title, &e.Description, &e.City, &e.StartsAt, &e.Capacity, &e.AttendeeCt, &e.IsAttending); err != nil {
+			response.Error(w, http.StatusInternalServerError, "could not read events")
+			return
+		}
 		events = append(events, e)
+	}
+	if err := rows.Err(); err != nil {
+		response.Error(w, http.StatusInternalServerError, "could not read events")
+		return
 	}
 
 	response.Success(w, http.StatusOK, events)
@@ -77,14 +91,21 @@ func (h *Handler) GetEvent(w http.ResponseWriter, r *http.Request) {
 
 	var e Event
 	err = h.db.QueryRow(r.Context(),
-		`SELECT 
-    e.id, e.organiser_id, e.title, e.description, e.city, e.starts_at, e.capacity,
-    COUNT(ea.user_id) AS attendee_count,
-    COALESCE(BOOL_OR(ea.user_id = $2), false) AS is_attending
-FROM events e
-LEFT JOIN event_attendees ea ON ea.event_id = e.id
-WHERE e.id = $1
-GROUP BY e.id`, eventID, userID,
+		`SELECT
+			e.id,
+			e.organiser_id,
+			e.title,
+			e.description,
+			e.city,
+			e.starts_at,
+			e.capacity,
+			COUNT(ea.user_id) AS attendee_count,
+			COALESCE(BOOL_OR(ea.user_id = $2), false) AS is_attending
+		FROM events e
+		LEFT JOIN event_attendees ea ON ea.event_id = e.id
+		WHERE e.id = $1
+		GROUP BY e.id`,
+		eventID, userID,
 	).Scan(&e.ID, &e.OrganizerID, &e.Title, &e.Description, &e.City, &e.StartsAt, &e.Capacity, &e.AttendeeCt, &e.IsAttending)
 	if err != nil {
 		response.Error(w, http.StatusNotFound, "event not found")
@@ -134,8 +155,16 @@ func (h *Handler) CreateEvent(w http.ResponseWriter, r *http.Request) {
 
 	var eventID uuid.UUID
 	if err := h.db.QueryRow(r.Context(),
-		`INSERT INTO events (organiser_id, title, description, city, starts_at, capacity)
-		 VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
+		`INSERT INTO events (
+			organiser_id,
+			title,
+			description,
+			city,
+			starts_at,
+			capacity
+		)
+		VALUES ($1, $2, $3, $4, $5, $6)
+		RETURNING id`,
 		userID, input.Title, input.Description, input.City, startsAt, input.Capacity,
 	).Scan(&eventID); err != nil {
 		response.Error(w, http.StatusInternalServerError, "could not create event")
@@ -154,11 +183,17 @@ func (h *Handler) GetAttendees(w http.ResponseWriter, r *http.Request) {
 	}
 
 	rows, err := h.db.Query(r.Context(),
-		`SELECT u.id, u.username, u.avatar_url, u.city, ea.rsvp_at
-		 FROM event_attendees ea
-		 JOIN users u ON u.id = ea.user_id
-		 WHERE ea.event_id = $1
-		 ORDER BY ea.rsvp_at ASC`, eventID,
+		`SELECT
+			u.id,
+			u.username,
+			u.avatar_url,
+			u.city,
+			ea.rsvp_at
+		FROM event_attendees ea
+		JOIN users u ON u.id = ea.user_id
+		WHERE ea.event_id = $1
+		ORDER BY ea.rsvp_at ASC`,
+		eventID,
 	)
 	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "could not fetch attendees")
@@ -177,8 +212,15 @@ func (h *Handler) GetAttendees(w http.ResponseWriter, r *http.Request) {
 	var attendees []Attendee
 	for rows.Next() {
 		var a Attendee
-		rows.Scan(&a.ID, &a.Username, &a.AvatarURL, &a.City, &a.RSVPAt)
+		if err := rows.Scan(&a.ID, &a.Username, &a.AvatarURL, &a.City, &a.RSVPAt); err != nil {
+			response.Error(w, http.StatusInternalServerError, "could not read attendees")
+			return
+		}
 		attendees = append(attendees, a)
+	}
+	if err := rows.Err(); err != nil {
+		response.Error(w, http.StatusInternalServerError, "could not read attendees")
+		return
 	}
 
 	response.Success(w, http.StatusOK, attendees)
@@ -197,11 +239,14 @@ func (h *Handler) RSVP(w http.ResponseWriter, r *http.Request) {
 	var capacity *int
 	var attendeeCount int
 	if err := h.db.QueryRow(r.Context(),
-		`SELECT e.capacity, COUNT(ea.user_id)
-		 FROM events e
-		 LEFT JOIN event_attendees ea ON ea.event_id = e.id
-		 WHERE e.id = $1
-		 GROUP BY e.capacity`, eventID,
+		`SELECT
+			e.capacity,
+			COUNT(ea.user_id)
+		FROM events e
+		LEFT JOIN event_attendees ea ON ea.event_id = e.id
+		WHERE e.id = $1
+		GROUP BY e.capacity`,
+		eventID,
 	).Scan(&capacity, &attendeeCount); err != nil {
 		response.Error(w, http.StatusNotFound, "event not found")
 		return
@@ -214,14 +259,25 @@ func (h *Handler) RSVP(w http.ResponseWriter, r *http.Request) {
 
 	// Toggle RSVP
 	var alreadyRSVPd bool
-	h.db.QueryRow(r.Context(),
-		`SELECT EXISTS(SELECT 1 FROM event_attendees WHERE event_id=$1 AND user_id=$2)`,
+	if err := h.db.QueryRow(r.Context(),
+		`SELECT EXISTS(
+			SELECT 1
+			FROM event_attendees
+			WHERE event_id = $1
+				AND user_id = $2
+		)`,
 		eventID, userID,
-	).Scan(&alreadyRSVPd)
+	).Scan(&alreadyRSVPd); err != nil {
+		response.Error(w, http.StatusInternalServerError, "could not check RSVP status")
+		return
+	}
 
 	if alreadyRSVPd {
 		if _, err := h.db.Exec(r.Context(),
-			`DELETE FROM event_attendees WHERE event_id=$1 AND user_id=$2`, eventID, userID,
+			`DELETE FROM event_attendees
+			WHERE event_id = $1
+				AND user_id = $2`,
+			eventID, userID,
 		); err != nil {
 			response.Error(w, http.StatusInternalServerError, "could not remove RSVP")
 			return
@@ -229,7 +285,12 @@ func (h *Handler) RSVP(w http.ResponseWriter, r *http.Request) {
 		response.Success(w, http.StatusOK, map[string]bool{"attending": false})
 	} else {
 		if _, err := h.db.Exec(r.Context(),
-			`INSERT INTO event_attendees (event_id, user_id) VALUES ($1, $2)`, eventID, userID,
+			`INSERT INTO event_attendees (
+				event_id,
+				user_id
+			)
+			VALUES ($1, $2)`,
+			eventID, userID,
 		); err != nil {
 			response.Error(w, http.StatusInternalServerError, "could not RSVP")
 			return

@@ -74,10 +74,9 @@ func (h *Handler) UpdateMe(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.CurrentUserID(r)
 
 	var input struct {
-		Username   *string `json:"username"`
-		City       *string `json:"city"`
-		Country    *string `json:"country"`
-		SoberSince *string `json:"sober_since"`
+		Username *string `json:"username"`
+		City     *string `json:"city"`
+		Country  *string `json:"country"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
@@ -109,10 +108,11 @@ func (h *Handler) UpdateMe(w http.ResponseWriter, r *http.Request) {
 	}
 
 	_, err := h.db.Exec(r.Context(),
-		`UPDATE users SET
+		`UPDATE users
+		SET
 			username = COALESCE($1, username),
-			city     = COALESCE($2, city),
-			country  = COALESCE($3, country)
+			city = COALESCE($2, city),
+			country = COALESCE($3, country)
 		WHERE id = $4`,
 		input.Username, input.City, input.Country, userID,
 	)
@@ -170,7 +170,9 @@ func (h *Handler) UploadAvatar(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if _, err := h.db.Exec(r.Context(),
-		`UPDATE users SET avatar_url = $1 WHERE id = $2`,
+		`UPDATE users
+		SET avatar_url = $1
+		WHERE id = $2`,
 		avatarURL, userID,
 	); err != nil {
 		response.Error(w, http.StatusInternalServerError, "could not save avatar")
@@ -187,22 +189,29 @@ func (h *Handler) Discover(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query().Get("q")
 
 	rows, err := h.db.Query(r.Context(),
-		`SELECT u.id, u.username, u.avatar_url, u.city, u.country, u.sober_since, u.created_at
-		 FROM users u
-		 WHERE u.id != $1
-		 AND ($2 = '' OR u.city ILIKE $2)
-		 AND (
-		 	$3 = ''
-		 	OR u.username ILIKE '%' || $3 || '%'
-		 )
-		 ORDER BY
-		 	CASE
-		 		WHEN u.username = $3 THEN 0
-		 		WHEN u.username ILIKE $3 || '%' THEN 1
-		 		ELSE 2
-		 	END,
-		 	u.created_at DESC
-		 LIMIT 20`,
+		`SELECT
+			u.id,
+			u.username,
+			u.avatar_url,
+			u.city,
+			u.country,
+			u.sober_since,
+			u.created_at
+		FROM users u
+		WHERE u.id != $1
+			AND ($2 = '' OR u.city ILIKE $2)
+			AND (
+				$3 = ''
+				OR u.username ILIKE '%' || $3 || '%'
+			)
+		ORDER BY
+			CASE
+				WHEN u.username = $3 THEN 0
+				WHEN u.username ILIKE $3 || '%' THEN 1
+				ELSE 2
+			END,
+			u.created_at DESC
+		LIMIT 20`,
 		currentUserID, city, username.Normalize(query),
 	)
 	if err != nil {
@@ -214,8 +223,15 @@ func (h *Handler) Discover(w http.ResponseWriter, r *http.Request) {
 	var users []User
 	for rows.Next() {
 		var u User
-		rows.Scan(&u.ID, &u.Username, &u.AvatarURL, &u.City, &u.Country, &u.SoberSince, &u.CreatedAt)
+		if err := rows.Scan(&u.ID, &u.Username, &u.AvatarURL, &u.City, &u.Country, &u.SoberSince, &u.CreatedAt); err != nil {
+			response.Error(w, http.StatusInternalServerError, "could not read users")
+			return
+		}
 		users = append(users, u)
+	}
+	if err := rows.Err(); err != nil {
+		response.Error(w, http.StatusInternalServerError, "could not read users")
+		return
 	}
 
 	response.Success(w, http.StatusOK, users)
@@ -224,8 +240,17 @@ func (h *Handler) Discover(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) fetchUser(ctx context.Context, id uuid.UUID) (*User, error) {
 	var u User
 	err := h.db.QueryRow(ctx,
-		`SELECT id, username, avatar_url, city, country, sober_since, created_at
-		 FROM users WHERE id = $1`, id,
+		`SELECT
+			id,
+			username,
+			avatar_url,
+			city,
+			country,
+			sober_since,
+			created_at
+		FROM users
+		WHERE id = $1`,
+		id,
 	).Scan(&u.ID, &u.Username, &u.AvatarURL, &u.City, &u.Country, &u.SoberSince, &u.CreatedAt)
 	if err != nil {
 		return nil, err

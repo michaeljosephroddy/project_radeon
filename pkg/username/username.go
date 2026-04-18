@@ -11,22 +11,22 @@ const (
 )
 
 var (
-	pattern = regexp.MustCompile(`^[a-z0-9._]{3,20}$`)
+	pattern  = regexp.MustCompile(`^[a-z0-9._]{3,20}$`)
 	reserved = map[string]struct{}{
-		"admin":      {},
-		"api":        {},
-		"app":        {},
-		"community":  {},
-		"discover":   {},
-		"events":     {},
-		"feed":       {},
-		"help":       {},
-		"login":      {},
-		"messages":   {},
-		"profile":    {},
-		"register":   {},
-		"settings":   {},
-		"support":    {},
+		"admin":     {},
+		"api":       {},
+		"app":       {},
+		"community": {},
+		"discover":  {},
+		"events":    {},
+		"feed":      {},
+		"help":      {},
+		"login":     {},
+		"messages":  {},
+		"profile":   {},
+		"register":  {},
+		"settings":  {},
+		"support":   {},
 	}
 )
 

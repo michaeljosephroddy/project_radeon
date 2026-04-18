@@ -5,9 +5,9 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/google/uuid"
 	"github.com/project_radeon/api/internal/auth"
 	"github.com/project_radeon/api/pkg/response"
-	"github.com/google/uuid"
 )
 
 type contextKey string

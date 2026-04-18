@@ -6,11 +6,11 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/project_radeon/api/pkg/middleware"
-	"github.com/project_radeon/api/pkg/response"
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/project_radeon/api/pkg/middleware"
+	"github.com/project_radeon/api/pkg/response"
 )
 
 type Handler struct {
@@ -30,24 +30,35 @@ type Post struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
-// GET /feed?page=1&limit=20
-func (h *Handler) GetFeed(w http.ResponseWriter, r *http.Request) {
+func parsePagination(r *http.Request) (limit, offset int) {
 	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
-	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	limit, _ = strconv.Atoi(r.URL.Query().Get("limit"))
 	if page < 1 {
 		page = 1
 	}
 	if limit < 1 || limit > 50 {
 		limit = 20
 	}
-	offset := (page - 1) * limit
+
+	return limit, (page - 1) * limit
+}
+
+// GET /feed?page=1&limit=20
+func (h *Handler) GetFeed(w http.ResponseWriter, r *http.Request) {
+	limit, offset := parsePagination(r)
 
 	rows, err := h.db.Query(r.Context(),
-		`SELECT p.id, p.user_id, u.username, u.avatar_url, p.body, p.created_at
-		 FROM posts p
-		 JOIN users u ON u.id = p.user_id
-		 ORDER BY p.created_at DESC
-		 LIMIT $1 OFFSET $2`,
+		`SELECT
+			p.id,
+			p.user_id,
+			u.username,
+			u.avatar_url,
+			p.body,
+			p.created_at
+		FROM posts p
+		JOIN users u ON u.id = p.user_id
+		ORDER BY p.created_at DESC
+		LIMIT $1 OFFSET $2`,
 		limit, offset,
 	)
 	if err != nil {
@@ -59,8 +70,15 @@ func (h *Handler) GetFeed(w http.ResponseWriter, r *http.Request) {
 	var posts []Post
 	for rows.Next() {
 		var p Post
-		rows.Scan(&p.ID, &p.UserID, &p.Username, &p.AvatarURL, &p.Body, &p.CreatedAt)
+		if err := rows.Scan(&p.ID, &p.UserID, &p.Username, &p.AvatarURL, &p.Body, &p.CreatedAt); err != nil {
+			response.Error(w, http.StatusInternalServerError, "could not read feed")
+			return
+		}
 		posts = append(posts, p)
+	}
+	if err := rows.Err(); err != nil {
+		response.Error(w, http.StatusInternalServerError, "could not read feed")
+		return
 	}
 
 	response.Success(w, http.StatusOK, posts)
@@ -74,23 +92,21 @@ func (h *Handler) GetUserPosts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
-	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	if page < 1 {
-		page = 1
-	}
-	if limit < 1 || limit > 50 {
-		limit = 20
-	}
-	offset := (page - 1) * limit
+	limit, offset := parsePagination(r)
 
 	rows, err := h.db.Query(r.Context(),
-		`SELECT p.id, p.user_id, u.username, u.avatar_url, p.body, p.created_at
-		 FROM posts p
-		 JOIN users u ON u.id = p.user_id
-		 WHERE p.user_id = $1
-		 ORDER BY p.created_at DESC
-		 LIMIT $2 OFFSET $3`,
+		`SELECT
+			p.id,
+			p.user_id,
+			u.username,
+			u.avatar_url,
+			p.body,
+			p.created_at
+		FROM posts p
+		JOIN users u ON u.id = p.user_id
+		WHERE p.user_id = $1
+		ORDER BY p.created_at DESC
+		LIMIT $2 OFFSET $3`,
 		targetID, limit, offset,
 	)
 	if err != nil {
@@ -102,8 +118,15 @@ func (h *Handler) GetUserPosts(w http.ResponseWriter, r *http.Request) {
 	var posts []Post
 	for rows.Next() {
 		var p Post
-		rows.Scan(&p.ID, &p.UserID, &p.Username, &p.AvatarURL, &p.Body, &p.CreatedAt)
+		if err := rows.Scan(&p.ID, &p.UserID, &p.Username, &p.AvatarURL, &p.Body, &p.CreatedAt); err != nil {
+			response.Error(w, http.StatusInternalServerError, "could not read posts")
+			return
+		}
 		posts = append(posts, p)
+	}
+	if err := rows.Err(); err != nil {
+		response.Error(w, http.StatusInternalServerError, "could not read posts")
+		return
 	}
 
 	response.Success(w, http.StatusOK, posts)
@@ -123,7 +146,12 @@ func (h *Handler) CreatePost(w http.ResponseWriter, r *http.Request) {
 
 	var postID uuid.UUID
 	err := h.db.QueryRow(r.Context(),
-		`INSERT INTO posts (user_id, body) VALUES ($1, $2) RETURNING id`,
+		`INSERT INTO posts (
+			user_id,
+			body
+		)
+		VALUES ($1, $2)
+		RETURNING id`,
 		userID, input.Body,
 	).Scan(&postID)
 	if err != nil {
@@ -163,11 +191,17 @@ func (h *Handler) GetReactions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	rows, err := h.db.Query(r.Context(),
-		`SELECT pr.id, pr.user_id, u.username, u.avatar_url, pr.type
-		 FROM post_reactions pr
-		 JOIN users u ON u.id = pr.user_id
-		 WHERE pr.post_id = $1
-		 ORDER BY pr.type ASC`, postID,
+		`SELECT
+			pr.id,
+			pr.user_id,
+			u.username,
+			u.avatar_url,
+			pr.type
+		FROM post_reactions pr
+		JOIN users u ON u.id = pr.user_id
+		WHERE pr.post_id = $1
+		ORDER BY pr.type ASC`,
+		postID,
 	)
 	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "could not fetch reactions")
@@ -186,8 +220,15 @@ func (h *Handler) GetReactions(w http.ResponseWriter, r *http.Request) {
 	var reactions []Reaction
 	for rows.Next() {
 		var re Reaction
-		rows.Scan(&re.ID, &re.UserID, &re.Username, &re.AvatarURL, &re.Type)
+		if err := rows.Scan(&re.ID, &re.UserID, &re.Username, &re.AvatarURL, &re.Type); err != nil {
+			response.Error(w, http.StatusInternalServerError, "could not read reactions")
+			return
+		}
 		reactions = append(reactions, re)
+	}
+	if err := rows.Err(); err != nil {
+		response.Error(w, http.StatusInternalServerError, "could not read reactions")
+		return
 	}
 
 	response.Success(w, http.StatusOK, reactions)
@@ -215,14 +256,26 @@ func (h *Handler) ReactToPost(w http.ResponseWriter, r *http.Request) {
 
 	// Upsert — reacting again with same type removes it (toggle)
 	var exists bool
-	h.db.QueryRow(r.Context(),
-		`SELECT EXISTS(SELECT 1 FROM post_reactions WHERE post_id=$1 AND user_id=$2 AND type=$3)`,
+	if err := h.db.QueryRow(r.Context(),
+		`SELECT EXISTS(
+			SELECT 1
+			FROM post_reactions
+			WHERE post_id = $1
+				AND user_id = $2
+				AND type = $3
+		)`,
 		postID, userID, input.Type,
-	).Scan(&exists)
+	).Scan(&exists); err != nil {
+		response.Error(w, http.StatusInternalServerError, "could not check reaction")
+		return
+	}
 
 	if exists {
 		if _, err := h.db.Exec(r.Context(),
-			`DELETE FROM post_reactions WHERE post_id=$1 AND user_id=$2 AND type=$3`,
+			`DELETE FROM post_reactions
+			WHERE post_id = $1
+				AND user_id = $2
+				AND type = $3`,
 			postID, userID, input.Type,
 		); err != nil {
 			response.Error(w, http.StatusInternalServerError, "could not remove reaction")
@@ -231,7 +284,12 @@ func (h *Handler) ReactToPost(w http.ResponseWriter, r *http.Request) {
 		response.Success(w, http.StatusOK, map[string]bool{"reacted": false})
 	} else {
 		if _, err := h.db.Exec(r.Context(),
-			`INSERT INTO post_reactions (post_id, user_id, type) VALUES ($1, $2, $3)`,
+			`INSERT INTO post_reactions (
+				post_id,
+				user_id,
+				type
+			)
+			VALUES ($1, $2, $3)`,
 			postID, userID, input.Type,
 		); err != nil {
 			response.Error(w, http.StatusInternalServerError, "could not add reaction")
@@ -260,7 +318,13 @@ func (h *Handler) AddComment(w http.ResponseWriter, r *http.Request) {
 
 	var commentID uuid.UUID
 	if err := h.db.QueryRow(r.Context(),
-		`INSERT INTO comments (post_id, user_id, body) VALUES ($1, $2, $3) RETURNING id`,
+		`INSERT INTO comments (
+			post_id,
+			user_id,
+			body
+		)
+		VALUES ($1, $2, $3)
+		RETURNING id`,
 		postID, userID, input.Body,
 	).Scan(&commentID); err != nil {
 		response.Error(w, http.StatusInternalServerError, "could not add comment")
@@ -279,11 +343,18 @@ func (h *Handler) GetComments(w http.ResponseWriter, r *http.Request) {
 	}
 
 	rows, err := h.db.Query(r.Context(),
-		`SELECT c.id, c.user_id, u.username, u.avatar_url, c.body, c.created_at
-		 FROM comments c
-		 JOIN users u ON u.id = c.user_id
-		 WHERE c.post_id = $1
-		 ORDER BY c.created_at ASC`, postID,
+		`SELECT
+			c.id,
+			c.user_id,
+			u.username,
+			u.avatar_url,
+			c.body,
+			c.created_at
+		FROM comments c
+		JOIN users u ON u.id = c.user_id
+		WHERE c.post_id = $1
+		ORDER BY c.created_at ASC`,
+		postID,
 	)
 	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "could not fetch comments")
@@ -303,8 +374,15 @@ func (h *Handler) GetComments(w http.ResponseWriter, r *http.Request) {
 	var comments []Comment
 	for rows.Next() {
 		var c Comment
-		rows.Scan(&c.ID, &c.UserID, &c.Username, &c.AvatarURL, &c.Body, &c.CreatedAt)
+		if err := rows.Scan(&c.ID, &c.UserID, &c.Username, &c.AvatarURL, &c.Body, &c.CreatedAt); err != nil {
+			response.Error(w, http.StatusInternalServerError, "could not read comments")
+			return
+		}
 		comments = append(comments, c)
+	}
+	if err := rows.Err(); err != nil {
+		response.Error(w, http.StatusInternalServerError, "could not read comments")
+		return
 	}
 
 	response.Success(w, http.StatusOK, comments)

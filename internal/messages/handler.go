@@ -35,26 +35,38 @@ func (h *Handler) ListConversations(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.CurrentUserID(r)
 
 	rows, err := h.db.Query(r.Context(),
-		`SELECT c.id, c.is_group, c.name,
-       other.username,
-       c.created_at,
-       m.body AS last_message, m.sent_at AS last_message_at
-     FROM conversations c
-     JOIN conversation_members cm ON cm.conversation_id = c.id AND cm.user_id = $1
-     LEFT JOIN LATERAL (
-       SELECT u.username
-       FROM conversation_members cm2
-       JOIN users u ON u.id = cm2.user_id
-       WHERE cm2.conversation_id = c.id AND cm2.user_id != $1
-       LIMIT 1
-     ) other ON NOT c.is_group
-     LEFT JOIN LATERAL (
-       SELECT body, sent_at FROM messages
-       WHERE conversation_id = c.id
-       ORDER BY sent_at DESC LIMIT 1
-     ) m ON true
-     WHERE c.status = 'active'
-     ORDER BY COALESCE(m.sent_at, c.created_at) DESC`, userID,
+		`SELECT
+			c.id,
+			c.is_group,
+			c.name,
+			other.username,
+			c.created_at,
+			m.body AS last_message,
+			m.sent_at AS last_message_at
+		FROM conversations c
+		JOIN conversation_members cm
+			ON cm.conversation_id = c.id
+			AND cm.user_id = $1
+		LEFT JOIN LATERAL (
+			SELECT u.username
+			FROM conversation_members cm2
+			JOIN users u ON u.id = cm2.user_id
+			WHERE cm2.conversation_id = c.id
+				AND cm2.user_id != $1
+			LIMIT 1
+		) other ON NOT c.is_group
+		LEFT JOIN LATERAL (
+			SELECT
+				body,
+				sent_at
+			FROM messages
+			WHERE conversation_id = c.id
+			ORDER BY sent_at DESC
+			LIMIT 1
+		) m ON true
+		WHERE c.status = 'active'
+		ORDER BY COALESCE(m.sent_at, c.created_at) DESC`,
+		userID,
 	)
 	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "could not fetch conversations")
@@ -65,38 +77,57 @@ func (h *Handler) ListConversations(w http.ResponseWriter, r *http.Request) {
 	var convs []Conversation
 	for rows.Next() {
 		var c Conversation
-		rows.Scan(&c.ID, &c.IsGroup, &c.Name, &c.Username, &c.CreatedAt, &c.LastMessage, &c.LastMessageAt)
+		if err := rows.Scan(&c.ID, &c.IsGroup, &c.Name, &c.Username, &c.CreatedAt, &c.LastMessage, &c.LastMessageAt); err != nil {
+			response.Error(w, http.StatusInternalServerError, "could not read conversations")
+			return
+		}
 		convs = append(convs, c)
+	}
+	if err := rows.Err(); err != nil {
+		response.Error(w, http.StatusInternalServerError, "could not read conversations")
+		return
 	}
 
 	response.Success(w, http.StatusOK, convs)
 }
 
-// GET /conversations/requests — incoming message requests
+// GET /conversations/requests
 func (h *Handler) ListMessageRequests(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.CurrentUserID(r)
 	rows, err := h.db.Query(r.Context(),
-		`SELECT c.id, c.is_group, c.name,
-           other.username,
-           c.created_at,
-           m.body AS last_message, m.sent_at AS last_message_at
-         FROM conversations c
-         JOIN conversation_members cm ON cm.conversation_id = c.id
-           AND cm.user_id = $1 AND cm.role = 'addressee'
-         LEFT JOIN LATERAL (
-           SELECT u.username
-           FROM conversation_members cm2
-           JOIN users u ON u.id = cm2.user_id
-           WHERE cm2.conversation_id = c.id AND cm2.user_id != $1
-           LIMIT 1
-         ) other ON NOT c.is_group
-         LEFT JOIN LATERAL (
-           SELECT body, sent_at FROM messages
-           WHERE conversation_id = c.id
-           ORDER BY sent_at DESC LIMIT 1
-         ) m ON true
-         WHERE c.status = 'request'
-         ORDER BY c.created_at DESC`, userID,
+		`SELECT
+			c.id,
+			c.is_group,
+			c.name,
+			other.username,
+			c.created_at,
+			m.body AS last_message,
+			m.sent_at AS last_message_at
+		FROM conversations c
+		JOIN conversation_members cm
+			ON cm.conversation_id = c.id
+			AND cm.user_id = $1
+			AND cm.role = 'addressee'
+		LEFT JOIN LATERAL (
+			SELECT u.username
+			FROM conversation_members cm2
+			JOIN users u ON u.id = cm2.user_id
+			WHERE cm2.conversation_id = c.id
+				AND cm2.user_id != $1
+			LIMIT 1
+		) other ON NOT c.is_group
+		LEFT JOIN LATERAL (
+			SELECT
+				body,
+				sent_at
+			FROM messages
+			WHERE conversation_id = c.id
+			ORDER BY sent_at DESC
+			LIMIT 1
+		) m ON true
+		WHERE c.status = 'request'
+		ORDER BY c.created_at DESC`,
+		userID,
 	)
 	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "could not fetch requests")
@@ -107,13 +138,19 @@ func (h *Handler) ListMessageRequests(w http.ResponseWriter, r *http.Request) {
 	var convs []Conversation
 	for rows.Next() {
 		var c Conversation
-		rows.Scan(&c.ID, &c.IsGroup, &c.Name, &c.Username, &c.CreatedAt, &c.LastMessage, &c.LastMessageAt)
+		if err := rows.Scan(&c.ID, &c.IsGroup, &c.Name, &c.Username, &c.CreatedAt, &c.LastMessage, &c.LastMessageAt); err != nil {
+			response.Error(w, http.StatusInternalServerError, "could not read requests")
+			return
+		}
 		convs = append(convs, c)
+	}
+	if err := rows.Err(); err != nil {
+		response.Error(w, http.StatusInternalServerError, "could not read requests")
+		return
 	}
 	response.Success(w, http.StatusOK, convs)
 }
 
-// POST /conversations — start a DM or group chat
 // POST /conversations
 func (h *Handler) CreateConversation(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.CurrentUserID(r)
@@ -133,11 +170,16 @@ func (h *Handler) CreateConversation(w http.ResponseWriter, r *http.Request) {
 	if !isGroup && len(input.MemberIDs) == 1 {
 		var existingID uuid.UUID
 		err := h.db.QueryRow(r.Context(),
-			`SELECT c.id FROM conversations c
-             JOIN conversation_members cm1 ON cm1.conversation_id = c.id AND cm1.user_id = $1
-             JOIN conversation_members cm2 ON cm2.conversation_id = c.id AND cm2.user_id = $2
-             WHERE c.is_group = false
-             LIMIT 1`,
+			`SELECT c.id
+			FROM conversations c
+			JOIN conversation_members cm1
+				ON cm1.conversation_id = c.id
+				AND cm1.user_id = $1
+			JOIN conversation_members cm2
+				ON cm2.conversation_id = c.id
+				AND cm2.user_id = $2
+			WHERE c.is_group = false
+			LIMIT 1`,
 			userID, input.MemberIDs[0],
 		).Scan(&existingID)
 		if err == nil {
@@ -146,16 +188,17 @@ func (h *Handler) CreateConversation(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// New DM starts as a request, group chats are immediately active
-	// they shoudld all be active
 	status := "active"
-	// if !isGroup {
-	// 	status = "request"
-	// }
 
 	var convID uuid.UUID
 	if err := h.db.QueryRow(r.Context(),
-		`INSERT INTO conversations (is_group, name, status) VALUES ($1, $2, $3) RETURNING id`,
+		`INSERT INTO conversations (
+			is_group,
+			name,
+			status
+		)
+		VALUES ($1, $2, $3)
+		RETURNING id`,
 		isGroup, input.Name, status,
 	).Scan(&convID); err != nil {
 		response.Error(w, http.StatusInternalServerError, "could not create conversation")
@@ -164,7 +207,12 @@ func (h *Handler) CreateConversation(w http.ResponseWriter, r *http.Request) {
 
 	// Creator is the requester, others are addressees
 	if _, err := h.db.Exec(r.Context(),
-		`INSERT INTO conversation_members (conversation_id, user_id, role) VALUES ($1, $2, 'requester')`,
+		`INSERT INTO conversation_members (
+			conversation_id,
+			user_id,
+			role
+		)
+		VALUES ($1, $2, 'requester')`,
 		convID, userID,
 	); err != nil {
 		response.Error(w, http.StatusInternalServerError, "could not add members")
@@ -172,7 +220,12 @@ func (h *Handler) CreateConversation(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, memberID := range input.MemberIDs {
 		if _, err := h.db.Exec(r.Context(),
-			`INSERT INTO conversation_members (conversation_id, user_id, role) VALUES ($1, $2, 'addressee')`,
+			`INSERT INTO conversation_members (
+				conversation_id,
+				user_id,
+				role
+			)
+			VALUES ($1, $2, 'addressee')`,
 			convID, memberID,
 		); err != nil {
 			response.Error(w, http.StatusInternalServerError, "could not add members")
@@ -206,12 +259,19 @@ func (h *Handler) UpdateConversationStatus(w http.ResponseWriter, r *http.Reques
 
 	// Only the addressee can accept/decline
 	var isMember bool
-	h.db.QueryRow(r.Context(),
+	if err := h.db.QueryRow(r.Context(),
 		`SELECT EXISTS(
-            SELECT 1 FROM conversation_members
-            WHERE conversation_id=$1 AND user_id=$2 AND role='addressee'
-        )`, convID, userID,
-	).Scan(&isMember)
+			SELECT 1
+			FROM conversation_members
+			WHERE conversation_id = $1
+				AND user_id = $2
+				AND role = 'addressee'
+		)`,
+		convID, userID,
+	).Scan(&isMember); err != nil {
+		response.Error(w, http.StatusInternalServerError, "could not check conversation membership")
+		return
+	}
 	if !isMember {
 		response.Error(w, http.StatusForbidden, "not authorised")
 		return
@@ -219,13 +279,20 @@ func (h *Handler) UpdateConversationStatus(w http.ResponseWriter, r *http.Reques
 
 	if input.Status == "declined" {
 		// Delete entirely so sender can try again
-		if _, err := h.db.Exec(r.Context(), `DELETE FROM conversations WHERE id=$1`, convID); err != nil {
+		if _, err := h.db.Exec(r.Context(),
+			`DELETE FROM conversations
+			WHERE id = $1`,
+			convID,
+		); err != nil {
 			response.Error(w, http.StatusInternalServerError, "could not update conversation")
 			return
 		}
 	} else {
 		if _, err := h.db.Exec(r.Context(),
-			`UPDATE conversations SET status='active' WHERE id=$1`, convID,
+			`UPDATE conversations
+			SET status = 'active'
+			WHERE id = $1`,
+			convID,
 		); err != nil {
 			response.Error(w, http.StatusInternalServerError, "could not update conversation")
 			return
@@ -246,21 +313,36 @@ func (h *Handler) GetMessages(w http.ResponseWriter, r *http.Request) {
 
 	// Ensure user is a member
 	var isMember bool
-	h.db.QueryRow(r.Context(),
-		`SELECT EXISTS(SELECT 1 FROM conversation_members WHERE conversation_id=$1 AND user_id=$2)`,
+	if err := h.db.QueryRow(r.Context(),
+		`SELECT EXISTS(
+			SELECT 1
+			FROM conversation_members
+			WHERE conversation_id = $1
+				AND user_id = $2
+		)`,
 		convID, userID,
-	).Scan(&isMember)
+	).Scan(&isMember); err != nil {
+		response.Error(w, http.StatusInternalServerError, "could not check conversation membership")
+		return
+	}
 	if !isMember {
 		response.Error(w, http.StatusForbidden, "not a member of this conversation")
 		return
 	}
 
 	rows, err := h.db.Query(r.Context(),
-		`SELECT m.id, m.sender_id, u.username, u.avatar_url, m.body, m.sent_at
-		 FROM messages m
-		 JOIN users u ON u.id = m.sender_id
-		 WHERE m.conversation_id = $1
-		 ORDER BY m.sent_at ASC`, convID,
+		`SELECT
+			m.id,
+			m.sender_id,
+			u.username,
+			u.avatar_url,
+			m.body,
+			m.sent_at
+		FROM messages m
+		JOIN users u ON u.id = m.sender_id
+		WHERE m.conversation_id = $1
+		ORDER BY m.sent_at ASC`,
+		convID,
 	)
 	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "could not fetch messages")
@@ -280,8 +362,15 @@ func (h *Handler) GetMessages(w http.ResponseWriter, r *http.Request) {
 	var msgs []Message
 	for rows.Next() {
 		var m Message
-		rows.Scan(&m.ID, &m.SenderID, &m.Username, &m.AvatarURL, &m.Body, &m.SentAt)
+		if err := rows.Scan(&m.ID, &m.SenderID, &m.Username, &m.AvatarURL, &m.Body, &m.SentAt); err != nil {
+			response.Error(w, http.StatusInternalServerError, "could not read messages")
+			return
+		}
 		msgs = append(msgs, m)
+	}
+	if err := rows.Err(); err != nil {
+		response.Error(w, http.StatusInternalServerError, "could not read messages")
+		return
 	}
 
 	response.Success(w, http.StatusOK, msgs)
@@ -298,10 +387,18 @@ func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
 
 	// Ensure user is a member
 	var isMember bool
-	h.db.QueryRow(r.Context(),
-		`SELECT EXISTS(SELECT 1 FROM conversation_members WHERE conversation_id=$1 AND user_id=$2)`,
+	if err := h.db.QueryRow(r.Context(),
+		`SELECT EXISTS(
+			SELECT 1
+			FROM conversation_members
+			WHERE conversation_id = $1
+				AND user_id = $2
+		)`,
 		convID, userID,
-	).Scan(&isMember)
+	).Scan(&isMember); err != nil {
+		response.Error(w, http.StatusInternalServerError, "could not check conversation membership")
+		return
+	}
 	if !isMember {
 		response.Error(w, http.StatusForbidden, "not a member of this conversation")
 		return
@@ -317,7 +414,13 @@ func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
 
 	var msgID uuid.UUID
 	if err := h.db.QueryRow(r.Context(),
-		`INSERT INTO messages (conversation_id, sender_id, body) VALUES ($1, $2, $3) RETURNING id`,
+		`INSERT INTO messages (
+			conversation_id,
+			sender_id,
+			body
+		)
+		VALUES ($1, $2, $3)
+		RETURNING id`,
 		convID, userID, input.Body,
 	).Scan(&msgID); err != nil {
 		response.Error(w, http.StatusInternalServerError, "could not send message")

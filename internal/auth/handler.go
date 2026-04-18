@@ -55,17 +55,23 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 
 	// Check email not already taken
 	var exists bool
-	h.db.QueryRow(r.Context(),
+	if err := h.db.QueryRow(r.Context(),
 		"SELECT EXISTS(SELECT 1 FROM users WHERE email = $1)", input.Email,
-	).Scan(&exists)
+	).Scan(&exists); err != nil {
+		response.Error(w, http.StatusInternalServerError, "could not validate email")
+		return
+	}
 	if exists {
 		response.Error(w, http.StatusConflict, "email already registered")
 		return
 	}
 
-	h.db.QueryRow(r.Context(),
+	if err := h.db.QueryRow(r.Context(),
 		"SELECT EXISTS(SELECT 1 FROM users WHERE username = $1)", input.Username,
-	).Scan(&exists)
+	).Scan(&exists); err != nil {
+		response.Error(w, http.StatusInternalServerError, "could not validate username")
+		return
+	}
 	if exists {
 		response.Error(w, http.StatusConflict, "username already taken")
 		return
@@ -90,9 +96,16 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 	}
 
 	err = h.db.QueryRow(r.Context(),
-		`INSERT INTO users (username, email, password_hash, city, country, sober_since)
-		 VALUES ($1, $2, $3, $4, $5, $6)
-		 RETURNING id`,
+		`INSERT INTO users (
+			username,
+			email,
+			password_hash,
+			city,
+			country,
+			sober_since
+		)
+		VALUES ($1, $2, $3, $4, $5, $6)
+		RETURNING id`,
 		input.Username, input.Email, string(hash), input.City, input.Country, soberSince,
 	).Scan(&userID)
 	if err != nil {

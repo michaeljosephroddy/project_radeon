@@ -20,11 +20,11 @@ func NewHandler(db *pgxpool.Pool) *Handler {
 }
 
 type followUser struct {
-	UserID    uuid.UUID  `json:"user_id"`
-	Username  string     `json:"username"`
-	AvatarURL *string    `json:"avatar_url"`
-	City      *string    `json:"city"`
-	CreatedAt time.Time  `json:"created_at"`
+	UserID    uuid.UUID `json:"user_id"`
+	Username  string    `json:"username"`
+	AvatarURL *string   `json:"avatar_url"`
+	City      *string   `json:"city"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 // POST /users/{id}/follow
@@ -42,7 +42,12 @@ func (h *Handler) Follow(w http.ResponseWriter, r *http.Request) {
 	}
 
 	_, err = h.db.Exec(r.Context(),
-		`INSERT INTO follows (follower_id, following_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+		`INSERT INTO follows (
+			follower_id,
+			following_id
+		)
+		VALUES ($1, $2)
+		ON CONFLICT DO NOTHING`,
 		followerID, followingID,
 	)
 	if err != nil {
@@ -63,7 +68,9 @@ func (h *Handler) Unfollow(w http.ResponseWriter, r *http.Request) {
 	}
 
 	result, err := h.db.Exec(r.Context(),
-		`DELETE FROM follows WHERE follower_id=$1 AND following_id=$2`,
+		`DELETE FROM follows
+		WHERE follower_id = $1
+			AND following_id = $2`,
 		followerID, followingID,
 	)
 	if err != nil || result.RowsAffected() == 0 {
@@ -79,11 +86,16 @@ func (h *Handler) ListFollowing(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.CurrentUserID(r)
 
 	rows, err := h.db.Query(r.Context(),
-		`SELECT u.id, u.username, u.avatar_url, u.city, f.created_at
-		 FROM follows f
-		 JOIN users u ON u.id = f.following_id
-		 WHERE f.follower_id = $1
-		 ORDER BY f.created_at DESC`,
+		`SELECT
+			u.id,
+			u.username,
+			u.avatar_url,
+			u.city,
+			f.created_at
+		FROM follows f
+		JOIN users u ON u.id = f.following_id
+		WHERE f.follower_id = $1
+		ORDER BY f.created_at DESC`,
 		userID,
 	)
 	if err != nil {
@@ -101,6 +113,10 @@ func (h *Handler) ListFollowing(w http.ResponseWriter, r *http.Request) {
 		}
 		users = append(users, u)
 	}
+	if err := rows.Err(); err != nil {
+		response.Error(w, http.StatusInternalServerError, "could not read following")
+		return
+	}
 
 	response.Success(w, http.StatusOK, users)
 }
@@ -110,11 +126,16 @@ func (h *Handler) ListFollowers(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.CurrentUserID(r)
 
 	rows, err := h.db.Query(r.Context(),
-		`SELECT u.id, u.username, u.avatar_url, u.city, f.created_at
-		 FROM follows f
-		 JOIN users u ON u.id = f.follower_id
-		 WHERE f.following_id = $1
-		 ORDER BY f.created_at DESC`,
+		`SELECT
+			u.id,
+			u.username,
+			u.avatar_url,
+			u.city,
+			f.created_at
+		FROM follows f
+		JOIN users u ON u.id = f.follower_id
+		WHERE f.following_id = $1
+		ORDER BY f.created_at DESC`,
 		userID,
 	)
 	if err != nil {
@@ -131,6 +152,10 @@ func (h *Handler) ListFollowers(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		users = append(users, u)
+	}
+	if err := rows.Err(); err != nil {
+		response.Error(w, http.StatusInternalServerError, "could not read followers")
+		return
 	}
 
 	response.Success(w, http.StatusOK, users)
