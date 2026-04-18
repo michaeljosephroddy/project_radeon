@@ -22,6 +22,7 @@ type Chat struct {
 	IsGroup       bool       `json:"is_group"`
 	Name          *string    `json:"name"`
 	Username      *string    `json:"username"`
+	AvatarURL     *string    `json:"avatar_url"`
 	CreatedAt     time.Time  `json:"created_at"`
 	LastMessage   *string    `json:"last_message"`
 	LastMessageAt *time.Time `json:"last_message_at"`
@@ -41,6 +42,7 @@ func (h *Handler) ListChats(w http.ResponseWriter, r *http.Request) {
 			ch.is_group,
 			ch.name,
 			other.username,
+			other.avatar_url,
 			ch.created_at,
 			m.body AS last_message,
 			m.sent_at AS last_message_at
@@ -49,7 +51,9 @@ func (h *Handler) ListChats(w http.ResponseWriter, r *http.Request) {
 			ON cm.chat_id = ch.id
 			AND cm.user_id = $1
 		LEFT JOIN LATERAL (
-			SELECT u.username
+			SELECT
+				u.username,
+				u.avatar_url
 			FROM chat_members cm2
 			JOIN users u ON u.id = cm2.user_id
 			WHERE cm2.chat_id = ch.id
@@ -78,7 +82,7 @@ func (h *Handler) ListChats(w http.ResponseWriter, r *http.Request) {
 	var chats []Chat
 	for rows.Next() {
 		var ch Chat
-		if err := rows.Scan(&ch.ID, &ch.IsGroup, &ch.Name, &ch.Username, &ch.CreatedAt, &ch.LastMessage, &ch.LastMessageAt); err != nil {
+		if err := rows.Scan(&ch.ID, &ch.IsGroup, &ch.Name, &ch.Username, &ch.AvatarURL, &ch.CreatedAt, &ch.LastMessage, &ch.LastMessageAt); err != nil {
 			response.Error(w, http.StatusInternalServerError, "could not read chats")
 			return
 		}
@@ -101,6 +105,7 @@ func (h *Handler) ListChatRequests(w http.ResponseWriter, r *http.Request) {
 			ch.is_group,
 			ch.name,
 			other.username,
+			other.avatar_url,
 			ch.created_at,
 			m.body AS last_message,
 			m.sent_at AS last_message_at
@@ -110,7 +115,9 @@ func (h *Handler) ListChatRequests(w http.ResponseWriter, r *http.Request) {
 			AND cm.user_id = $1
 			AND cm.role = 'addressee'
 		LEFT JOIN LATERAL (
-			SELECT u.username
+			SELECT
+				u.username,
+				u.avatar_url
 			FROM chat_members cm2
 			JOIN users u ON u.id = cm2.user_id
 			WHERE cm2.chat_id = ch.id
@@ -139,7 +146,7 @@ func (h *Handler) ListChatRequests(w http.ResponseWriter, r *http.Request) {
 	var chats []Chat
 	for rows.Next() {
 		var ch Chat
-		if err := rows.Scan(&ch.ID, &ch.IsGroup, &ch.Name, &ch.Username, &ch.CreatedAt, &ch.LastMessage, &ch.LastMessageAt); err != nil {
+		if err := rows.Scan(&ch.ID, &ch.IsGroup, &ch.Name, &ch.Username, &ch.AvatarURL, &ch.CreatedAt, &ch.LastMessage, &ch.LastMessageAt); err != nil {
 			response.Error(w, http.StatusInternalServerError, "could not read chat requests")
 			return
 		}
