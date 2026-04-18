@@ -20,6 +20,7 @@ import (
 	"github.com/project_radeon/api/internal/feed"
 	"github.com/project_radeon/api/internal/follows"
 	"github.com/project_radeon/api/internal/meetups"
+	"github.com/project_radeon/api/internal/support"
 	"github.com/project_radeon/api/internal/user"
 	"github.com/project_radeon/api/pkg/database"
 	"github.com/project_radeon/api/pkg/middleware"
@@ -63,6 +64,7 @@ func main() {
 	meetupsHandler := meetups.NewHandler(db)
 	chatsHandler := chats.NewHandler(db)
 	followsHandler := follows.NewHandler(db)
+	supportHandler := support.NewHandler(db)
 
 	r := chi.NewRouter()
 
@@ -116,6 +118,17 @@ func main() {
 		r.Get("/meetups/{id}", meetupsHandler.GetMeetup)
 		r.Post("/meetups/{id}/rsvp", meetupsHandler.RSVP)
 		r.Get("/meetups/{id}/attendees", meetupsHandler.GetAttendees)
+
+		// Support
+		r.Get("/support/me", supportHandler.GetMySupportProfile)
+		r.Patch("/support/me", supportHandler.UpdateMySupportProfile)
+		r.Post("/support/requests", supportHandler.CreateSupportRequest)
+		r.Get("/support/requests", supportHandler.ListSupportRequests)
+		r.Get("/support/requests/mine", supportHandler.ListMySupportRequests)
+		r.Get("/support/requests/{id}", supportHandler.GetSupportRequest)
+		r.Patch("/support/requests/{id}", supportHandler.UpdateSupportRequest)
+		r.Post("/support/requests/{id}/responses", supportHandler.CreateSupportResponse)
+		r.Get("/support/requests/{id}/responses", supportHandler.ListSupportResponses)
 
 		// Chats
 		r.Get("/chats", chatsHandler.ListChats)
