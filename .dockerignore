@@ -1,0 +1,10 @@
+.env
+.env.*
+bin/
+tmp/
+*.sql
+.git/
+.gitignore
+README.md
+CLAUDE.md
+FRONTEND_CONTEXT.md
