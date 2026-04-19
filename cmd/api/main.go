@@ -149,6 +149,7 @@ func main() {
 		r.Post("/chats", chatsHandler.CreateChat)
 		r.Get("/chats/{id}/messages", chatsHandler.GetMessages)
 		r.Post("/chats/{id}/messages", chatsHandler.SendMessage)
+		r.Delete("/chats/{id}", chatsHandler.DeleteChat)
 		r.Get("/chats/requests", chatsHandler.ListChatRequests)
 		r.Patch("/chats/{id}/status", chatsHandler.UpdateChatStatus)
 	})

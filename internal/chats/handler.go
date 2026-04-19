@@ -508,3 +508,121 @@ func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
 
 	response.Success(w, http.StatusCreated, map[string]any{"id": msgID})
 }
+
+// DeleteChat deletes a direct chat or removes the caller from a group chat.
+func (h *Handler) DeleteChat(w http.ResponseWriter, r *http.Request) {
+	userID := middleware.CurrentUserID(r)
+	chatID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		response.Error(w, http.StatusBadRequest, "invalid chat id")
+		return
+	}
+
+	var isGroup bool
+	var isMember bool
+	if err := h.db.QueryRow(r.Context(),
+		`SELECT
+			ch.is_group,
+			EXISTS(
+				SELECT 1
+				FROM chat_members cm
+				WHERE cm.chat_id = ch.id
+					AND cm.user_id = $2
+			) AS is_member
+		FROM chats ch
+		WHERE ch.id = $1`,
+		chatID, userID,
+	).Scan(&isGroup, &isMember); err != nil {
+		response.Error(w, http.StatusNotFound, "chat not found")
+		return
+	}
+	if !isMember {
+		response.Error(w, http.StatusForbidden, "not a member of this chat")
+		return
+	}
+
+	tx, err := h.db.Begin(r.Context())
+	if err != nil {
+		response.Error(w, http.StatusInternalServerError, "could not update chat")
+		return
+	}
+	defer tx.Rollback(r.Context())
+
+	if isGroup {
+		if _, err := tx.Exec(r.Context(),
+			`DELETE FROM chat_members
+			WHERE chat_id = $1
+				AND user_id = $2`,
+			chatID, userID,
+		); err != nil {
+			response.Error(w, http.StatusInternalServerError, "could not leave group")
+			return
+		}
+
+		var remainingMembers int
+		if err := tx.QueryRow(r.Context(),
+			`SELECT COUNT(*)
+			FROM chat_members
+			WHERE chat_id = $1`,
+			chatID,
+		).Scan(&remainingMembers); err != nil {
+			response.Error(w, http.StatusInternalServerError, "could not leave group")
+			return
+		}
+
+		if remainingMembers == 0 {
+			if _, err := tx.Exec(r.Context(),
+				`DELETE FROM messages
+				WHERE chat_id = $1`,
+				chatID,
+			); err != nil {
+				response.Error(w, http.StatusInternalServerError, "could not clean up group")
+				return
+			}
+			if _, err := tx.Exec(r.Context(),
+				`DELETE FROM chats
+				WHERE id = $1`,
+				chatID,
+			); err != nil {
+				response.Error(w, http.StatusInternalServerError, "could not clean up group")
+				return
+			}
+		}
+	} else {
+		if _, err := tx.Exec(r.Context(),
+			`DELETE FROM messages
+			WHERE chat_id = $1`,
+			chatID,
+		); err != nil {
+			response.Error(w, http.StatusInternalServerError, "could not delete chat")
+			return
+		}
+		if _, err := tx.Exec(r.Context(),
+			`DELETE FROM chat_members
+			WHERE chat_id = $1`,
+			chatID,
+		); err != nil {
+			response.Error(w, http.StatusInternalServerError, "could not delete chat")
+			return
+		}
+		if _, err := tx.Exec(r.Context(),
+			`DELETE FROM chats
+			WHERE id = $1`,
+			chatID,
+		); err != nil {
+			response.Error(w, http.StatusInternalServerError, "could not delete chat")
+			return
+		}
+	}
+
+	if err := tx.Commit(r.Context()); err != nil {
+		response.Error(w, http.StatusInternalServerError, "could not update chat")
+		return
+	}
+
+	action := "deleted"
+	if isGroup {
+		action = "left"
+	}
+	response.Success(w, http.StatusOK, map[string]string{"action": action})
+}
