@@ -360,13 +360,15 @@ func (h *Handler) AddComment(w http.ResponseWriter, r *http.Request) {
 	response.Success(w, http.StatusCreated, map[string]any{"id": commentID})
 }
 
-// GetComments returns a post's comments in conversation order with author details.
+// GetComments returns a paginated page of a post's comments in conversation order.
 func (h *Handler) GetComments(w http.ResponseWriter, r *http.Request) {
 	postID, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
 		response.Error(w, http.StatusBadRequest, "invalid post id")
 		return
 	}
+
+	pg := pagination.Parse(r, 20, 50)
 
 	rows, err := h.db.Query(r.Context(),
 		`SELECT
@@ -379,8 +381,9 @@ func (h *Handler) GetComments(w http.ResponseWriter, r *http.Request) {
 		FROM comments c
 		JOIN users u ON u.id = c.user_id
 		WHERE c.post_id = $1
-		ORDER BY c.created_at ASC`,
-		postID,
+		ORDER BY c.created_at ASC
+		LIMIT $2 OFFSET $3`,
+		postID, pg.Limit+1, pg.Offset,
 	)
 	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "could not fetch comments")
@@ -411,5 +414,5 @@ func (h *Handler) GetComments(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	response.Success(w, http.StatusOK, comments)
+	response.Success(w, http.StatusOK, pagination.Slice(comments, pg))
 }
