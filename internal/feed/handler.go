@@ -1,25 +1,38 @@
 package feed
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/project_radeon/api/pkg/middleware"
 	"github.com/project_radeon/api/pkg/pagination"
 	"github.com/project_radeon/api/pkg/response"
 )
 
-type Handler struct {
-	db *pgxpool.Pool
+// Querier is the database interface required by the feed handler.
+type Querier interface {
+	ListFeed(ctx context.Context, before *time.Time, limit int) ([]Post, error)
+	ListUserPosts(ctx context.Context, userID uuid.UUID, before *time.Time, limit int) ([]Post, error)
+	CreatePost(ctx context.Context, userID uuid.UUID, body string) (uuid.UUID, error)
+	DeletePost(ctx context.Context, postID, userID uuid.UUID) error
+	ListReactions(ctx context.Context, postID uuid.UUID, limit, offset int) ([]Reaction, error)
+	ToggleReaction(ctx context.Context, postID, userID uuid.UUID, reactionType string) (reacted bool, err error)
+	AddComment(ctx context.Context, postID, userID uuid.UUID, body string) (uuid.UUID, error)
+	ListComments(ctx context.Context, postID uuid.UUID, after *time.Time, limit int) ([]Comment, error)
 }
 
-// NewHandler builds a feed handler backed by the shared database pool.
-func NewHandler(db *pgxpool.Pool) *Handler {
+type Handler struct {
+	db Querier
+}
+
+// NewHandler builds a feed handler. Pass feed.NewPgStore(pool) for production.
+func NewHandler(db Querier) *Handler {
 	return &Handler{db: db}
 }
 
@@ -34,51 +47,31 @@ type Post struct {
 	LikeCount    int       `json:"like_count"`
 }
 
+type Reaction struct {
+	ID        uuid.UUID `json:"id"`
+	UserID    uuid.UUID `json:"user_id"`
+	Username  string    `json:"username"`
+	AvatarURL *string   `json:"avatar_url"`
+	Type      string    `json:"type"`
+}
+
+type Comment struct {
+	ID        uuid.UUID `json:"id"`
+	UserID    uuid.UUID `json:"user_id"`
+	Username  string    `json:"username"`
+	AvatarURL *string   `json:"avatar_url"`
+	Body      string    `json:"body"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
 // GetFeed returns the global post feed with author metadata and aggregate counts.
 // Paginate with ?before=<next_cursor> from the previous response.
 func (h *Handler) GetFeed(w http.ResponseWriter, r *http.Request) {
 	params := pagination.ParseCursor(r, 20, 50)
 
-	rows, err := h.db.Query(r.Context(),
-		`SELECT
-			p.id,
-			p.user_id,
-			u.username,
-			u.avatar_url,
-			p.body,
-			p.created_at,
-			COALESCE(cc.cnt, 0) AS comment_count,
-			COALESCE(lc.cnt, 0) AS like_count
-		FROM posts p
-		JOIN users u ON u.id = p.user_id
-		LEFT JOIN LATERAL (
-			SELECT COUNT(*) AS cnt FROM comments WHERE post_id = p.id
-		) cc ON true
-		LEFT JOIN LATERAL (
-			SELECT COUNT(*) AS cnt FROM post_reactions WHERE post_id = p.id AND type = 'like'
-		) lc ON true
-		WHERE ($1::timestamptz IS NULL OR p.created_at < $1)
-		ORDER BY p.created_at DESC
-		LIMIT $2`,
-		params.Before, params.Limit+1,
-	)
+	posts, err := h.db.ListFeed(r.Context(), params.Before, params.Limit+1)
 	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "could not fetch feed")
-		return
-	}
-	defer rows.Close()
-
-	var posts []Post
-	for rows.Next() {
-		var p Post
-		if err := rows.Scan(&p.ID, &p.UserID, &p.Username, &p.AvatarURL, &p.Body, &p.CreatedAt, &p.CommentCount, &p.LikeCount); err != nil {
-			response.Error(w, http.StatusInternalServerError, "could not read feed")
-			return
-		}
-		posts = append(posts, p)
-	}
-	if err := rows.Err(); err != nil {
-		response.Error(w, http.StatusInternalServerError, "could not read feed")
 		return
 	}
 
@@ -96,47 +89,9 @@ func (h *Handler) GetUserPosts(w http.ResponseWriter, r *http.Request) {
 
 	params := pagination.ParseCursor(r, 20, 50)
 
-	rows, err := h.db.Query(r.Context(),
-		`SELECT
-			p.id,
-			p.user_id,
-			u.username,
-			u.avatar_url,
-			p.body,
-			p.created_at,
-			COALESCE(cc.cnt, 0) AS comment_count,
-			COALESCE(lc.cnt, 0) AS like_count
-		FROM posts p
-		JOIN users u ON u.id = p.user_id
-		LEFT JOIN LATERAL (
-			SELECT COUNT(*) AS cnt FROM comments WHERE post_id = p.id
-		) cc ON true
-		LEFT JOIN LATERAL (
-			SELECT COUNT(*) AS cnt FROM post_reactions WHERE post_id = p.id AND type = 'like'
-		) lc ON true
-		WHERE p.user_id = $1
-			AND ($2::timestamptz IS NULL OR p.created_at < $2)
-		ORDER BY p.created_at DESC
-		LIMIT $3`,
-		targetID, params.Before, params.Limit+1,
-	)
+	posts, err := h.db.ListUserPosts(r.Context(), targetID, params.Before, params.Limit+1)
 	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "could not fetch posts")
-		return
-	}
-	defer rows.Close()
-
-	var posts []Post
-	for rows.Next() {
-		var p Post
-		if err := rows.Scan(&p.ID, &p.UserID, &p.Username, &p.AvatarURL, &p.Body, &p.CreatedAt, &p.CommentCount, &p.LikeCount); err != nil {
-			response.Error(w, http.StatusInternalServerError, "could not read posts")
-			return
-		}
-		posts = append(posts, p)
-	}
-	if err := rows.Err(); err != nil {
-		response.Error(w, http.StatusInternalServerError, "could not read posts")
 		return
 	}
 
@@ -161,16 +116,7 @@ func (h *Handler) CreatePost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var postID uuid.UUID
-	err := h.db.QueryRow(r.Context(),
-		`INSERT INTO posts (
-			user_id,
-			body
-		)
-		VALUES ($1, $2)
-		RETURNING id`,
-		userID, input.Body,
-	).Scan(&postID)
+	postID, err := h.db.CreatePost(r.Context(), userID, input.Body)
 	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "could not create post")
 		return
@@ -188,11 +134,12 @@ func (h *Handler) DeletePost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := h.db.Exec(r.Context(),
-		"DELETE FROM posts WHERE id = $1 AND user_id = $2", postID, userID,
-	)
-	if err != nil || result.RowsAffected() == 0 {
-		response.Error(w, http.StatusNotFound, "post not found or not yours")
+	if err := h.db.DeletePost(r.Context(), postID, userID); err != nil {
+		if errors.Is(err, ErrNotFound) {
+			response.Error(w, http.StatusNotFound, "post not found or not yours")
+			return
+		}
+		response.Error(w, http.StatusInternalServerError, "could not delete post")
 		return
 	}
 
@@ -209,45 +156,9 @@ func (h *Handler) GetReactions(w http.ResponseWriter, r *http.Request) {
 
 	params := pagination.Parse(r, 50, 100)
 
-	rows, err := h.db.Query(r.Context(),
-		`SELECT
-			pr.id,
-			pr.user_id,
-			u.username,
-			u.avatar_url,
-			pr.type
-		FROM post_reactions pr
-		JOIN users u ON u.id = pr.user_id
-		WHERE pr.post_id = $1
-		ORDER BY pr.type ASC, pr.id ASC
-		LIMIT $2 OFFSET $3`,
-		postID, params.Limit+1, params.Offset,
-	)
+	reactions, err := h.db.ListReactions(r.Context(), postID, params.Limit+1, params.Offset)
 	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "could not fetch reactions")
-		return
-	}
-	defer rows.Close()
-
-	type Reaction struct {
-		ID        uuid.UUID `json:"id"`
-		UserID    uuid.UUID `json:"user_id"`
-		Username  string    `json:"username"`
-		AvatarURL *string   `json:"avatar_url"`
-		Type      string    `json:"type"`
-	}
-
-	var reactions []Reaction
-	for rows.Next() {
-		var re Reaction
-		if err := rows.Scan(&re.ID, &re.UserID, &re.Username, &re.AvatarURL, &re.Type); err != nil {
-			response.Error(w, http.StatusInternalServerError, "could not read reactions")
-			return
-		}
-		reactions = append(reactions, re)
-	}
-	if err := rows.Err(); err != nil {
-		response.Error(w, http.StatusInternalServerError, "could not read reactions")
 		return
 	}
 
@@ -264,7 +175,7 @@ func (h *Handler) ReactToPost(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var input struct {
-		Type string `json:"type"` // e.g. "like", "heart"
+		Type string `json:"type"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 		response.Error(w, http.StatusBadRequest, "invalid request body")
@@ -276,48 +187,13 @@ func (h *Handler) ReactToPost(w http.ResponseWriter, r *http.Request) {
 
 	// Re-sending the same reaction toggles it off. Different reaction types are
 	// stored as separate rows, so the check stays scoped to post/user/type.
-	var exists bool
-	if err := h.db.QueryRow(r.Context(),
-		`SELECT EXISTS(
-			SELECT 1
-			FROM post_reactions
-			WHERE post_id = $1
-				AND user_id = $2
-				AND type = $3
-		)`,
-		postID, userID, input.Type,
-	).Scan(&exists); err != nil {
-		response.Error(w, http.StatusInternalServerError, "could not check reaction")
+	reacted, err := h.db.ToggleReaction(r.Context(), postID, userID, input.Type)
+	if err != nil {
+		response.Error(w, http.StatusInternalServerError, "could not update reaction")
 		return
 	}
 
-	if exists {
-		if _, err := h.db.Exec(r.Context(),
-			`DELETE FROM post_reactions
-			WHERE post_id = $1
-				AND user_id = $2
-				AND type = $3`,
-			postID, userID, input.Type,
-		); err != nil {
-			response.Error(w, http.StatusInternalServerError, "could not remove reaction")
-			return
-		}
-		response.Success(w, http.StatusOK, map[string]bool{"reacted": false})
-	} else {
-		if _, err := h.db.Exec(r.Context(),
-			`INSERT INTO post_reactions (
-				post_id,
-				user_id,
-				type
-			)
-			VALUES ($1, $2, $3)`,
-			postID, userID, input.Type,
-		); err != nil {
-			response.Error(w, http.StatusInternalServerError, "could not add reaction")
-			return
-		}
-		response.Success(w, http.StatusOK, map[string]bool{"reacted": true})
-	}
+	response.Success(w, http.StatusOK, map[string]bool{"reacted": reacted})
 }
 
 // AddComment validates and inserts a new comment on the requested post.
@@ -339,17 +215,8 @@ func (h *Handler) AddComment(w http.ResponseWriter, r *http.Request) {
 
 	// Comments only return the new ID; clients are expected to refresh or append
 	// locally rather than relying on the server to hydrate the full record here.
-	var commentID uuid.UUID
-	if err := h.db.QueryRow(r.Context(),
-		`INSERT INTO comments (
-			post_id,
-			user_id,
-			body
-		)
-		VALUES ($1, $2, $3)
-		RETURNING id`,
-		postID, userID, input.Body,
-	).Scan(&commentID); err != nil {
+	commentID, err := h.db.AddComment(r.Context(), postID, userID, input.Body)
+	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "could not add comment")
 		return
 	}
@@ -368,48 +235,9 @@ func (h *Handler) GetComments(w http.ResponseWriter, r *http.Request) {
 
 	params := pagination.ParseCursor(r, 20, 50)
 
-	rows, err := h.db.Query(r.Context(),
-		`SELECT
-			c.id,
-			c.user_id,
-			u.username,
-			u.avatar_url,
-			c.body,
-			c.created_at
-		FROM comments c
-		JOIN users u ON u.id = c.user_id
-		WHERE c.post_id = $1
-			AND ($2::timestamptz IS NULL OR c.created_at > $2)
-		ORDER BY c.created_at ASC
-		LIMIT $3`,
-		postID, params.After, params.Limit+1,
-	)
+	comments, err := h.db.ListComments(r.Context(), postID, params.After, params.Limit+1)
 	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "could not fetch comments")
-		return
-	}
-	defer rows.Close()
-
-	type Comment struct {
-		ID        uuid.UUID `json:"id"`
-		UserID    uuid.UUID `json:"user_id"`
-		Username  string    `json:"username"`
-		AvatarURL *string   `json:"avatar_url"`
-		Body      string    `json:"body"`
-		CreatedAt time.Time `json:"created_at"`
-	}
-
-	var comments []Comment
-	for rows.Next() {
-		var c Comment
-		if err := rows.Scan(&c.ID, &c.UserID, &c.Username, &c.AvatarURL, &c.Body, &c.CreatedAt); err != nil {
-			response.Error(w, http.StatusInternalServerError, "could not read comments")
-			return
-		}
-		comments = append(comments, c)
-	}
-	if err := rows.Err(); err != nil {
-		response.Error(w, http.StatusInternalServerError, "could not read comments")
 		return
 	}
 

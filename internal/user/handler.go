@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -13,7 +14,6 @@ import (
 	"github.com/disintegration/imaging"
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/project_radeon/api/pkg/middleware"
 	"github.com/project_radeon/api/pkg/pagination"
 	"github.com/project_radeon/api/pkg/response"
@@ -25,13 +25,22 @@ type Uploader interface {
 	Upload(ctx context.Context, key, contentType string, body io.Reader) (string, error)
 }
 
+// Querier is the database interface required by the user handler.
+type Querier interface {
+	GetUser(ctx context.Context, viewerID, userID uuid.UUID) (*User, error)
+	UsernameExistsForOthers(ctx context.Context, username string, userID uuid.UUID) (bool, error)
+	UpdateUser(ctx context.Context, userID uuid.UUID, username, city, country *string) error
+	UpdateAvatarURL(ctx context.Context, userID uuid.UUID, avatarURL string) error
+	DiscoverUsers(ctx context.Context, currentUserID uuid.UUID, city, query string, limit, offset int) ([]User, error)
+}
+
 type Handler struct {
-	db       *pgxpool.Pool
+	db       Querier
 	uploader Uploader
 }
 
-// NewHandler builds a user handler with database access and avatar upload support.
-func NewHandler(db *pgxpool.Pool, uploader Uploader) *Handler {
+// NewHandler builds a user handler. Pass user.NewPgStore(pool) for production.
+func NewHandler(db Querier, uploader Uploader) *Handler {
 	return &Handler{db: db, uploader: uploader}
 }
 
@@ -52,7 +61,7 @@ type User struct {
 // GetMe returns the authenticated user's profile record.
 func (h *Handler) GetMe(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.CurrentUserID(r)
-	user, err := h.fetchUser(r.Context(), userID, userID)
+	user, err := h.db.GetUser(r.Context(), userID, userID)
 	if err != nil {
 		response.Error(w, http.StatusNotFound, "user not found")
 		return
@@ -68,7 +77,7 @@ func (h *Handler) GetUser(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, http.StatusBadRequest, "invalid user id")
 		return
 	}
-	user, err := h.fetchUser(r.Context(), viewerID, id)
+	user, err := h.db.GetUser(r.Context(), viewerID, id)
 	if err != nil {
 		response.Error(w, http.StatusNotFound, "user not found")
 		return
@@ -100,11 +109,8 @@ func (h *Handler) UpdateMe(w http.ResponseWriter, r *http.Request) {
 
 		// Username updates keep the same normalization and uniqueness rules as
 		// registration so profile edits cannot bypass signup constraints.
-		var exists bool
-		if err := h.db.QueryRow(r.Context(),
-			`SELECT EXISTS(SELECT 1 FROM users WHERE username = $1 AND id != $2)`,
-			normalized, userID,
-		).Scan(&exists); err != nil {
+		exists, err := h.db.UsernameExistsForOthers(r.Context(), normalized, userID)
+		if err != nil {
 			response.Error(w, http.StatusInternalServerError, "could not validate username")
 			return
 		}
@@ -116,21 +122,12 @@ func (h *Handler) UpdateMe(w http.ResponseWriter, r *http.Request) {
 		input.Username = &normalized
 	}
 
-	_, err := h.db.Exec(r.Context(),
-		`UPDATE users
-		SET
-			username = COALESCE($1, username),
-			city = COALESCE($2, city),
-			country = COALESCE($3, country)
-		WHERE id = $4`,
-		input.Username, input.City, input.Country, userID,
-	)
-	if err != nil {
+	if err := h.db.UpdateUser(r.Context(), userID, input.Username, input.City, input.Country); err != nil {
 		response.Error(w, http.StatusInternalServerError, "could not update profile")
 		return
 	}
 
-	user, _ := h.fetchUser(r.Context(), userID, userID)
+	user, _ := h.db.GetUser(r.Context(), userID, userID)
 	response.Success(w, http.StatusOK, user)
 }
 
@@ -180,12 +177,7 @@ func (h *Handler) UploadAvatar(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if _, err := h.db.Exec(r.Context(),
-		`UPDATE users
-		SET avatar_url = $1
-		WHERE id = $2`,
-		avatarURL, userID,
-	); err != nil {
+	if err := h.db.UpdateAvatarURL(r.Context(), userID, avatarURL); err != nil {
 		response.Error(w, http.StatusInternalServerError, "could not save avatar")
 		return
 	}
@@ -201,132 +193,16 @@ func (h *Handler) Discover(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query().Get("q")
 	params := pagination.Parse(r, 20, 50)
 
-	// The ORDER BY prioritises exact and prefix username matches before falling
-	// back to newest users, which gives search results a predictable ranking.
-	rows, err := h.db.Query(r.Context(),
-		`SELECT
-			u.id,
-			u.username,
-			u.avatar_url,
-			u.city,
-			u.country,
-			u.sober_since,
-			u.created_at,
-			CASE
-				WHEN f.status = 'accepted' THEN 'friends'
-				WHEN f.requester_id = $1 THEN 'outgoing'
-				WHEN f.requester_id = u.id THEN 'incoming'
-				ELSE 'none'
-			END AS friendship_status
-		FROM users u
-		LEFT JOIN friendships f
-			ON (
-				(f.user_a_id = $1 AND f.user_b_id = u.id)
-				OR (f.user_b_id = $1 AND f.user_a_id = u.id)
-			)
-		WHERE u.id != $1
-			AND ($2 = '' OR u.city ILIKE $2)
-			AND (
-				$3 = ''
-				OR u.username ILIKE '%' || $3 || '%'
-			)
-		ORDER BY
-			CASE
-				WHEN u.username = $3 THEN 0
-				WHEN u.username ILIKE $3 || '%' THEN 1
-				ELSE 2
-			END,
-			u.created_at DESC
-		LIMIT $4 OFFSET $5`,
-		currentUserID, city, username.Normalize(query), params.Limit+1, params.Offset,
-	)
+	users, err := h.db.DiscoverUsers(r.Context(), currentUserID, city, username.Normalize(query), params.Limit+1, params.Offset)
 	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "could not fetch users")
 		return
 	}
-	defer rows.Close()
 
-	var users []User
-	for rows.Next() {
-		var u User
-		if err := rows.Scan(&u.ID, &u.Username, &u.AvatarURL, &u.City, &u.Country, &u.SoberSince, &u.CreatedAt, &u.FriendshipStatus); err != nil {
-			response.Error(w, http.StatusInternalServerError, "could not read users")
-			return
-		}
-		users = append(users, u)
-	}
-	if err := rows.Err(); err != nil {
-		response.Error(w, http.StatusInternalServerError, "could not read users")
+	if errors.Is(err, ErrNotFound) {
+		response.Error(w, http.StatusNotFound, "could not fetch users")
 		return
 	}
 
 	response.Success(w, http.StatusOK, pagination.Slice(users, params))
-}
-
-// fetchUser hydrates one profile plus relationship and summary fields used by
-// both /users/me and /users/{id} without separate follow-up queries.
-func (h *Handler) fetchUser(ctx context.Context, viewerID uuid.UUID, id uuid.UUID) (*User, error) {
-	var u User
-	// Centralising the profile query keeps /users/me and /users/{id} in sync and
-	// avoids subtly diverging response fields over time.
-	err := h.db.QueryRow(ctx,
-		`SELECT
-			u.id,
-			u.username,
-			u.avatar_url,
-			u.city,
-			u.country,
-			u.sober_since,
-			u.created_at,
-			CASE
-				WHEN u.id = $1 THEN 'self'
-				WHEN f.status = 'accepted' THEN 'friends'
-				WHEN f.requester_id = $1 THEN 'outgoing'
-				WHEN f.requester_id = u.id THEN 'incoming'
-				ELSE 'none'
-			END AS friendship_status,
-			u.friend_count,
-			ic.cnt AS incoming_friend_request_count,
-			oc.cnt AS outgoing_friend_request_count
-		FROM users u
-		LEFT JOIN friendships f
-			ON (
-				(f.user_a_id = $1 AND f.user_b_id = u.id)
-				OR (f.user_b_id = $1 AND f.user_a_id = u.id)
-			)
-		LEFT JOIN LATERAL (
-			SELECT COUNT(*) AS cnt
-			FROM friendships f3
-			WHERE (f3.user_a_id = u.id OR f3.user_b_id = u.id)
-				AND f3.status = 'pending'
-				AND u.id = $1
-				AND f3.requester_id != u.id
-		) ic ON true
-		LEFT JOIN LATERAL (
-			SELECT COUNT(*) AS cnt
-			FROM friendships f4
-			WHERE (f4.user_a_id = u.id OR f4.user_b_id = u.id)
-				AND f4.status = 'pending'
-				AND u.id = $1
-				AND f4.requester_id = u.id
-		) oc ON true
-		WHERE u.id = $2`,
-		viewerID, id,
-	).Scan(
-		&u.ID,
-		&u.Username,
-		&u.AvatarURL,
-		&u.City,
-		&u.Country,
-		&u.SoberSince,
-		&u.CreatedAt,
-		&u.FriendshipStatus,
-		&u.FriendCount,
-		&u.IncomingFriendRequestCt,
-		&u.OutgoingFriendRequestCt,
-	)
-	if err != nil {
-		return nil, err
-	}
-	return &u, nil
 }

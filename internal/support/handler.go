@@ -3,20 +3,36 @@ package support
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/project_radeon/api/pkg/middleware"
 	"github.com/project_radeon/api/pkg/pagination"
 	"github.com/project_radeon/api/pkg/response"
 )
 
+// Querier is the database interface required by the support handler.
+type Querier interface {
+	GetSupportProfile(ctx context.Context, userID uuid.UUID) (*SupportProfile, error)
+	UpdateSupportProfile(ctx context.Context, userID uuid.UUID, available bool, modes []string) (*SupportProfile, error)
+	CountOpenSupportRequests(ctx context.Context, userID uuid.UUID) (int, error)
+	CreateSupportRequest(ctx context.Context, userID uuid.UUID, reqType string, message *string, audience string, expiresAt time.Time) (*SupportRequest, error)
+	GetSupportRequest(ctx context.Context, viewerID, requestID uuid.UUID) (*SupportRequest, error)
+	CloseSupportRequest(ctx context.Context, requestID, userID uuid.UUID) error
+	ListMySupportRequests(ctx context.Context, userID uuid.UUID, before *time.Time, limit int) ([]SupportRequest, error)
+	ListVisibleSupportRequests(ctx context.Context, userID uuid.UUID, before *time.Time, limit int) ([]SupportRequest, error)
+	FetchSupportSummary(ctx context.Context, viewerID uuid.UUID) (openCount, availableCount int, err error)
+	GetSupportRequestState(ctx context.Context, requestID uuid.UUID) (requesterID uuid.UUID, status string, expiresAt time.Time, err error)
+	CreateSupportResponse(ctx context.Context, requestID, userID uuid.UUID, responseType string, message *string) (*SupportResponse, error)
+	GetSupportRequestOwner(ctx context.Context, requestID uuid.UUID) (uuid.UUID, error)
+	ListSupportResponses(ctx context.Context, requestID uuid.UUID, limit, offset int) ([]SupportResponse, error)
+}
+
 type Handler struct {
-	db *pgxpool.Pool
+	db Querier
 }
 
 var validSupportTypes = map[string]bool{
@@ -38,8 +54,8 @@ var validSupportResponseTypes = map[string]bool{
 	"nearby":         true,
 }
 
-// NewHandler builds a support handler backed by the shared database pool.
-func NewHandler(db *pgxpool.Pool) *Handler {
+// NewHandler builds a support handler. Pass support.NewPgStore(pool) for production.
+func NewHandler(db Querier) *Handler {
 	return &Handler{db: db}
 }
 
@@ -91,13 +107,7 @@ type SupportRequestsPage struct {
 func (h *Handler) GetMySupportProfile(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.CurrentUserID(r)
 
-	var profile SupportProfile
-	err := h.db.QueryRow(r.Context(),
-		`SELECT is_available_to_support, support_modes, support_updated_at
-		FROM users
-		WHERE id = $1`,
-		userID,
-	).Scan(&profile.IsAvailableToSupport, &profile.SupportModes, &profile.SupportUpdatedAt)
+	profile, err := h.db.GetSupportProfile(r.Context(), userID)
 	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "could not fetch support profile")
 		return
@@ -119,22 +129,12 @@ func (h *Handler) UpdateMySupportProfile(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	supportModes := input.SupportModes
-	if supportModes == nil {
-		supportModes = []string{}
+	modes := input.SupportModes
+	if modes == nil {
+		modes = []string{}
 	}
 
-	var profile SupportProfile
-	err := h.db.QueryRow(r.Context(),
-		`UPDATE users
-		SET
-			is_available_to_support = $2,
-			support_modes = $3,
-			support_updated_at = NOW()
-		WHERE id = $1
-		RETURNING is_available_to_support, support_modes, support_updated_at`,
-		userID, input.IsAvailableToSupport, supportModes,
-	).Scan(&profile.IsAvailableToSupport, &profile.SupportModes, &profile.SupportUpdatedAt)
+	profile, err := h.db.UpdateSupportProfile(r.Context(), userID, input.IsAvailableToSupport, modes)
 	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "could not update support profile")
 		return
@@ -158,47 +158,21 @@ func (h *Handler) CreateSupportRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	input.Type = strings.TrimSpace(input.Type)
-	input.Audience = strings.TrimSpace(input.Audience)
-	if input.Message != nil {
-		msg := strings.TrimSpace(*input.Message)
-		input.Message = &msg
-	}
-
-	errs := map[string]string{}
-	if input.Type == "" {
-		errs["type"] = "required"
-	} else if !validSupportTypes[input.Type] {
-		errs["type"] = "invalid"
-	}
-	if input.Audience == "" {
-		errs["audience"] = "required"
-	} else if !validSupportAudiences[input.Audience] {
-		errs["audience"] = "invalid"
-	}
-	if input.ExpiresAt == "" {
-		errs["expires_at"] = "required"
-	}
+	normalized := normalizeCreateSupportRequestInput(createSupportRequestInput(input))
+	errs := validateCreateSupportRequestInput(normalized)
 	if len(errs) > 0 {
 		response.ValidationError(w, errs)
 		return
 	}
 
-	expiresAt, err := time.Parse(time.RFC3339, input.ExpiresAt)
-	if err != nil || !expiresAt.After(time.Now()) {
+	expiresAt, err := parseSupportRequestExpiry(normalized.ExpiresAt, time.Now())
+	if err != nil {
 		response.Error(w, http.StatusBadRequest, "expires_at must be a future RFC3339 timestamp")
 		return
 	}
 
-	var openCount int
-	if err := h.db.QueryRow(r.Context(),
-		`SELECT COUNT(*)
-		FROM support_requests
-		WHERE requester_id = $1
-			AND status = 'open'
-			AND expires_at > NOW()`,
-		userID,
-	).Scan(&openCount); err != nil {
+	openCount, err := h.db.CountOpenSupportRequests(r.Context(), userID)
+	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "could not validate support request")
 		return
 	}
@@ -207,7 +181,7 @@ func (h *Handler) CreateSupportRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	req, err := h.createSupportRequest(r.Context(), userID, input.Type, input.Message, input.Audience, expiresAt)
+	req, err := h.db.CreateSupportRequest(r.Context(), userID, normalized.Type, normalized.Message, normalized.Audience, expiresAt)
 	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "could not create support request")
 		return
@@ -217,38 +191,11 @@ func (h *Handler) CreateSupportRequest(w http.ResponseWriter, r *http.Request) {
 }
 
 // ListMySupportRequests returns support requests created by the authenticated user.
-// Paginate with ?before=<next_cursor> from the previous response.
 func (h *Handler) ListMySupportRequests(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.CurrentUserID(r)
 	params := pagination.ParseCursor(r, 20, 50)
 
-	requests, err := h.listSupportRequests(r.Context(),
-		`SELECT
-			sr.id,
-			sr.requester_id,
-			u.username,
-			u.avatar_url,
-			u.city,
-			sr.type,
-			sr.message,
-			sr.audience,
-			CASE
-				WHEN sr.status = 'open' AND sr.expires_at <= NOW() THEN 'expired'
-				ELSE sr.status
-			END AS status,
-			sr.response_count,
-			sr.expires_at,
-			sr.created_at,
-			false AS has_responded,
-			true AS is_own_request
-		FROM support_requests sr
-		JOIN users u ON u.id = sr.requester_id
-		WHERE sr.requester_id = $1
-			AND ($2::timestamptz IS NULL OR sr.created_at < $2)
-		ORDER BY sr.created_at DESC
-		LIMIT $3`,
-		userID, params.Before, params.Limit+1,
-	)
+	requests, err := h.db.ListMySupportRequests(r.Context(), userID, params.Before, params.Limit+1)
 	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "could not fetch support requests")
 		return
@@ -263,18 +210,18 @@ func (h *Handler) ListMySupportRequests(w http.ResponseWriter, r *http.Request) 
 	})
 }
 
-// ListSupportRequests returns the visible support page plus the lightweight tab
-// summary counts the mobile client shows above the request cards.
-// Paginate with ?before=<next_cursor> from the previous response.
+// ListSupportRequests returns the visible support page plus the lightweight tab summary counts.
 func (h *Handler) ListSupportRequests(w http.ResponseWriter, r *http.Request) {
+	userID := middleware.CurrentUserID(r)
 	params := pagination.ParseCursor(r, 20, 50)
-	requests, err := h.ListVisibleSupportRequests(r, params)
+
+	requests, err := h.db.ListVisibleSupportRequests(r.Context(), userID, params.Before, params.Limit+1)
 	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "could not fetch support requests")
 		return
 	}
 
-	openCount, availableCount, err := h.fetchSupportSummary(r.Context(), middleware.CurrentUserID(r))
+	openCount, availableCount, err := h.db.FetchSupportSummary(r.Context(), userID)
 	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "could not fetch support requests")
 		return
@@ -300,7 +247,7 @@ func (h *Handler) GetSupportRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	req, err := h.fetchSupportRequest(r.Context(), viewerID, requestID)
+	req, err := h.db.GetSupportRequest(r.Context(), viewerID, requestID)
 	if err != nil {
 		response.Error(w, http.StatusNotFound, "support request not found")
 		return
@@ -325,30 +272,21 @@ func (h *Handler) UpdateSupportRequest(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if strings.TrimSpace(input.Status) != "closed" {
+	if !isSupportedRequestStatusUpdate(input.Status) {
 		response.Error(w, http.StatusBadRequest, "unsupported support request update")
 		return
 	}
 
-	result, err := h.db.Exec(r.Context(),
-		`UPDATE support_requests
-		SET
-			status = 'closed',
-			closed_at = NOW()
-		WHERE id = $1
-			AND requester_id = $2`,
-		requestID, userID,
-	)
-	if err != nil {
+	if err := h.db.CloseSupportRequest(r.Context(), requestID, userID); err != nil {
+		if errors.Is(err, ErrNotFound) {
+			response.Error(w, http.StatusNotFound, "support request not found")
+			return
+		}
 		response.Error(w, http.StatusInternalServerError, "could not update support request")
 		return
 	}
-	if result.RowsAffected() == 0 {
-		response.Error(w, http.StatusNotFound, "support request not found")
-		return
-	}
 
-	req, err := h.fetchSupportRequest(r.Context(), userID, requestID)
+	req, err := h.db.GetSupportRequest(r.Context(), userID, requestID)
 	if err != nil {
 		response.Error(w, http.StatusNotFound, "support request not found")
 		return
@@ -366,39 +304,24 @@ func (h *Handler) CreateSupportResponse(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	var input struct {
-		ResponseType string  `json:"response_type"`
-		Message      *string `json:"message"`
-	}
+	var input createSupportResponseInput
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 		response.Error(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	input.ResponseType = strings.TrimSpace(input.ResponseType)
-	if input.Message != nil {
-		msg := strings.TrimSpace(*input.Message)
-		input.Message = &msg
-	}
-	if input.ResponseType == "" {
-		response.ValidationError(w, map[string]string{"response_type": "required"})
-		return
-	}
-	if !validSupportResponseTypes[input.ResponseType] {
-		response.ValidationError(w, map[string]string{"response_type": "invalid"})
+	input = normalizeCreateSupportResponseInput(input)
+	if errs := validateCreateSupportResponseInput(input); len(errs) > 0 {
+		response.ValidationError(w, errs)
 		return
 	}
 
-	var requesterID uuid.UUID
-	var status string
-	var expiresAt time.Time
-	err = h.db.QueryRow(r.Context(),
-		`SELECT requester_id, status, expires_at
-		FROM support_requests
-		WHERE id = $1`,
-		requestID,
-	).Scan(&requesterID, &status, &expiresAt)
+	requesterID, status, expiresAt, err := h.db.GetSupportRequestState(r.Context(), requestID)
 	if err != nil {
-		response.Error(w, http.StatusNotFound, "support request not found")
+		if errors.Is(err, ErrNotFound) {
+			response.Error(w, http.StatusNotFound, "support request not found")
+			return
+		}
+		response.Error(w, http.StatusInternalServerError, "could not fetch support request")
 		return
 	}
 	if requesterID == userID {
@@ -410,58 +333,9 @@ func (h *Handler) CreateSupportResponse(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	tx, err := h.db.Begin(r.Context())
-	if err != nil {
-		response.Error(w, http.StatusInternalServerError, "could not create support response")
-		return
-	}
-	defer tx.Rollback(r.Context())
-
-	var res SupportResponse
-	err = tx.QueryRow(r.Context(),
-		`WITH inserted AS (
-			INSERT INTO support_responses (
-				support_request_id,
-				responder_id,
-				response_type,
-				message
-			)
-			VALUES ($1, $2, $3, $4)
-			RETURNING id, support_request_id, responder_id, response_type, message, created_at
-		)
-		SELECT
-			i.id,
-			i.support_request_id,
-			i.responder_id,
-			u.username,
-			u.avatar_url,
-			u.city,
-			i.response_type,
-			i.message,
-			i.created_at
-		FROM inserted i
-		JOIN users u ON u.id = i.responder_id`,
-		requestID, userID, input.ResponseType, input.Message,
-	).Scan(
-		&res.ID, &res.SupportRequestID, &res.ResponderID,
-		&res.Username, &res.AvatarURL, &res.City,
-		&res.ResponseType, &res.Message, &res.CreatedAt,
-	)
+	res, err := h.db.CreateSupportResponse(r.Context(), requestID, userID, input.ResponseType, input.Message)
 	if err != nil {
 		response.Error(w, http.StatusConflict, "could not create support response")
-		return
-	}
-
-	if _, err := tx.Exec(r.Context(),
-		`UPDATE support_requests SET response_count = response_count + 1 WHERE id = $1`,
-		requestID,
-	); err != nil {
-		response.Error(w, http.StatusInternalServerError, "could not create support response")
-		return
-	}
-
-	if err := tx.Commit(r.Context()); err != nil {
-		response.Error(w, http.StatusInternalServerError, "could not create support response")
 		return
 	}
 
@@ -477,287 +351,27 @@ func (h *Handler) ListSupportResponses(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var requesterID uuid.UUID
-	if err := h.db.QueryRow(r.Context(),
-		`SELECT requester_id
-		FROM support_requests
-		WHERE id = $1`,
-		requestID,
-	).Scan(&requesterID); err != nil {
-		response.Error(w, http.StatusNotFound, "support request not found")
+	ownerID, err := h.db.GetSupportRequestOwner(r.Context(), requestID)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			response.Error(w, http.StatusNotFound, "support request not found")
+			return
+		}
+		response.Error(w, http.StatusInternalServerError, "could not fetch support request")
 		return
 	}
-	if requesterID != userID {
+	if ownerID != userID {
 		response.Error(w, http.StatusForbidden, "cannot view support responses")
 		return
 	}
 
 	params := pagination.Parse(r, 50, 100)
 
-	rows, err := h.db.Query(r.Context(),
-		`SELECT
-			sres.id,
-			sres.support_request_id,
-			sres.responder_id,
-			u.username,
-			u.avatar_url,
-			u.city,
-			sres.response_type,
-			sres.message,
-			sres.created_at
-		FROM support_responses sres
-		JOIN users u ON u.id = sres.responder_id
-		WHERE sres.support_request_id = $1
-		ORDER BY sres.created_at ASC
-		LIMIT $2 OFFSET $3`,
-		requestID, params.Limit+1, params.Offset,
-	)
+	responses, err := h.db.ListSupportResponses(r.Context(), requestID, params.Limit+1, params.Offset)
 	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "could not fetch support responses")
 		return
 	}
-	defer rows.Close()
-
-	var responses []SupportResponse
-	for rows.Next() {
-		var res SupportResponse
-		if err := rows.Scan(&res.ID, &res.SupportRequestID, &res.ResponderID, &res.Username, &res.AvatarURL, &res.City, &res.ResponseType, &res.Message, &res.CreatedAt); err != nil {
-			response.Error(w, http.StatusInternalServerError, "could not read support responses")
-			return
-		}
-		responses = append(responses, res)
-	}
-	if err := rows.Err(); err != nil {
-		response.Error(w, http.StatusInternalServerError, "could not read support responses")
-		return
-	}
 
 	response.Success(w, http.StatusOK, pagination.Slice(responses, params))
-}
-
-// ListVisibleSupportRequests returns open support requests that should appear in the caller's feed.
-// ListVisibleSupportRequests applies the same audience rules as the support
-// feed while keeping pagination inside the main visibility query.
-func (h *Handler) ListVisibleSupportRequests(r *http.Request, params pagination.CursorParams) ([]SupportRequest, error) {
-	userID := middleware.CurrentUserID(r)
-	return h.listSupportRequests(r.Context(),
-		`SELECT
-			sr.id,
-			sr.requester_id,
-			u.username,
-			u.avatar_url,
-			u.city,
-			sr.type,
-			sr.message,
-			sr.audience,
-			sr.status,
-			sr.response_count,
-			sr.expires_at,
-			sr.created_at,
-			EXISTS(
-				SELECT 1
-				FROM support_responses own_res
-				WHERE own_res.support_request_id = sr.id
-					AND own_res.responder_id = $1
-			) AS has_responded,
-			false AS is_own_request
-		FROM support_requests sr
-		JOIN users u ON u.id = sr.requester_id
-		WHERE sr.status = 'open'
-			AND sr.expires_at > NOW()
-			AND sr.requester_id != $1
-			AND ($2::timestamptz IS NULL OR sr.created_at < $2)
-			AND (
-				sr.audience = 'community'
-				OR (sr.audience = 'city' AND u.city IS NOT NULL AND u.city = (SELECT city FROM users WHERE id = $1))
-				OR (
-					sr.audience = 'friends'
-					AND EXISTS(
-						SELECT 1
-						FROM friendships f
-						WHERE (f.user_a_id = $1 OR f.user_b_id = $1)
-							AND (f.user_a_id = sr.requester_id OR f.user_b_id = sr.requester_id)
-							AND f.status = 'accepted'
-					)
-				)
-			)
-		ORDER BY sr.created_at DESC
-		LIMIT $3`,
-		userID, params.Before, params.Limit+1,
-	)
-}
-
-// fetchSupportSummary computes the support-tab header counts separately from
-// the card page so the UI can show aggregates without downloading more rows.
-func (h *Handler) fetchSupportSummary(ctx context.Context, viewerID uuid.UUID) (int, int, error) {
-	var openCount int
-	err := h.db.QueryRow(ctx,
-		`SELECT COUNT(*)
-		FROM support_requests sr
-		JOIN users u ON u.id = sr.requester_id
-		WHERE sr.status = 'open'
-			AND sr.expires_at > NOW()
-			AND sr.requester_id != $1
-			AND (
-				sr.audience = 'community'
-				OR (sr.audience = 'city' AND u.city IS NOT NULL AND u.city = (SELECT city FROM users WHERE id = $1))
-				OR (
-					sr.audience = 'friends'
-					AND EXISTS(
-						SELECT 1
-						FROM friendships f
-						WHERE (f.user_a_id = $1 OR f.user_b_id = $1)
-							AND (f.user_a_id = sr.requester_id OR f.user_b_id = sr.requester_id)
-							AND f.status = 'accepted'
-					)
-				)
-			)`,
-		viewerID,
-	).Scan(&openCount)
-	if err != nil {
-		return 0, 0, err
-	}
-
-	var availableCount int
-	err = h.db.QueryRow(ctx,
-		`SELECT COUNT(*)
-		FROM users
-		WHERE id != $1
-			AND is_available_to_support = true`,
-		viewerID,
-	).Scan(&availableCount)
-	if err != nil {
-		return 0, 0, err
-	}
-
-	return openCount, availableCount, nil
-}
-
-func (h *Handler) createSupportRequest(ctx context.Context, userID uuid.UUID, requestType string, message *string, audience string, expiresAt time.Time) (*SupportRequest, error) {
-	var req SupportRequest
-	err := h.db.QueryRow(ctx,
-		`WITH inserted AS (
-			INSERT INTO support_requests (
-				requester_id,
-				type,
-				message,
-				audience,
-				city,
-				status,
-				expires_at
-			)
-			SELECT u.id, $2, $3, $4, u.city, 'open', $5
-			FROM users u
-			WHERE u.id = $1
-			RETURNING id, requester_id, type, message, audience, status, expires_at, created_at
-		)
-		SELECT
-			i.id, i.requester_id, i.type, i.message, i.audience, i.status, i.expires_at, i.created_at,
-			u.username, u.avatar_url, u.city
-		FROM inserted i
-		JOIN users u ON u.id = i.requester_id`,
-		userID, requestType, message, audience, expiresAt,
-	).Scan(
-		&req.ID, &req.RequesterID, &req.Type, &req.Message, &req.Audience, &req.Status, &req.ExpiresAt, &req.CreatedAt,
-		&req.Username, &req.AvatarURL, &req.City,
-	)
-	if err != nil {
-		return nil, err
-	}
-
-	req.ResponseCount = 0
-	req.HasResponded = false
-	req.IsOwnRequest = true
-
-	return &req, nil
-}
-
-func (h *Handler) listSupportRequests(ctx context.Context, query string, args ...any) ([]SupportRequest, error) {
-	rows, err := h.db.Query(ctx, query, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var requests []SupportRequest
-	for rows.Next() {
-		var req SupportRequest
-		if err := rows.Scan(
-			&req.ID,
-			&req.RequesterID,
-			&req.Username,
-			&req.AvatarURL,
-			&req.City,
-			&req.Type,
-			&req.Message,
-			&req.Audience,
-			&req.Status,
-			&req.ResponseCount,
-			&req.ExpiresAt,
-			&req.CreatedAt,
-			&req.HasResponded,
-			&req.IsOwnRequest,
-		); err != nil {
-			return nil, err
-		}
-		requests = append(requests, req)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-
-	return requests, nil
-}
-
-func (h *Handler) fetchSupportRequest(ctx context.Context, viewerID uuid.UUID, requestID uuid.UUID) (*SupportRequest, error) {
-	var req SupportRequest
-	err := h.db.QueryRow(ctx,
-		`SELECT
-			sr.id,
-			sr.requester_id,
-			u.username,
-			u.avatar_url,
-			u.city,
-			sr.type,
-			sr.message,
-			sr.audience,
-			CASE
-				WHEN sr.status = 'open' AND sr.expires_at <= NOW() THEN 'expired'
-				ELSE sr.status
-			END AS status,
-			sr.response_count,
-			sr.expires_at,
-			sr.created_at,
-			EXISTS(
-				SELECT 1
-				FROM support_responses own_res
-				WHERE own_res.support_request_id = sr.id
-					AND own_res.responder_id = $2
-			) AS has_responded,
-			sr.requester_id = $2 AS is_own_request
-		FROM support_requests sr
-		JOIN users u ON u.id = sr.requester_id
-		WHERE sr.id = $1`,
-		requestID, viewerID,
-	).Scan(
-		&req.ID,
-		&req.RequesterID,
-		&req.Username,
-		&req.AvatarURL,
-		&req.City,
-		&req.Type,
-		&req.Message,
-		&req.Audience,
-		&req.Status,
-		&req.ResponseCount,
-		&req.ExpiresAt,
-		&req.CreatedAt,
-		&req.HasResponded,
-		&req.IsOwnRequest,
-	)
-	if err != nil {
-		return nil, err
-	}
-
-	return &req, nil
 }

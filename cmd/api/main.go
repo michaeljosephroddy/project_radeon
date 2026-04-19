@@ -58,13 +58,13 @@ func main() {
 	s3Client := s3.NewFromConfig(awsCfg)
 	uploader := storage.NewS3Uploader(s3Client, awsBucket, awsRegion)
 
-	authHandler := auth.NewHandler(db)
-	userHandler := user.NewHandler(db, uploader)
-	feedHandler := feed.NewHandler(db)
-	meetupsHandler := meetups.NewHandler(db)
-	chatsHandler := chats.NewHandler(db)
-	friendsHandler := friends.NewHandler(db)
-	supportHandler := support.NewHandler(db)
+	authHandler := auth.NewHandler(auth.NewPgStore(db))
+	userHandler := user.NewHandler(user.NewPgStore(db), uploader)
+	feedHandler := feed.NewHandler(feed.NewPgStore(db))
+	meetupsHandler := meetups.NewHandler(meetups.NewPgStore(db))
+	chatsHandler := chats.NewHandler(chats.NewPgStore(db))
+	friendsHandler := friends.NewHandler(friends.NewPgStore(db))
+	supportHandler := support.NewHandler(support.NewPgStore(db))
 
 	r := chi.NewRouter()
 

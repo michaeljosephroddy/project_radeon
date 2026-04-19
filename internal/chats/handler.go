@@ -1,21 +1,37 @@
 package chats
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/project_radeon/api/pkg/middleware"
 	"github.com/project_radeon/api/pkg/pagination"
 	"github.com/project_radeon/api/pkg/response"
 )
 
+// Querier is the database interface required by the chats handler.
+type Querier interface {
+	ListChats(ctx context.Context, userID uuid.UUID, query string, limit, offset int) ([]Chat, error)
+	ListChatRequests(ctx context.Context, userID uuid.UUID) ([]Chat, error)
+	FindDirectChat(ctx context.Context, userID, otherUserID uuid.UUID) (uuid.UUID, bool, error)
+	CreateChat(ctx context.Context, userID uuid.UUID, isGroup bool, name *string, memberIDs []uuid.UUID) (uuid.UUID, error)
+	IsAddresseeOfChat(ctx context.Context, chatID, userID uuid.UUID) (bool, error)
+	AcceptChatRequest(ctx context.Context, chatID uuid.UUID) error
+	DeclineChatRequest(ctx context.Context, chatID uuid.UUID) error
+	IsMemberOfChat(ctx context.Context, chatID, userID uuid.UUID) (bool, error)
+	ListMessages(ctx context.Context, chatID uuid.UUID, before *time.Time, limit int) ([]Message, error)
+	InsertMessage(ctx context.Context, chatID, userID uuid.UUID, body string) (uuid.UUID, error)
+	DeleteOrLeaveChat(ctx context.Context, chatID, userID uuid.UUID) (string, error)
+}
+
 type Handler struct {
-	db *pgxpool.Pool
+	db Querier
 }
 
 type Chat struct {
@@ -45,86 +61,20 @@ type MessagePage struct {
 	NextBefore *time.Time `json:"next_before,omitempty"`
 }
 
-// NewHandler builds a chats handler backed by the shared database pool.
-func NewHandler(db *pgxpool.Pool) *Handler {
+// NewHandler builds a chats handler. Pass chats.NewPgStore(pool) for production.
+func NewHandler(db Querier) *Handler {
 	return &Handler{db: db}
 }
 
-// ListChats returns one page of the caller's active chats and lets the backend
-// own inbox search so the client never filters an unbounded chat array.
+// ListChats returns one page of the caller's active chats.
 func (h *Handler) ListChats(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.CurrentUserID(r)
 	params := pagination.Parse(r, 20, 50)
 	query := strings.TrimSpace(r.URL.Query().Get("q"))
 
-	// LATERAL joins let the query derive the "other participant" metadata for
-	// direct messages and the latest message preview without extra queries.
-	rows, err := h.db.Query(r.Context(),
-		`SELECT
-			ch.id,
-			ch.is_group,
-			ch.name,
-			other.username,
-			other.avatar_url,
-			ch.created_at,
-			m.body AS last_message,
-			m.sent_at AS last_message_at
-		FROM chats ch
-		JOIN chat_members cm
-			ON cm.chat_id = ch.id
-			AND cm.user_id = $1
-		LEFT JOIN LATERAL (
-			SELECT
-				u.username,
-				u.avatar_url
-			FROM chat_members cm2
-			JOIN users u ON u.id = cm2.user_id
-			WHERE cm2.chat_id = ch.id
-				AND cm2.user_id != $1
-			LIMIT 1
-		) other ON NOT ch.is_group
-		LEFT JOIN LATERAL (
-			SELECT
-				body,
-				sent_at
-			FROM messages
-			WHERE chat_id = ch.id
-			ORDER BY sent_at DESC
-			LIMIT 1
-		) m ON true
-		WHERE ch.status = 'active'
-			AND (
-				$2 = ''
-				OR (
-					ch.is_group = true
-					AND COALESCE(ch.name, '') ILIKE '%' || $2 || '%'
-				)
-				OR (
-					ch.is_group = false
-					AND COALESCE(other.username, '') ILIKE '%' || $2 || '%'
-				)
-			)
-		ORDER BY COALESCE(m.sent_at, ch.created_at) DESC
-		LIMIT $3 OFFSET $4`,
-		userID, query, params.Limit+1, params.Offset,
-	)
+	chats, err := h.db.ListChats(r.Context(), userID, query, params.Limit+1, params.Offset)
 	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "could not fetch chats")
-		return
-	}
-	defer rows.Close()
-
-	var chats []Chat
-	for rows.Next() {
-		var ch Chat
-		if err := rows.Scan(&ch.ID, &ch.IsGroup, &ch.Name, &ch.Username, &ch.AvatarURL, &ch.CreatedAt, &ch.LastMessage, &ch.LastMessageAt); err != nil {
-			response.Error(w, http.StatusInternalServerError, "could not read chats")
-			return
-		}
-		chats = append(chats, ch)
-	}
-	if err := rows.Err(); err != nil {
-		response.Error(w, http.StatusInternalServerError, "could not read chats")
 		return
 	}
 
@@ -134,65 +84,13 @@ func (h *Handler) ListChats(w http.ResponseWriter, r *http.Request) {
 // ListChatRequests returns pending direct-message requests addressed to the current user.
 func (h *Handler) ListChatRequests(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.CurrentUserID(r)
-	// Requests are limited to chats where the caller is an addressee, which
-	// prevents requesters from seeing their own pending invites in this list.
-	rows, err := h.db.Query(r.Context(),
-		`SELECT
-			ch.id,
-			ch.is_group,
-			ch.name,
-			other.username,
-			other.avatar_url,
-			ch.created_at,
-			m.body AS last_message,
-			m.sent_at AS last_message_at
-		FROM chats ch
-		JOIN chat_members cm
-			ON cm.chat_id = ch.id
-			AND cm.user_id = $1
-			AND cm.role = 'addressee'
-		LEFT JOIN LATERAL (
-			SELECT
-				u.username,
-				u.avatar_url
-			FROM chat_members cm2
-			JOIN users u ON u.id = cm2.user_id
-			WHERE cm2.chat_id = ch.id
-				AND cm2.user_id != $1
-			LIMIT 1
-		) other ON NOT ch.is_group
-		LEFT JOIN LATERAL (
-			SELECT
-				body,
-				sent_at
-			FROM messages
-			WHERE chat_id = ch.id
-			ORDER BY sent_at DESC
-			LIMIT 1
-		) m ON true
-		WHERE ch.status = 'request'
-		ORDER BY ch.created_at DESC`,
-		userID,
-	)
+
+	chats, err := h.db.ListChatRequests(r.Context(), userID)
 	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "could not fetch chat requests")
 		return
 	}
-	defer rows.Close()
 
-	var chats []Chat
-	for rows.Next() {
-		var ch Chat
-		if err := rows.Scan(&ch.ID, &ch.IsGroup, &ch.Name, &ch.Username, &ch.AvatarURL, &ch.CreatedAt, &ch.LastMessage, &ch.LastMessageAt); err != nil {
-			response.Error(w, http.StatusInternalServerError, "could not read chat requests")
-			return
-		}
-		chats = append(chats, ch)
-	}
-	if err := rows.Err(); err != nil {
-		response.Error(w, http.StatusInternalServerError, "could not read chat requests")
-		return
-	}
 	response.Success(w, http.StatusOK, chats)
 }
 
@@ -212,73 +110,24 @@ func (h *Handler) CreateChat(w http.ResponseWriter, r *http.Request) {
 	isGroup := len(input.MemberIDs) > 1
 
 	if !isGroup && len(input.MemberIDs) == 1 {
-		// Direct chats are reused instead of duplicated so message history stays
-		// attached to a single conversation between two members.
-		var existingID uuid.UUID
-		err := h.db.QueryRow(r.Context(),
-			`SELECT ch.id
-			FROM chats ch
-			JOIN chat_members cm1
-				ON cm1.chat_id = ch.id
-				AND cm1.user_id = $1
-			JOIN chat_members cm2
-				ON cm2.chat_id = ch.id
-				AND cm2.user_id = $2
-			WHERE ch.is_group = false
-			LIMIT 1`,
-			userID, input.MemberIDs[0],
-		).Scan(&existingID)
-		if err == nil {
+		existingID, found, err := h.db.FindDirectChat(r.Context(), userID, input.MemberIDs[0])
+		if err != nil {
+			response.Error(w, http.StatusInternalServerError, "could not create chat")
+			return
+		}
+		if found {
 			response.Success(w, http.StatusOK, map[string]any{"id": existingID, "is_group": false})
 			return
 		}
 	}
 
-	status := "active"
-
-	var chatID uuid.UUID
-	if err := h.db.QueryRow(r.Context(),
-		`INSERT INTO chats (
-			is_group,
-			name,
-			status
-		)
-		VALUES ($1, $2, $3)
-		RETURNING id`,
-		isGroup, input.Name, status,
-	).Scan(&chatID); err != nil {
+	chatID, err := h.db.CreateChat(r.Context(), userID, isGroup, input.Name, input.MemberIDs)
+	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "could not create chat")
 		return
 	}
 
-	if _, err := h.db.Exec(r.Context(),
-		`INSERT INTO chat_members (
-			chat_id,
-			user_id,
-			role
-		)
-		VALUES ($1, $2, 'requester')`,
-		chatID, userID,
-	); err != nil {
-		response.Error(w, http.StatusInternalServerError, "could not add members")
-		return
-	}
-	for _, memberID := range input.MemberIDs {
-		if _, err := h.db.Exec(r.Context(),
-			`INSERT INTO chat_members (
-				chat_id,
-				user_id,
-				role
-			)
-			VALUES ($1, $2, 'addressee')`,
-			chatID, memberID,
-		); err != nil {
-			response.Error(w, http.StatusInternalServerError, "could not add members")
-			return
-		}
-	}
-
-	response.Success(w, http.StatusCreated, map[string]any{"id": chatID, "is_group": isGroup, "status": status})
+	response.Success(w, http.StatusCreated, map[string]any{"id": chatID, "is_group": isGroup})
 }
 
 // UpdateChatStatus lets an addressee accept or decline a pending chat request.
@@ -302,43 +151,23 @@ func (h *Handler) UpdateChatStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var isMember bool
-	if err := h.db.QueryRow(r.Context(),
-		`SELECT EXISTS(
-			SELECT 1
-			FROM chat_members
-			WHERE chat_id = $1
-				AND user_id = $2
-				AND role = 'addressee'
-		)`,
-		chatID, userID,
-	).Scan(&isMember); err != nil {
+	isAddressee, err := h.db.IsAddresseeOfChat(r.Context(), chatID, userID)
+	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "could not check chat membership")
 		return
 	}
-	if !isMember {
+	if !isAddressee {
 		response.Error(w, http.StatusForbidden, "not authorised")
 		return
 	}
 
 	if input.Status == "declined" {
-		// Declining removes the chat outright because pending requests have no
-		// independent message history worth preserving yet.
-		if _, err := h.db.Exec(r.Context(),
-			`DELETE FROM chats
-			WHERE id = $1`,
-			chatID,
-		); err != nil {
+		if err := h.db.DeclineChatRequest(r.Context(), chatID); err != nil {
 			response.Error(w, http.StatusInternalServerError, "could not update chat")
 			return
 		}
 	} else {
-		if _, err := h.db.Exec(r.Context(),
-			`UPDATE chats
-			SET status = 'active'
-			WHERE id = $1`,
-			chatID,
-		); err != nil {
+		if err := h.db.AcceptChatRequest(r.Context(), chatID); err != nil {
 			response.Error(w, http.StatusInternalServerError, "could not update chat")
 			return
 		}
@@ -347,8 +176,7 @@ func (h *Handler) UpdateChatStatus(w http.ResponseWriter, r *http.Request) {
 	response.Success(w, http.StatusOK, map[string]string{"status": input.Status})
 }
 
-// GetMessages pages backwards through a chat transcript using an optional
-// "before" cursor so long histories stay incremental on the client.
+// GetMessages pages backwards through a chat transcript using an optional "before" cursor.
 func (h *Handler) GetMessages(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.CurrentUserID(r)
 	chatID, err := uuid.Parse(chi.URLParam(r, "id"))
@@ -357,16 +185,8 @@ func (h *Handler) GetMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var isMember bool
-	if err := h.db.QueryRow(r.Context(),
-		`SELECT EXISTS(
-			SELECT 1
-			FROM chat_members
-			WHERE chat_id = $1
-				AND user_id = $2
-		)`,
-		chatID, userID,
-	).Scan(&isMember); err != nil {
+	isMember, err := h.db.IsMemberOfChat(r.Context(), chatID, userID)
+	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "could not check chat membership")
 		return
 	}
@@ -390,39 +210,9 @@ func (h *Handler) GetMessages(w http.ResponseWriter, r *http.Request) {
 		before = &parsed
 	}
 
-	rows, err := h.db.Query(r.Context(),
-		`SELECT
-			m.id,
-			m.sender_id,
-			u.username,
-			u.avatar_url,
-			m.body,
-			m.sent_at
-		FROM messages m
-		JOIN users u ON u.id = m.sender_id
-		WHERE m.chat_id = $1
-			AND ($2::timestamptz IS NULL OR m.sent_at < $2)
-		ORDER BY m.sent_at DESC
-		LIMIT $3`,
-		chatID, before, limit+1,
-	)
+	msgs, err := h.db.ListMessages(r.Context(), chatID, before, limit+1)
 	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "could not fetch messages")
-		return
-	}
-	defer rows.Close()
-
-	var msgs []Message
-	for rows.Next() {
-		var m Message
-		if err := rows.Scan(&m.ID, &m.SenderID, &m.Username, &m.AvatarURL, &m.Body, &m.SentAt); err != nil {
-			response.Error(w, http.StatusInternalServerError, "could not read messages")
-			return
-		}
-		msgs = append(msgs, m)
-	}
-	if err := rows.Err(); err != nil {
-		response.Error(w, http.StatusInternalServerError, "could not read messages")
 		return
 	}
 
@@ -457,16 +247,8 @@ func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var isMember bool
-	if err := h.db.QueryRow(r.Context(),
-		`SELECT EXISTS(
-			SELECT 1
-			FROM chat_members
-			WHERE chat_id = $1
-				AND user_id = $2
-		)`,
-		chatID, userID,
-	).Scan(&isMember); err != nil {
+	isMember, err := h.db.IsMemberOfChat(r.Context(), chatID, userID)
+	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "could not check chat membership")
 		return
 	}
@@ -489,19 +271,8 @@ func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// SendMessage only persists plain text content; any delivery state or unread
-	// tracking would need to be layered on top of this schema.
-	var msgID uuid.UUID
-	if err := h.db.QueryRow(r.Context(),
-		`INSERT INTO messages (
-			chat_id,
-			sender_id,
-			body
-		)
-		VALUES ($1, $2, $3)
-		RETURNING id`,
-		chatID, userID, input.Body,
-	).Scan(&msgID); err != nil {
+	msgID, err := h.db.InsertMessage(r.Context(), chatID, userID, input.Body)
+	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "could not send message")
 		return
 	}
@@ -518,111 +289,19 @@ func (h *Handler) DeleteChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var isGroup bool
-	var isMember bool
-	if err := h.db.QueryRow(r.Context(),
-		`SELECT
-			ch.is_group,
-			EXISTS(
-				SELECT 1
-				FROM chat_members cm
-				WHERE cm.chat_id = ch.id
-					AND cm.user_id = $2
-			) AS is_member
-		FROM chats ch
-		WHERE ch.id = $1`,
-		chatID, userID,
-	).Scan(&isGroup, &isMember); err != nil {
-		response.Error(w, http.StatusNotFound, "chat not found")
-		return
-	}
-	if !isMember {
-		response.Error(w, http.StatusForbidden, "not a member of this chat")
-		return
-	}
-
-	tx, err := h.db.Begin(r.Context())
+	action, err := h.db.DeleteOrLeaveChat(r.Context(), chatID, userID)
 	if err != nil {
-		response.Error(w, http.StatusInternalServerError, "could not update chat")
-		return
-	}
-	defer tx.Rollback(r.Context())
-
-	if isGroup {
-		if _, err := tx.Exec(r.Context(),
-			`DELETE FROM chat_members
-			WHERE chat_id = $1
-				AND user_id = $2`,
-			chatID, userID,
-		); err != nil {
-			response.Error(w, http.StatusInternalServerError, "could not leave group")
+		if errors.Is(err, ErrNotFound) {
+			response.Error(w, http.StatusNotFound, "chat not found")
 			return
 		}
-
-		var remainingMembers int
-		if err := tx.QueryRow(r.Context(),
-			`SELECT COUNT(*)
-			FROM chat_members
-			WHERE chat_id = $1`,
-			chatID,
-		).Scan(&remainingMembers); err != nil {
-			response.Error(w, http.StatusInternalServerError, "could not leave group")
+		if errors.Is(err, ErrForbidden) {
+			response.Error(w, http.StatusForbidden, "not a member of this chat")
 			return
 		}
-
-		if remainingMembers == 0 {
-			if _, err := tx.Exec(r.Context(),
-				`DELETE FROM messages
-				WHERE chat_id = $1`,
-				chatID,
-			); err != nil {
-				response.Error(w, http.StatusInternalServerError, "could not clean up group")
-				return
-			}
-			if _, err := tx.Exec(r.Context(),
-				`DELETE FROM chats
-				WHERE id = $1`,
-				chatID,
-			); err != nil {
-				response.Error(w, http.StatusInternalServerError, "could not clean up group")
-				return
-			}
-		}
-	} else {
-		if _, err := tx.Exec(r.Context(),
-			`DELETE FROM messages
-			WHERE chat_id = $1`,
-			chatID,
-		); err != nil {
-			response.Error(w, http.StatusInternalServerError, "could not delete chat")
-			return
-		}
-		if _, err := tx.Exec(r.Context(),
-			`DELETE FROM chat_members
-			WHERE chat_id = $1`,
-			chatID,
-		); err != nil {
-			response.Error(w, http.StatusInternalServerError, "could not delete chat")
-			return
-		}
-		if _, err := tx.Exec(r.Context(),
-			`DELETE FROM chats
-			WHERE id = $1`,
-			chatID,
-		); err != nil {
-			response.Error(w, http.StatusInternalServerError, "could not delete chat")
-			return
-		}
-	}
-
-	if err := tx.Commit(r.Context()); err != nil {
 		response.Error(w, http.StatusInternalServerError, "could not update chat")
 		return
 	}
 
-	action := "deleted"
-	if isGroup {
-		action = "left"
-	}
 	response.Success(w, http.StatusOK, map[string]string{"action": action})
 }

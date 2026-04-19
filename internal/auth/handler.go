@@ -1,82 +1,73 @@
 package auth
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/project_radeon/api/pkg/response"
-	"github.com/project_radeon/api/pkg/username"
 	"golang.org/x/crypto/bcrypt"
 )
 
-type Handler struct {
-	db *pgxpool.Pool
+// Querier is the database interface required by the auth handler.
+type Querier interface {
+	EmailExists(ctx context.Context, email string) (bool, error)
+	UsernameExists(ctx context.Context, username string) (bool, error)
+	CreateUser(ctx context.Context, username, email, passwordHash, city, country string, soberSince *time.Time) (uuid.UUID, error)
+	GetUserCredentials(ctx context.Context, email string) (id uuid.UUID, passwordHash string, err error)
 }
 
-// NewHandler builds an auth handler backed by the shared database pool.
-func NewHandler(db *pgxpool.Pool) *Handler {
+type Handler struct {
+	db Querier
+}
+
+// NewHandler builds an auth handler. Pass auth.NewPgStore(pool) for production.
+func NewHandler(db Querier) *Handler {
 	return &Handler{db: db}
 }
 
 // Register validates signup input, creates the user record, and returns a JWT.
 func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
-	var input struct {
-		Username   string  `json:"username"`
-		Email      string  `json:"email"`
-		Password   string  `json:"password"`
-		City       string  `json:"city"`
-		Country    string  `json:"country"`
-		SoberSince *string `json:"sober_since"` // nullable — user can skip
-	}
+	var input registerInput
 
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 		response.Error(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 
-	// Basic validation
-	errs := map[string]string{}
-	input.Username = username.Normalize(input.Username)
-	input.Email = strings.ToLower(strings.TrimSpace(input.Email))
-	if msg := username.ValidationError(input.Username); msg != "" {
-		errs["username"] = msg
-	}
-	if input.Email == "" {
-		errs["email"] = "required"
-	}
-	if len(input.Password) < 8 {
-		errs["password"] = "must be at least 8 characters"
-	}
+	input = normalizeRegisterInput(input)
+	errs := validateRegisterInput(input)
 	if len(errs) > 0 {
 		response.ValidationError(w, errs)
 		return
 	}
 
+	soberSince, err := parseSoberSince(input.SoberSince)
+	if err != nil {
+		response.Error(w, http.StatusBadRequest, "sober_since must be YYYY-MM-DD")
+		return
+	}
+
 	// Uniqueness checks stay explicit so the handler can return field-specific
 	// API errors instead of a generic database constraint failure.
-	var exists bool
-	if err := h.db.QueryRow(r.Context(),
-		"SELECT EXISTS(SELECT 1 FROM users WHERE email = $1)", input.Email,
-	).Scan(&exists); err != nil {
+	emailExists, err := h.db.EmailExists(r.Context(), input.Email)
+	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "could not validate email")
 		return
 	}
-	if exists {
+	if emailExists {
 		response.Error(w, http.StatusConflict, "email already registered")
 		return
 	}
 
-	if err := h.db.QueryRow(r.Context(),
-		"SELECT EXISTS(SELECT 1 FROM users WHERE username = $1)", input.Username,
-	).Scan(&exists); err != nil {
+	usernameExists, err := h.db.UsernameExists(r.Context(), input.Username)
+	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "could not validate username")
 		return
 	}
-	if exists {
+	if usernameExists {
 		response.Error(w, http.StatusConflict, "username already taken")
 		return
 	}
@@ -87,33 +78,7 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var userID uuid.UUID
-	var soberSince *time.Time
-
-	if input.SoberSince != nil {
-		// The API accepts a date-only value and stores it as a timestamp to match
-		// the nullable schema column used elsewhere in the app.
-		t, err := time.Parse("2006-01-02", *input.SoberSince)
-		if err != nil {
-			response.Error(w, http.StatusBadRequest, "sober_since must be YYYY-MM-DD")
-			return
-		}
-		soberSince = &t
-	}
-
-	err = h.db.QueryRow(r.Context(),
-		`INSERT INTO users (
-			username,
-			email,
-			password_hash,
-			city,
-			country,
-			sober_since
-		)
-		VALUES ($1, $2, $3, $4, $5, $6)
-		RETURNING id`,
-		input.Username, input.Email, string(hash), input.City, input.Country, soberSince,
-	).Scan(&userID)
+	userID, err := h.db.CreateUser(r.Context(), input.Username, input.Email, string(hash), input.City, input.Country, soberSince)
 	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "could not create user")
 		return
@@ -133,26 +98,18 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 
 // Login verifies email and password credentials and returns a fresh JWT.
 func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
-	var input struct {
-		Email    string `json:"email"`
-		Password string `json:"password"`
-	}
+	var input loginInput
 
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 		response.Error(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 
-	input.Email = strings.ToLower(strings.TrimSpace(input.Email))
+	input = normalizeLoginInput(input)
 
-	var userID uuid.UUID
-	var passwordHash string
-
-	err := h.db.QueryRow(r.Context(),
-		"SELECT id, password_hash FROM users WHERE email = $1", input.Email,
-	).Scan(&userID, &passwordHash)
+	userID, passwordHash, err := h.db.GetUserCredentials(r.Context(), input.Email)
 	if err != nil {
-		// Don't leak whether the email exists
+		// Don't leak whether the email exists.
 		response.Error(w, http.StatusUnauthorized, "invalid credentials")
 		return
 	}
