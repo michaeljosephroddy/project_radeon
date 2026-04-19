@@ -6,7 +6,9 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
@@ -25,11 +27,10 @@ import (
 	"github.com/project_radeon/api/internal/user"
 	"github.com/project_radeon/api/pkg/database"
 	"github.com/project_radeon/api/pkg/middleware"
+	"github.com/project_radeon/api/pkg/response"
 	"github.com/project_radeon/api/pkg/storage"
 )
 
-// main loads infrastructure dependencies, wires the HTTP handlers, and starts
-// the API server.
 func main() {
 	godotenv.Load()
 
@@ -43,8 +44,6 @@ func main() {
 	awsRegion := strings.TrimSpace(os.Getenv("AWS_REGION"))
 	awsBucket := strings.TrimSpace(os.Getenv("AWS_S3_BUCKET"))
 
-	// The API only needs a single S3 uploader, so main wires the AWS client once
-	// and passes the thin abstraction into the user handler.
 	awsCfg, err := awsconfig.LoadDefaultConfig(context.Background(),
 		awsconfig.WithRegion(awsRegion),
 		awsconfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(
@@ -69,8 +68,6 @@ func main() {
 
 	r := chi.NewRouter()
 
-	// Global middleware is applied before route grouping so both public and
-	// authenticated endpoints get request IDs, panic recovery, and CORS headers.
 	r.Use(chimiddleware.Logger)
 	r.Use(chimiddleware.Recoverer)
 	r.Use(chimiddleware.RequestID)
@@ -81,6 +78,16 @@ func main() {
 		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type"},
 		AllowCredentials: false,
 	}))
+
+	// Health check for ALB target group — must respond 200 before the instance
+	// receives live traffic and during graceful drain checks.
+	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
+		if err := db.Ping(r.Context()); err != nil {
+			response.Error(w, http.StatusServiceUnavailable, "database unavailable")
+			return
+		}
+		response.Success(w, http.StatusOK, map[string]string{"status": "ok"})
+	})
 
 	// ── Public routes ──────────────────────────────────────────────
 	r.Post("/auth/register", authHandler.Register)
@@ -157,6 +164,25 @@ func main() {
 		IdleTimeout:  120 * time.Second,
 	}
 
+	// Catch SIGTERM (ALB scale-in / ECS task stop) and SIGINT (local Ctrl-C).
+	// srv.Shutdown stops accepting new connections and waits for in-flight
+	// requests to finish before the process exits.
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGTERM, syscall.SIGINT)
+
+	go func() {
+		<-quit
+		log.Println("shutting down — draining in-flight requests")
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := srv.Shutdown(ctx); err != nil {
+			log.Fatalf("forced shutdown: %v", err)
+		}
+	}()
+
 	fmt.Printf("project_radeon api running on :%s\n", port)
-	log.Fatal(srv.ListenAndServe())
+	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		log.Fatalf("server error: %v", err)
+	}
+	log.Println("server stopped")
 }
