@@ -236,16 +236,13 @@ func (h *Handler) ListMySupportRequests(w http.ResponseWriter, r *http.Request) 
 				WHEN sr.status = 'open' AND sr.expires_at <= NOW() THEN 'expired'
 				ELSE sr.status
 			END AS status,
-			COALESCE(rc.cnt, 0) AS response_count,
+			sr.response_count,
 			sr.expires_at,
 			sr.created_at,
 			false AS has_responded,
 			true AS is_own_request
 		FROM support_requests sr
 		JOIN users u ON u.id = sr.requester_id
-		LEFT JOIN LATERAL (
-			SELECT COUNT(*) AS cnt FROM support_responses WHERE support_request_id = sr.id
-		) rc ON true
 		WHERE sr.requester_id = $1
 			AND ($2::timestamptz IS NULL OR sr.created_at < $2)
 		ORDER BY sr.created_at DESC
@@ -413,8 +410,15 @@ func (h *Handler) CreateSupportResponse(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	tx, err := h.db.Begin(r.Context())
+	if err != nil {
+		response.Error(w, http.StatusInternalServerError, "could not create support response")
+		return
+	}
+	defer tx.Rollback(r.Context())
+
 	var res SupportResponse
-	err = h.db.QueryRow(r.Context(),
+	err = tx.QueryRow(r.Context(),
 		`WITH inserted AS (
 			INSERT INTO support_responses (
 				support_request_id,
@@ -445,6 +449,19 @@ func (h *Handler) CreateSupportResponse(w http.ResponseWriter, r *http.Request) 
 	)
 	if err != nil {
 		response.Error(w, http.StatusConflict, "could not create support response")
+		return
+	}
+
+	if _, err := tx.Exec(r.Context(),
+		`UPDATE support_requests SET response_count = response_count + 1 WHERE id = $1`,
+		requestID,
+	); err != nil {
+		response.Error(w, http.StatusInternalServerError, "could not create support response")
+		return
+	}
+
+	if err := tx.Commit(r.Context()); err != nil {
+		response.Error(w, http.StatusInternalServerError, "could not create support response")
 		return
 	}
 
@@ -534,7 +551,7 @@ func (h *Handler) ListVisibleSupportRequests(r *http.Request, params pagination.
 			sr.message,
 			sr.audience,
 			sr.status,
-			COALESCE(rc.cnt, 0) AS response_count,
+			sr.response_count,
 			sr.expires_at,
 			sr.created_at,
 			EXISTS(
@@ -546,9 +563,6 @@ func (h *Handler) ListVisibleSupportRequests(r *http.Request, params pagination.
 			false AS is_own_request
 		FROM support_requests sr
 		JOIN users u ON u.id = sr.requester_id
-		LEFT JOIN LATERAL (
-			SELECT COUNT(*) AS cnt FROM support_responses WHERE support_request_id = sr.id
-		) rc ON true
 		WHERE sr.status = 'open'
 			AND sr.expires_at > NOW()
 			AND sr.requester_id != $1
@@ -711,7 +725,7 @@ func (h *Handler) fetchSupportRequest(ctx context.Context, viewerID uuid.UUID, r
 				WHEN sr.status = 'open' AND sr.expires_at <= NOW() THEN 'expired'
 				ELSE sr.status
 			END AS status,
-			COALESCE(rc.cnt, 0) AS response_count,
+			sr.response_count,
 			sr.expires_at,
 			sr.created_at,
 			EXISTS(
@@ -723,9 +737,6 @@ func (h *Handler) fetchSupportRequest(ctx context.Context, viewerID uuid.UUID, r
 			sr.requester_id = $2 AS is_own_request
 		FROM support_requests sr
 		JOIN users u ON u.id = sr.requester_id
-		LEFT JOIN LATERAL (
-			SELECT COUNT(*) AS cnt FROM support_responses WHERE support_request_id = sr.id
-		) rc ON true
 		WHERE sr.id = $1`,
 		requestID, viewerID,
 	).Scan(

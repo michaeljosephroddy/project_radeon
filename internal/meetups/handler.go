@@ -49,8 +49,6 @@ func (h *Handler) ListMeetups(w http.ResponseWriter, r *http.Request) {
 	city := r.URL.Query().Get("city")
 	params := pagination.Parse(r, 20, 50)
 
-	// The attendee count and current-user RSVP flag are derived in the query so
-	// the list endpoint can render cards without follow-up requests.
 	rows, err := h.db.Query(r.Context(),
 		`SELECT
 			m.id,
@@ -60,13 +58,14 @@ func (h *Handler) ListMeetups(w http.ResponseWriter, r *http.Request) {
 			m.city,
 			m.starts_at,
 			m.capacity,
-			COUNT(ma.user_id) AS attendee_count,
-			COALESCE(BOOL_OR(ma.user_id = $1), false) AS is_attending
+			m.attendee_count,
+			EXISTS(
+				SELECT 1 FROM meetup_attendees
+				WHERE meetup_id = m.id AND user_id = $1
+			) AS is_attending
 		FROM meetups m
-		LEFT JOIN meetup_attendees ma ON ma.meetup_id = m.id
 		WHERE m.starts_at > NOW()
 			AND ($2 = '' OR m.city ILIKE $2)
-		GROUP BY m.id
 		ORDER BY m.starts_at ASC
 		LIMIT $3 OFFSET $4`,
 		userID, city, params.Limit+1, params.Offset,
@@ -108,12 +107,13 @@ func (h *Handler) ListMyMeetups(w http.ResponseWriter, r *http.Request) {
 			m.city,
 			m.starts_at,
 			m.capacity,
-			COUNT(ma.user_id) AS attendee_count,
-			COALESCE(BOOL_OR(ma.user_id = $1), false) AS is_attending
+			m.attendee_count,
+			EXISTS(
+				SELECT 1 FROM meetup_attendees
+				WHERE meetup_id = m.id AND user_id = $1
+			) AS is_attending
 		FROM meetups m
-		LEFT JOIN meetup_attendees ma ON ma.meetup_id = m.id
 		WHERE m.organiser_id = $1
-		GROUP BY m.id
 		ORDER BY m.starts_at ASC
 		LIMIT $2 OFFSET $3`,
 		userID, params.Limit+1, params.Offset,
@@ -160,12 +160,13 @@ func (h *Handler) GetMeetup(w http.ResponseWriter, r *http.Request) {
 			m.city,
 			m.starts_at,
 			m.capacity,
-			COUNT(ma.user_id) AS attendee_count,
-			COALESCE(BOOL_OR(ma.user_id = $2), false) AS is_attending
+			m.attendee_count,
+			EXISTS(
+				SELECT 1 FROM meetup_attendees
+				WHERE meetup_id = m.id AND user_id = $2
+			) AS is_attending
 		FROM meetups m
-		LEFT JOIN meetup_attendees ma ON ma.meetup_id = m.id
-		WHERE m.id = $1
-		GROUP BY m.id`,
+		WHERE m.id = $1`,
 		meetupID, userID,
 	).Scan(&meetup.ID, &meetup.OrganizerID, &meetup.Title, &meetup.Description, &meetup.City, &meetup.StartsAt, &meetup.Capacity, &meetup.AttendeeCt, &meetup.IsAttending)
 	if err != nil {
@@ -253,12 +254,16 @@ func (h *Handler) CreateMeetup(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if _, err := tx.Exec(r.Context(),
-		`INSERT INTO meetup_attendees (
-			meetup_id,
-			user_id
-		)
-		VALUES ($1, $2)`,
+		`INSERT INTO meetup_attendees (meetup_id, user_id) VALUES ($1, $2)`,
 		meetup.ID, userID,
+	); err != nil {
+		response.Error(w, http.StatusInternalServerError, "could not create meetup")
+		return
+	}
+
+	if _, err := tx.Exec(r.Context(),
+		`UPDATE meetups SET attendee_count = 1 WHERE id = $1`,
+		meetup.ID,
 	); err != nil {
 		response.Error(w, http.StatusInternalServerError, "could not create meetup")
 		return
@@ -342,11 +347,7 @@ func (h *Handler) RSVP(w http.ResponseWriter, r *http.Request) {
 	var capacity *int
 	var attendeeCount int
 	if err := h.db.QueryRow(r.Context(),
-		`SELECT
-			m.capacity,
-			(SELECT COUNT(*) FROM meetup_attendees WHERE meetup_id = $1)
-		FROM meetups m
-		WHERE m.id = $1`,
+		`SELECT capacity, attendee_count FROM meetups WHERE id = $1`,
 		meetupID,
 	).Scan(&capacity, &attendeeCount); err != nil {
 		response.Error(w, http.StatusNotFound, "meetup not found")
@@ -358,15 +359,11 @@ func (h *Handler) RSVP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// RSVP acts as a toggle: posting again removes the attendee row instead of
-	// requiring a separate DELETE endpoint.
 	var alreadyRSVPd bool
 	if err := h.db.QueryRow(r.Context(),
 		`SELECT EXISTS(
-			SELECT 1
-			FROM meetup_attendees
-			WHERE meetup_id = $1
-				AND user_id = $2
+			SELECT 1 FROM meetup_attendees
+			WHERE meetup_id = $1 AND user_id = $2
 		)`,
 		meetupID, userID,
 	).Scan(&alreadyRSVPd); err != nil {
@@ -374,26 +371,49 @@ func (h *Handler) RSVP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	tx, err := h.db.Begin(r.Context())
+	if err != nil {
+		response.Error(w, http.StatusInternalServerError, "could not update RSVP")
+		return
+	}
+	defer tx.Rollback(r.Context())
+
 	if alreadyRSVPd {
-		if _, err := h.db.Exec(r.Context(),
-			`DELETE FROM meetup_attendees
-			WHERE meetup_id = $1
-				AND user_id = $2`,
+		if _, err := tx.Exec(r.Context(),
+			`DELETE FROM meetup_attendees WHERE meetup_id = $1 AND user_id = $2`,
 			meetupID, userID,
 		); err != nil {
 			response.Error(w, http.StatusInternalServerError, "could not remove RSVP")
 			return
 		}
+		if _, err := tx.Exec(r.Context(),
+			`UPDATE meetups SET attendee_count = GREATEST(attendee_count - 1, 0) WHERE id = $1`,
+			meetupID,
+		); err != nil {
+			response.Error(w, http.StatusInternalServerError, "could not remove RSVP")
+			return
+		}
+		if err := tx.Commit(r.Context()); err != nil {
+			response.Error(w, http.StatusInternalServerError, "could not remove RSVP")
+			return
+		}
 		response.Success(w, http.StatusOK, map[string]bool{"attending": false})
 	} else {
-		if _, err := h.db.Exec(r.Context(),
-			`INSERT INTO meetup_attendees (
-				meetup_id,
-				user_id
-			)
-			VALUES ($1, $2)`,
+		if _, err := tx.Exec(r.Context(),
+			`INSERT INTO meetup_attendees (meetup_id, user_id) VALUES ($1, $2)`,
 			meetupID, userID,
 		); err != nil {
+			response.Error(w, http.StatusInternalServerError, "could not RSVP")
+			return
+		}
+		if _, err := tx.Exec(r.Context(),
+			`UPDATE meetups SET attendee_count = attendee_count + 1 WHERE id = $1`,
+			meetupID,
+		); err != nil {
+			response.Error(w, http.StatusInternalServerError, "could not RSVP")
+			return
+		}
+		if err := tx.Commit(r.Context()); err != nil {
 			response.Error(w, http.StatusInternalServerError, "could not RSVP")
 			return
 		}

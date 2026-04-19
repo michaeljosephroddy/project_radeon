@@ -131,7 +131,14 @@ func (h *Handler) UpdateRequest(w http.ResponseWriter, r *http.Request) {
 	userAID, userBID := sortPair(userID, otherUserID)
 
 	if input.Action == "accept" {
-		result, err := h.db.Exec(r.Context(),
+		tx, err := h.db.Begin(r.Context())
+		if err != nil {
+			response.Error(w, http.StatusInternalServerError, "could not accept friend request")
+			return
+		}
+		defer tx.Rollback(r.Context())
+
+		result, err := tx.Exec(r.Context(),
 			`UPDATE friendships
 			SET
 				status = 'accepted',
@@ -144,6 +151,19 @@ func (h *Handler) UpdateRequest(w http.ResponseWriter, r *http.Request) {
 		)
 		if err != nil || result.RowsAffected() == 0 {
 			response.Error(w, http.StatusNotFound, "friend request not found")
+			return
+		}
+
+		if _, err := tx.Exec(r.Context(),
+			`UPDATE users SET friend_count = friend_count + 1 WHERE id = $1 OR id = $2`,
+			userID, otherUserID,
+		); err != nil {
+			response.Error(w, http.StatusInternalServerError, "could not accept friend request")
+			return
+		}
+
+		if err := tx.Commit(r.Context()); err != nil {
+			response.Error(w, http.StatusInternalServerError, "could not accept friend request")
 			return
 		}
 
@@ -212,7 +232,15 @@ func (h *Handler) RemoveFriend(w http.ResponseWriter, r *http.Request) {
 	}
 
 	userAID, userBID := sortPair(userID, otherUserID)
-	result, err := h.db.Exec(r.Context(),
+
+	tx, err := h.db.Begin(r.Context())
+	if err != nil {
+		response.Error(w, http.StatusInternalServerError, "could not remove friend")
+		return
+	}
+	defer tx.Rollback(r.Context())
+
+	result, err := tx.Exec(r.Context(),
 		`DELETE FROM friendships
 		WHERE user_a_id = $1
 			AND user_b_id = $2
@@ -221,6 +249,19 @@ func (h *Handler) RemoveFriend(w http.ResponseWriter, r *http.Request) {
 	)
 	if err != nil || result.RowsAffected() == 0 {
 		response.Error(w, http.StatusNotFound, "friend not found")
+		return
+	}
+
+	if _, err := tx.Exec(r.Context(),
+		`UPDATE users SET friend_count = GREATEST(friend_count - 1, 0) WHERE id = $1 OR id = $2`,
+		userID, otherUserID,
+	); err != nil {
+		response.Error(w, http.StatusInternalServerError, "could not remove friend")
+		return
+	}
+
+	if err := tx.Commit(r.Context()); err != nil {
+		response.Error(w, http.StatusInternalServerError, "could not remove friend")
 		return
 	}
 

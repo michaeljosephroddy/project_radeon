@@ -285,7 +285,7 @@ func (h *Handler) fetchUser(ctx context.Context, viewerID uuid.UUID, id uuid.UUI
 				WHEN f.requester_id = u.id THEN 'incoming'
 				ELSE 'none'
 			END AS friendship_status,
-			fc.cnt AS friend_count,
+			u.friend_count,
 			ic.cnt AS incoming_friend_request_count,
 			oc.cnt AS outgoing_friend_request_count
 		FROM users u
@@ -294,12 +294,6 @@ func (h *Handler) fetchUser(ctx context.Context, viewerID uuid.UUID, id uuid.UUI
 				(f.user_a_id = $1 AND f.user_b_id = u.id)
 				OR (f.user_b_id = $1 AND f.user_a_id = u.id)
 			)
-		LEFT JOIN LATERAL (
-			SELECT COUNT(*) AS cnt
-			FROM friendships f2
-			WHERE (f2.user_a_id = u.id OR f2.user_b_id = u.id)
-				AND f2.status = 'accepted'
-		) fc ON true
 		LEFT JOIN LATERAL (
 			SELECT COUNT(*) AS cnt
 			FROM friendships f3
