@@ -24,15 +24,22 @@ func NewHandler(db *pgxpool.Pool) *Handler {
 }
 
 type Meetup struct {
-	ID          uuid.UUID `json:"id"`
-	OrganizerID uuid.UUID `json:"organizer_id"`
-	Title       string    `json:"title"`
-	Description *string   `json:"description"`
-	City        string    `json:"city"`
-	StartsAt    time.Time `json:"starts_at"`
-	Capacity    *int      `json:"capacity"`
-	AttendeeCt  int       `json:"attendee_count"`
-	IsAttending bool      `json:"is_attending"`
+	ID          uuid.UUID         `json:"id"`
+	OrganizerID uuid.UUID         `json:"organizer_id"`
+	Title       string            `json:"title"`
+	Description *string           `json:"description"`
+	City        string            `json:"city"`
+	StartsAt    time.Time         `json:"starts_at"`
+	Capacity    *int              `json:"capacity"`
+	AttendeeCt  int               `json:"attendee_count"`
+	IsAttending bool              `json:"is_attending"`
+	Attendees   []AttendeePreview `json:"attendee_preview,omitempty"`
+}
+
+type AttendeePreview struct {
+	ID        uuid.UUID `json:"id"`
+	Username  string    `json:"username"`
+	AvatarURL *string   `json:"avatar_url"`
 }
 
 type meetupInput struct {
@@ -43,10 +50,67 @@ type meetupInput struct {
 	Capacity    *int    `json:"capacity"`
 }
 
+func (h *Handler) attachAttendeePreviews(r *http.Request, meetups []Meetup, limit int) error {
+	if len(meetups) == 0 {
+		return nil
+	}
+
+	meetupIDs := make([]uuid.UUID, 0, len(meetups))
+	meetupIndex := make(map[uuid.UUID]*Meetup, len(meetups))
+	for i := range meetups {
+		meetupIDs = append(meetupIDs, meetups[i].ID)
+		meetupIndex[meetups[i].ID] = &meetups[i]
+	}
+
+	rows, err := h.db.Query(r.Context(),
+		`SELECT meetup_id, id, username, avatar_url
+		FROM (
+			SELECT
+				ma.meetup_id,
+				u.id,
+				u.username,
+				u.avatar_url,
+				ROW_NUMBER() OVER (PARTITION BY ma.meetup_id ORDER BY ma.rsvp_at ASC) AS rn
+			FROM meetup_attendees ma
+			JOIN users u ON u.id = ma.user_id
+			WHERE ma.meetup_id = ANY($1)
+		) attendee_preview
+		WHERE rn <= $2
+		ORDER BY meetup_id, rn`,
+		meetupIDs, limit,
+	)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var meetupID uuid.UUID
+		var attendee AttendeePreview
+		if err := rows.Scan(&meetupID, &attendee.ID, &attendee.Username, &attendee.AvatarURL); err != nil {
+			return err
+		}
+		if meetup := meetupIndex[meetupID]; meetup != nil {
+			meetup.Attendees = append(meetup.Attendees, attendee)
+		}
+	}
+
+	return rows.Err()
+}
+
 // ListMeetups returns upcoming meetups, optionally filtered by city, with attendee state for the caller.
 func (h *Handler) ListMeetups(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.CurrentUserID(r)
-	city := r.URL.Query().Get("city")
+	city := strings.TrimSpace(r.URL.Query().Get("city"))
+	query := strings.TrimSpace(r.URL.Query().Get("q"))
+	cityFilter := ""
+	queryFilter := ""
+	if city != "" {
+		cityFilter = "%" + city + "%"
+	}
+	if query != "" {
+		queryFilter = "%" + query + "%"
+	}
 	params := pagination.Parse(r, 20, 50)
 
 	rows, err := h.db.Query(r.Context(),
@@ -66,9 +130,14 @@ func (h *Handler) ListMeetups(w http.ResponseWriter, r *http.Request) {
 		FROM meetups m
 		WHERE m.starts_at > NOW()
 			AND ($2 = '' OR m.city ILIKE $2)
+			AND (
+				$3 = ''
+				OR m.title ILIKE $3
+				OR COALESCE(m.description, '') ILIKE $3
+			)
 		ORDER BY m.starts_at ASC
-		LIMIT $3 OFFSET $4`,
-		userID, city, params.Limit+1, params.Offset,
+		LIMIT $4 OFFSET $5`,
+		userID, cityFilter, queryFilter, params.Limit+1, params.Offset,
 	)
 	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "could not fetch meetups")
@@ -87,6 +156,10 @@ func (h *Handler) ListMeetups(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := rows.Err(); err != nil {
 		response.Error(w, http.StatusInternalServerError, "could not read meetups")
+		return
+	}
+	if err := h.attachAttendeePreviews(r, meetups, 3); err != nil {
+		response.Error(w, http.StatusInternalServerError, "could not read meetup attendees")
 		return
 	}
 
@@ -135,6 +208,10 @@ func (h *Handler) ListMyMeetups(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := rows.Err(); err != nil {
 		response.Error(w, http.StatusInternalServerError, "could not read your meetups")
+		return
+	}
+	if err := h.attachAttendeePreviews(r, meetups, 3); err != nil {
+		response.Error(w, http.StatusInternalServerError, "could not read meetup attendees")
 		return
 	}
 
