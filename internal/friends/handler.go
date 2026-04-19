@@ -231,9 +231,10 @@ func (h *Handler) RemoveFriend(w http.ResponseWriter, r *http.Request) {
 }
 
 // ListFriends returns the caller's accepted friends ordered by acceptance time.
+// Paginate with ?before=<next_cursor> from the previous response.
 func (h *Handler) ListFriends(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.CurrentUserID(r)
-	params := pagination.Parse(r, 25, 100)
+	params := pagination.ParseCursor(r, 25, 100)
 
 	users, err := h.queryFriendUsers(r.Context(),
 		`SELECT
@@ -249,16 +250,17 @@ func (h *Handler) ListFriends(w http.ResponseWriter, r *http.Request) {
 		END
 		WHERE (f.user_a_id = $1 OR f.user_b_id = $1)
 			AND f.status = 'accepted'
+			AND ($2::timestamptz IS NULL OR COALESCE(f.accepted_at, f.created_at) < $2)
 		ORDER BY COALESCE(f.accepted_at, f.created_at) DESC
-		LIMIT $2 OFFSET $3`,
-		userID, params.Limit+1, params.Offset,
+		LIMIT $3`,
+		userID, params.Before, params.Limit+1,
 	)
 	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "could not fetch friends")
 		return
 	}
 
-	response.Success(w, http.StatusOK, pagination.Slice(users, params))
+	response.Success(w, http.StatusOK, pagination.CursorSlice(users, params.Limit, func(u friendUser) time.Time { return u.CreatedAt }))
 }
 
 // ListIncomingRequests returns pending requests addressed to the caller.
@@ -273,7 +275,12 @@ func (h *Handler) ListOutgoingRequests(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) listPendingRequests(w http.ResponseWriter, r *http.Request, outgoing bool) {
 	userID := middleware.CurrentUserID(r)
-	params := pagination.Parse(r, 25, 100)
+	params := pagination.ParseCursor(r, 25, 100)
+
+	requesterFilter := "AND f.requester_id != $1"
+	if outgoing {
+		requesterFilter = "AND f.requester_id = $1"
+	}
 
 	query := `SELECT
 		u.id,
@@ -288,35 +295,18 @@ func (h *Handler) listPendingRequests(w http.ResponseWriter, r *http.Request, ou
 	END
 	WHERE (f.user_a_id = $1 OR f.user_b_id = $1)
 		AND f.status = 'pending'
-		AND f.requester_id != $1
+		` + requesterFilter + `
+		AND ($2::timestamptz IS NULL OR f.created_at < $2)
 	ORDER BY f.created_at DESC
-	LIMIT $2 OFFSET $3`
-	if outgoing {
-		query = `SELECT
-			u.id,
-			u.username,
-			u.avatar_url,
-			u.city,
-			f.created_at
-		FROM friendships f
-		JOIN users u ON u.id = CASE
-			WHEN f.user_a_id = $1 THEN f.user_b_id
-			ELSE f.user_a_id
-		END
-		WHERE (f.user_a_id = $1 OR f.user_b_id = $1)
-			AND f.status = 'pending'
-			AND f.requester_id = $1
-		ORDER BY f.created_at DESC
-		LIMIT $2 OFFSET $3`
-	}
+	LIMIT $3`
 
-	users, err := h.queryFriendUsers(r.Context(), query, userID, params.Limit+1, params.Offset)
+	users, err := h.queryFriendUsers(r.Context(), query, userID, params.Before, params.Limit+1)
 	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "could not fetch friend requests")
 		return
 	}
 
-	response.Success(w, http.StatusOK, pagination.Slice(users, params))
+	response.Success(w, http.StatusOK, pagination.CursorSlice(users, params.Limit, func(u friendUser) time.Time { return u.CreatedAt }))
 }
 
 // queryFriendUsers keeps the paging scan logic in one place for accepted

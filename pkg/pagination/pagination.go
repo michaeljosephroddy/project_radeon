@@ -3,6 +3,8 @@ package pagination
 import (
 	"net/http"
 	"strconv"
+	"strings"
+	"time"
 )
 
 // Params captures normalized page/limit inputs for page-based list endpoints.
@@ -55,5 +57,73 @@ func Slice[T any](items []T, params Params) Response[T] {
 		Page:    params.Page,
 		Limit:   params.Limit,
 		HasMore: hasMore,
+	}
+}
+
+// CursorParams holds parsed cursor inputs for time-ordered list endpoints.
+// Before is used by DESC-ordered endpoints (feed, support, friends).
+// After is used by ASC-ordered endpoints (comments).
+type CursorParams struct {
+	Limit  int
+	Before *time.Time
+	After  *time.Time
+}
+
+// CursorResponse wraps a cursor-paginated page. NextCursor is the value to
+// pass as ?before or ?after on the next request to fetch the following page.
+type CursorResponse[T any] struct {
+	Items      []T     `json:"items"`
+	Limit      int     `json:"limit"`
+	HasMore    bool    `json:"has_more"`
+	NextCursor *string `json:"next_cursor,omitempty"`
+}
+
+// ParseCursor reads ?limit, ?before, and ?after from the request and returns
+// normalized CursorParams. Timestamps must be RFC3339Nano.
+func ParseCursor(r *http.Request, defaultLimit, maxLimit int) CursorParams {
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	if limit < 1 {
+		limit = defaultLimit
+	}
+	if limit > maxLimit {
+		limit = maxLimit
+	}
+
+	params := CursorParams{Limit: limit}
+
+	if raw := strings.TrimSpace(r.URL.Query().Get("before")); raw != "" {
+		if t, err := time.Parse(time.RFC3339Nano, raw); err == nil {
+			params.Before = &t
+		}
+	}
+	if raw := strings.TrimSpace(r.URL.Query().Get("after")); raw != "" {
+		if t, err := time.Parse(time.RFC3339Nano, raw); err == nil {
+			params.After = &t
+		}
+	}
+
+	return params
+}
+
+// CursorSlice trims a limit+1 result to limit items and derives the next
+// cursor from the last item's timestamp. Works for both ASC and DESC ordering
+// since the next cursor is always the boundary item regardless of direction.
+func CursorSlice[T any](items []T, limit int, timestamp func(T) time.Time) CursorResponse[T] {
+	hasMore := len(items) > limit
+	if hasMore {
+		items = items[:limit]
+	}
+
+	var nextCursor *string
+	if hasMore && len(items) > 0 {
+		t := timestamp(items[len(items)-1]).UTC().Format(time.RFC3339Nano)
+		nextCursor = &t
+	}
+
+	return CursorResponse[T]{
+		Items:      items,
+		Limit:      limit,
+		HasMore:    hasMore,
+		NextCursor: nextCursor,
 	}
 }

@@ -35,8 +35,9 @@ type Post struct {
 }
 
 // GetFeed returns the global post feed with author metadata and aggregate counts.
+// Paginate with ?before=<next_cursor> from the previous response.
 func (h *Handler) GetFeed(w http.ResponseWriter, r *http.Request) {
-	params := pagination.Parse(r, 20, 50)
+	params := pagination.ParseCursor(r, 20, 50)
 
 	rows, err := h.db.Query(r.Context(),
 		`SELECT
@@ -56,9 +57,10 @@ func (h *Handler) GetFeed(w http.ResponseWriter, r *http.Request) {
 		LEFT JOIN LATERAL (
 			SELECT COUNT(*) AS cnt FROM post_reactions WHERE post_id = p.id AND type = 'like'
 		) lc ON true
+		WHERE ($1::timestamptz IS NULL OR p.created_at < $1)
 		ORDER BY p.created_at DESC
-		LIMIT $1 OFFSET $2`,
-		params.Limit+1, params.Offset,
+		LIMIT $2`,
+		params.Before, params.Limit+1,
 	)
 	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "could not fetch feed")
@@ -80,10 +82,11 @@ func (h *Handler) GetFeed(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	response.Success(w, http.StatusOK, pagination.Slice(posts, params))
+	response.Success(w, http.StatusOK, pagination.CursorSlice(posts, params.Limit, func(p Post) time.Time { return p.CreatedAt }))
 }
 
 // GetUserPosts returns a single user's posts with the same shape as the main feed.
+// Paginate with ?before=<next_cursor> from the previous response.
 func (h *Handler) GetUserPosts(w http.ResponseWriter, r *http.Request) {
 	targetID, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
@@ -91,7 +94,7 @@ func (h *Handler) GetUserPosts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	params := pagination.Parse(r, 20, 50)
+	params := pagination.ParseCursor(r, 20, 50)
 
 	rows, err := h.db.Query(r.Context(),
 		`SELECT
@@ -112,9 +115,10 @@ func (h *Handler) GetUserPosts(w http.ResponseWriter, r *http.Request) {
 			SELECT COUNT(*) AS cnt FROM post_reactions WHERE post_id = p.id AND type = 'like'
 		) lc ON true
 		WHERE p.user_id = $1
+			AND ($2::timestamptz IS NULL OR p.created_at < $2)
 		ORDER BY p.created_at DESC
-		LIMIT $2 OFFSET $3`,
-		targetID, params.Limit+1, params.Offset,
+		LIMIT $3`,
+		targetID, params.Before, params.Limit+1,
 	)
 	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "could not fetch posts")
@@ -136,7 +140,7 @@ func (h *Handler) GetUserPosts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	response.Success(w, http.StatusOK, pagination.Slice(posts, params))
+	response.Success(w, http.StatusOK, pagination.CursorSlice(posts, params.Limit, func(p Post) time.Time { return p.CreatedAt }))
 }
 
 // CreatePost validates and inserts a new post for the authenticated user.
@@ -353,7 +357,8 @@ func (h *Handler) AddComment(w http.ResponseWriter, r *http.Request) {
 	response.Success(w, http.StatusCreated, map[string]any{"id": commentID})
 }
 
-// GetComments returns a paginated page of a post's comments in conversation order.
+// GetComments returns a page of a post's comments in conversation order.
+// Paginate with ?after=<next_cursor> from the previous response.
 func (h *Handler) GetComments(w http.ResponseWriter, r *http.Request) {
 	postID, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
@@ -361,7 +366,7 @@ func (h *Handler) GetComments(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	pg := pagination.Parse(r, 20, 50)
+	params := pagination.ParseCursor(r, 20, 50)
 
 	rows, err := h.db.Query(r.Context(),
 		`SELECT
@@ -374,9 +379,10 @@ func (h *Handler) GetComments(w http.ResponseWriter, r *http.Request) {
 		FROM comments c
 		JOIN users u ON u.id = c.user_id
 		WHERE c.post_id = $1
+			AND ($2::timestamptz IS NULL OR c.created_at > $2)
 		ORDER BY c.created_at ASC
-		LIMIT $2 OFFSET $3`,
-		postID, pg.Limit+1, pg.Offset,
+		LIMIT $3`,
+		postID, params.After, params.Limit+1,
 	)
 	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "could not fetch comments")
@@ -407,5 +413,5 @@ func (h *Handler) GetComments(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	response.Success(w, http.StatusOK, pagination.Slice(comments, pg))
+	response.Success(w, http.StatusOK, pagination.CursorSlice(comments, params.Limit, func(c Comment) time.Time { return c.CreatedAt }))
 }

@@ -80,9 +80,9 @@ type SupportResponse struct {
 
 type SupportRequestsPage struct {
 	Items                   []SupportRequest `json:"items"`
-	Page                    int              `json:"page"`
 	Limit                   int              `json:"limit"`
 	HasMore                 bool             `json:"has_more"`
+	NextCursor              *string          `json:"next_cursor,omitempty"`
 	OpenRequestCount        *int             `json:"open_request_count,omitempty"`
 	AvailableToSupportCount *int             `json:"available_to_support_count,omitempty"`
 }
@@ -217,9 +217,10 @@ func (h *Handler) CreateSupportRequest(w http.ResponseWriter, r *http.Request) {
 }
 
 // ListMySupportRequests returns support requests created by the authenticated user.
+// Paginate with ?before=<next_cursor> from the previous response.
 func (h *Handler) ListMySupportRequests(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.CurrentUserID(r)
-	params := pagination.Parse(r, 20, 50)
+	params := pagination.ParseCursor(r, 20, 50)
 
 	requests, err := h.listSupportRequests(r.Context(),
 		`SELECT
@@ -246,28 +247,30 @@ func (h *Handler) ListMySupportRequests(w http.ResponseWriter, r *http.Request) 
 			SELECT COUNT(*) AS cnt FROM support_responses WHERE support_request_id = sr.id
 		) rc ON true
 		WHERE sr.requester_id = $1
+			AND ($2::timestamptz IS NULL OR sr.created_at < $2)
 		ORDER BY sr.created_at DESC
-		LIMIT $2 OFFSET $3`,
-		userID, params.Limit+1, params.Offset,
+		LIMIT $3`,
+		userID, params.Before, params.Limit+1,
 	)
 	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "could not fetch support requests")
 		return
 	}
 
-	page := pagination.Slice(requests, params)
+	page := pagination.CursorSlice(requests, params.Limit, func(sr SupportRequest) time.Time { return sr.CreatedAt })
 	response.Success(w, http.StatusOK, SupportRequestsPage{
-		Items:   page.Items,
-		Page:    page.Page,
-		Limit:   page.Limit,
-		HasMore: page.HasMore,
+		Items:      page.Items,
+		Limit:      page.Limit,
+		HasMore:    page.HasMore,
+		NextCursor: page.NextCursor,
 	})
 }
 
 // ListSupportRequests returns the visible support page plus the lightweight tab
 // summary counts the mobile client shows above the request cards.
+// Paginate with ?before=<next_cursor> from the previous response.
 func (h *Handler) ListSupportRequests(w http.ResponseWriter, r *http.Request) {
-	params := pagination.Parse(r, 20, 50)
+	params := pagination.ParseCursor(r, 20, 50)
 	requests, err := h.ListVisibleSupportRequests(r, params)
 	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "could not fetch support requests")
@@ -280,12 +283,12 @@ func (h *Handler) ListSupportRequests(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	page := pagination.Slice(requests, params)
+	page := pagination.CursorSlice(requests, params.Limit, func(sr SupportRequest) time.Time { return sr.CreatedAt })
 	response.Success(w, http.StatusOK, SupportRequestsPage{
 		Items:                   page.Items,
-		Page:                    page.Page,
 		Limit:                   page.Limit,
 		HasMore:                 page.HasMore,
+		NextCursor:              page.NextCursor,
 		OpenRequestCount:        &openCount,
 		AvailableToSupportCount: &availableCount,
 	})
@@ -518,7 +521,7 @@ func (h *Handler) ListSupportResponses(w http.ResponseWriter, r *http.Request) {
 // ListVisibleSupportRequests returns open support requests that should appear in the caller's feed.
 // ListVisibleSupportRequests applies the same audience rules as the support
 // feed while keeping pagination inside the main visibility query.
-func (h *Handler) ListVisibleSupportRequests(r *http.Request, params pagination.Params) ([]SupportRequest, error) {
+func (h *Handler) ListVisibleSupportRequests(r *http.Request, params pagination.CursorParams) ([]SupportRequest, error) {
 	userID := middleware.CurrentUserID(r)
 	return h.listSupportRequests(r.Context(),
 		`SELECT
@@ -549,6 +552,7 @@ func (h *Handler) ListVisibleSupportRequests(r *http.Request, params pagination.
 		WHERE sr.status = 'open'
 			AND sr.expires_at > NOW()
 			AND sr.requester_id != $1
+			AND ($2::timestamptz IS NULL OR sr.created_at < $2)
 			AND (
 				sr.audience = 'community'
 				OR (sr.audience = 'city' AND u.city IS NOT NULL AND u.city = (SELECT city FROM users WHERE id = $1))
@@ -564,8 +568,8 @@ func (h *Handler) ListVisibleSupportRequests(r *http.Request, params pagination.
 				)
 			)
 		ORDER BY sr.created_at DESC
-		LIMIT $2 OFFSET $3`,
-		userID, params.Limit+1, params.Offset,
+		LIMIT $3`,
+		userID, params.Before, params.Limit+1,
 	)
 }
 
