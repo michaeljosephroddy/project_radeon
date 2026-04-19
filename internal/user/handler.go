@@ -285,34 +285,37 @@ func (h *Handler) fetchUser(ctx context.Context, viewerID uuid.UUID, id uuid.UUI
 				WHEN f.requester_id = u.id THEN 'incoming'
 				ELSE 'none'
 			END AS friendship_status,
-			(
-				SELECT COUNT(*)
-				FROM friendships f2
-				WHERE (f2.user_a_id = u.id OR f2.user_b_id = u.id)
-					AND f2.status = 'accepted'
-			) AS friend_count,
-			(
-				SELECT COUNT(*)
-				FROM friendships f3
-				WHERE (f3.user_a_id = u.id OR f3.user_b_id = u.id)
-					AND f3.status = 'pending'
-					AND u.id = $1
-					AND f3.requester_id != u.id
-			) AS incoming_friend_request_count,
-			(
-				SELECT COUNT(*)
-				FROM friendships f4
-				WHERE (f4.user_a_id = u.id OR f4.user_b_id = u.id)
-					AND f4.status = 'pending'
-					AND u.id = $1
-					AND f4.requester_id = u.id
-			) AS outgoing_friend_request_count
+			fc.cnt AS friend_count,
+			ic.cnt AS incoming_friend_request_count,
+			oc.cnt AS outgoing_friend_request_count
 		FROM users u
 		LEFT JOIN friendships f
 			ON (
 				(f.user_a_id = $1 AND f.user_b_id = u.id)
 				OR (f.user_b_id = $1 AND f.user_a_id = u.id)
 			)
+		LEFT JOIN LATERAL (
+			SELECT COUNT(*) AS cnt
+			FROM friendships f2
+			WHERE (f2.user_a_id = u.id OR f2.user_b_id = u.id)
+				AND f2.status = 'accepted'
+		) fc ON true
+		LEFT JOIN LATERAL (
+			SELECT COUNT(*) AS cnt
+			FROM friendships f3
+			WHERE (f3.user_a_id = u.id OR f3.user_b_id = u.id)
+				AND f3.status = 'pending'
+				AND u.id = $1
+				AND f3.requester_id != u.id
+		) ic ON true
+		LEFT JOIN LATERAL (
+			SELECT COUNT(*) AS cnt
+			FROM friendships f4
+			WHERE (f4.user_a_id = u.id OR f4.user_b_id = u.id)
+				AND f4.status = 'pending'
+				AND u.id = $1
+				AND f4.requester_id = u.id
+		) oc ON true
 		WHERE u.id = $2`,
 		viewerID, id,
 	).Scan(

@@ -38,8 +38,6 @@ type Post struct {
 func (h *Handler) GetFeed(w http.ResponseWriter, r *http.Request) {
 	params := pagination.Parse(r, 20, 50)
 
-	// Counts are projected with correlated subqueries so the API can return the
-	// feed in a single round trip without separate aggregate fetches.
 	rows, err := h.db.Query(r.Context(),
 		`SELECT
 			p.id,
@@ -48,19 +46,16 @@ func (h *Handler) GetFeed(w http.ResponseWriter, r *http.Request) {
 			u.avatar_url,
 			p.body,
 			p.created_at,
-			COALESCE((
-				SELECT COUNT(*)
-				FROM comments c
-				WHERE c.post_id = p.id
-			), 0) AS comment_count,
-			COALESCE((
-				SELECT COUNT(*)
-				FROM post_reactions pr
-				WHERE pr.post_id = p.id
-					AND pr.type = 'like'
-			), 0) AS like_count
+			COALESCE(cc.cnt, 0) AS comment_count,
+			COALESCE(lc.cnt, 0) AS like_count
 		FROM posts p
 		JOIN users u ON u.id = p.user_id
+		LEFT JOIN LATERAL (
+			SELECT COUNT(*) AS cnt FROM comments WHERE post_id = p.id
+		) cc ON true
+		LEFT JOIN LATERAL (
+			SELECT COUNT(*) AS cnt FROM post_reactions WHERE post_id = p.id AND type = 'like'
+		) lc ON true
 		ORDER BY p.created_at DESC
 		LIMIT $1 OFFSET $2`,
 		params.Limit+1, params.Offset,
@@ -98,8 +93,6 @@ func (h *Handler) GetUserPosts(w http.ResponseWriter, r *http.Request) {
 
 	params := pagination.Parse(r, 20, 50)
 
-	// This mirrors GetFeed so profile timelines and the global feed share the
-	// same response shape and derived counters.
 	rows, err := h.db.Query(r.Context(),
 		`SELECT
 			p.id,
@@ -108,19 +101,16 @@ func (h *Handler) GetUserPosts(w http.ResponseWriter, r *http.Request) {
 			u.avatar_url,
 			p.body,
 			p.created_at,
-			COALESCE((
-				SELECT COUNT(*)
-				FROM comments c
-				WHERE c.post_id = p.id
-			), 0) AS comment_count,
-			COALESCE((
-				SELECT COUNT(*)
-				FROM post_reactions pr
-				WHERE pr.post_id = p.id
-					AND pr.type = 'like'
-			), 0) AS like_count
+			COALESCE(cc.cnt, 0) AS comment_count,
+			COALESCE(lc.cnt, 0) AS like_count
 		FROM posts p
 		JOIN users u ON u.id = p.user_id
+		LEFT JOIN LATERAL (
+			SELECT COUNT(*) AS cnt FROM comments WHERE post_id = p.id
+		) cc ON true
+		LEFT JOIN LATERAL (
+			SELECT COUNT(*) AS cnt FROM post_reactions WHERE post_id = p.id AND type = 'like'
+		) lc ON true
 		WHERE p.user_id = $1
 		ORDER BY p.created_at DESC
 		LIMIT $2 OFFSET $3`,
@@ -205,13 +195,15 @@ func (h *Handler) DeletePost(w http.ResponseWriter, r *http.Request) {
 	response.Success(w, http.StatusOK, map[string]bool{"deleted": true})
 }
 
-// GetReactions returns all recorded reactions for a post with reacting user details.
+// GetReactions returns a paginated list of reactions for a post with reacting user details.
 func (h *Handler) GetReactions(w http.ResponseWriter, r *http.Request) {
 	postID, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
 		response.Error(w, http.StatusBadRequest, "invalid post id")
 		return
 	}
+
+	params := pagination.Parse(r, 50, 100)
 
 	rows, err := h.db.Query(r.Context(),
 		`SELECT
@@ -223,8 +215,9 @@ func (h *Handler) GetReactions(w http.ResponseWriter, r *http.Request) {
 		FROM post_reactions pr
 		JOIN users u ON u.id = pr.user_id
 		WHERE pr.post_id = $1
-		ORDER BY pr.type ASC`,
-		postID,
+		ORDER BY pr.type ASC, pr.id ASC
+		LIMIT $2 OFFSET $3`,
+		postID, params.Limit+1, params.Offset,
 	)
 	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "could not fetch reactions")
@@ -254,7 +247,7 @@ func (h *Handler) GetReactions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	response.Success(w, http.StatusOK, reactions)
+	response.Success(w, http.StatusOK, pagination.Slice(reactions, params))
 }
 
 // ReactToPost toggles a specific reaction type for the authenticated user on a post.

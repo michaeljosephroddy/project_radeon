@@ -235,17 +235,16 @@ func (h *Handler) ListMySupportRequests(w http.ResponseWriter, r *http.Request) 
 				WHEN sr.status = 'open' AND sr.expires_at <= NOW() THEN 'expired'
 				ELSE sr.status
 			END AS status,
-			COALESCE((
-				SELECT COUNT(*)
-				FROM support_responses sres
-				WHERE sres.support_request_id = sr.id
-			), 0) AS response_count,
+			COALESCE(rc.cnt, 0) AS response_count,
 			sr.expires_at,
 			sr.created_at,
 			false AS has_responded,
 			true AS is_own_request
 		FROM support_requests sr
 		JOIN users u ON u.id = sr.requester_id
+		LEFT JOIN LATERAL (
+			SELECT COUNT(*) AS cnt FROM support_responses WHERE support_request_id = sr.id
+		) rc ON true
 		WHERE sr.requester_id = $1
 		ORDER BY sr.created_at DESC
 		LIMIT $2 OFFSET $3`,
@@ -413,36 +412,43 @@ func (h *Handler) CreateSupportResponse(w http.ResponseWriter, r *http.Request) 
 
 	var res SupportResponse
 	err = h.db.QueryRow(r.Context(),
-		`INSERT INTO support_responses (
-			support_request_id,
-			responder_id,
-			response_type,
-			message
+		`WITH inserted AS (
+			INSERT INTO support_responses (
+				support_request_id,
+				responder_id,
+				response_type,
+				message
+			)
+			VALUES ($1, $2, $3, $4)
+			RETURNING id, support_request_id, responder_id, response_type, message, created_at
 		)
-		VALUES ($1, $2, $3, $4)
-		RETURNING id, support_request_id, responder_id, response_type, message, created_at`,
+		SELECT
+			i.id,
+			i.support_request_id,
+			i.responder_id,
+			u.username,
+			u.avatar_url,
+			u.city,
+			i.response_type,
+			i.message,
+			i.created_at
+		FROM inserted i
+		JOIN users u ON u.id = i.responder_id`,
 		requestID, userID, input.ResponseType, input.Message,
-	).Scan(&res.ID, &res.SupportRequestID, &res.ResponderID, &res.ResponseType, &res.Message, &res.CreatedAt)
+	).Scan(
+		&res.ID, &res.SupportRequestID, &res.ResponderID,
+		&res.Username, &res.AvatarURL, &res.City,
+		&res.ResponseType, &res.Message, &res.CreatedAt,
+	)
 	if err != nil {
 		response.Error(w, http.StatusConflict, "could not create support response")
-		return
-	}
-
-	err = h.db.QueryRow(r.Context(),
-		`SELECT username, avatar_url, city
-		FROM users
-		WHERE id = $1`,
-		userID,
-	).Scan(&res.Username, &res.AvatarURL, &res.City)
-	if err != nil {
-		response.Error(w, http.StatusInternalServerError, "could not hydrate support response")
 		return
 	}
 
 	response.Success(w, http.StatusCreated, res)
 }
 
-// ListSupportResponses returns the responses for a support request owned by the caller.
+// ListSupportResponses returns a paginated list of responses for a support request owned by the caller.
 func (h *Handler) ListSupportResponses(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.CurrentUserID(r)
 	requestID, err := uuid.Parse(chi.URLParam(r, "id"))
@@ -466,6 +472,8 @@ func (h *Handler) ListSupportResponses(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	params := pagination.Parse(r, 50, 100)
+
 	rows, err := h.db.Query(r.Context(),
 		`SELECT
 			sres.id,
@@ -480,8 +488,9 @@ func (h *Handler) ListSupportResponses(w http.ResponseWriter, r *http.Request) {
 		FROM support_responses sres
 		JOIN users u ON u.id = sres.responder_id
 		WHERE sres.support_request_id = $1
-		ORDER BY sres.created_at ASC`,
-		requestID,
+		ORDER BY sres.created_at ASC
+		LIMIT $2 OFFSET $3`,
+		requestID, params.Limit+1, params.Offset,
 	)
 	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "could not fetch support responses")
@@ -503,7 +512,7 @@ func (h *Handler) ListSupportResponses(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	response.Success(w, http.StatusOK, responses)
+	response.Success(w, http.StatusOK, pagination.Slice(responses, params))
 }
 
 // ListVisibleSupportRequests returns open support requests that should appear in the caller's feed.
@@ -522,11 +531,7 @@ func (h *Handler) ListVisibleSupportRequests(r *http.Request, params pagination.
 			sr.message,
 			sr.audience,
 			sr.status,
-			COALESCE((
-				SELECT COUNT(*)
-				FROM support_responses sres
-				WHERE sres.support_request_id = sr.id
-			), 0) AS response_count,
+			COALESCE(rc.cnt, 0) AS response_count,
 			sr.expires_at,
 			sr.created_at,
 			EXISTS(
@@ -538,6 +543,9 @@ func (h *Handler) ListVisibleSupportRequests(r *http.Request, params pagination.
 			false AS is_own_request
 		FROM support_requests sr
 		JOIN users u ON u.id = sr.requester_id
+		LEFT JOIN LATERAL (
+			SELECT COUNT(*) AS cnt FROM support_responses WHERE support_request_id = sr.id
+		) rc ON true
 		WHERE sr.status = 'open'
 			AND sr.expires_at > NOW()
 			AND sr.requester_id != $1
@@ -545,15 +553,15 @@ func (h *Handler) ListVisibleSupportRequests(r *http.Request, params pagination.
 				sr.audience = 'community'
 				OR (sr.audience = 'city' AND u.city IS NOT NULL AND u.city = (SELECT city FROM users WHERE id = $1))
 				OR (
-				sr.audience = 'friends'
-				AND EXISTS(
-					SELECT 1
-					FROM friendships f
-					WHERE (f.user_a_id = $1 OR f.user_b_id = $1)
-						AND (f.user_a_id = sr.requester_id OR f.user_b_id = sr.requester_id)
-						AND f.status = 'accepted'
+					sr.audience = 'friends'
+					AND EXISTS(
+						SELECT 1
+						FROM friendships f
+						WHERE (f.user_a_id = $1 OR f.user_b_id = $1)
+							AND (f.user_a_id = sr.requester_id OR f.user_b_id = sr.requester_id)
+							AND f.status = 'accepted'
+					)
 				)
-			)
 			)
 		ORDER BY sr.created_at DESC
 		LIMIT $2 OFFSET $3`,
@@ -610,38 +618,31 @@ func (h *Handler) fetchSupportSummary(ctx context.Context, viewerID uuid.UUID) (
 func (h *Handler) createSupportRequest(ctx context.Context, userID uuid.UUID, requestType string, message *string, audience string, expiresAt time.Time) (*SupportRequest, error) {
 	var req SupportRequest
 	err := h.db.QueryRow(ctx,
-		`INSERT INTO support_requests (
-			requester_id,
-			type,
-			message,
-			audience,
-			city,
-			status,
-			expires_at
+		`WITH inserted AS (
+			INSERT INTO support_requests (
+				requester_id,
+				type,
+				message,
+				audience,
+				city,
+				status,
+				expires_at
+			)
+			SELECT u.id, $2, $3, $4, u.city, 'open', $5
+			FROM users u
+			WHERE u.id = $1
+			RETURNING id, requester_id, type, message, audience, status, expires_at, created_at
 		)
 		SELECT
-			u.id,
-			$2,
-			$3,
-			$4,
-			u.city,
-			'open',
-			$5
-		FROM users u
-		WHERE u.id = $1
-		RETURNING id, requester_id, type, message, audience, status, expires_at, created_at`,
+			i.id, i.requester_id, i.type, i.message, i.audience, i.status, i.expires_at, i.created_at,
+			u.username, u.avatar_url, u.city
+		FROM inserted i
+		JOIN users u ON u.id = i.requester_id`,
 		userID, requestType, message, audience, expiresAt,
-	).Scan(&req.ID, &req.RequesterID, &req.Type, &req.Message, &req.Audience, &req.Status, &req.ExpiresAt, &req.CreatedAt)
-	if err != nil {
-		return nil, err
-	}
-
-	err = h.db.QueryRow(ctx,
-		`SELECT username, avatar_url, city
-		FROM users
-		WHERE id = $1`,
-		userID,
-	).Scan(&req.Username, &req.AvatarURL, &req.City)
+	).Scan(
+		&req.ID, &req.RequesterID, &req.Type, &req.Message, &req.Audience, &req.Status, &req.ExpiresAt, &req.CreatedAt,
+		&req.Username, &req.AvatarURL, &req.City,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -706,11 +707,7 @@ func (h *Handler) fetchSupportRequest(ctx context.Context, viewerID uuid.UUID, r
 				WHEN sr.status = 'open' AND sr.expires_at <= NOW() THEN 'expired'
 				ELSE sr.status
 			END AS status,
-			COALESCE((
-				SELECT COUNT(*)
-				FROM support_responses sres
-				WHERE sres.support_request_id = sr.id
-			), 0) AS response_count,
+			COALESCE(rc.cnt, 0) AS response_count,
 			sr.expires_at,
 			sr.created_at,
 			EXISTS(
@@ -722,6 +719,9 @@ func (h *Handler) fetchSupportRequest(ctx context.Context, viewerID uuid.UUID, r
 			sr.requester_id = $2 AS is_own_request
 		FROM support_requests sr
 		JOIN users u ON u.id = sr.requester_id
+		LEFT JOIN LATERAL (
+			SELECT COUNT(*) AS cnt FROM support_responses WHERE support_request_id = sr.id
+		) rc ON true
 		WHERE sr.id = $1`,
 		requestID, viewerID,
 	).Scan(

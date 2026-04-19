@@ -275,13 +275,15 @@ func (h *Handler) CreateMeetup(w http.ResponseWriter, r *http.Request) {
 	response.Success(w, http.StatusCreated, meetup)
 }
 
-// GetAttendees returns the users who have RSVP'd to a meetup.
+// GetAttendees returns a paginated list of users who have RSVP'd to a meetup.
 func (h *Handler) GetAttendees(w http.ResponseWriter, r *http.Request) {
 	meetupID, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
 		response.Error(w, http.StatusBadRequest, "invalid meetup id")
 		return
 	}
+
+	params := pagination.Parse(r, 50, 100)
 
 	rows, err := h.db.Query(r.Context(),
 		`SELECT
@@ -293,8 +295,9 @@ func (h *Handler) GetAttendees(w http.ResponseWriter, r *http.Request) {
 		FROM meetup_attendees ma
 		JOIN users u ON u.id = ma.user_id
 		WHERE ma.meetup_id = $1
-		ORDER BY ma.rsvp_at ASC`,
-		meetupID,
+		ORDER BY ma.rsvp_at ASC
+		LIMIT $2 OFFSET $3`,
+		meetupID, params.Limit+1, params.Offset,
 	)
 	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "could not fetch attendees")
@@ -324,7 +327,7 @@ func (h *Handler) GetAttendees(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	response.Success(w, http.StatusOK, attendees)
+	response.Success(w, http.StatusOK, pagination.Slice(attendees, params))
 }
 
 // RSVP toggles the caller's attendance for a meetup while enforcing capacity limits.
@@ -341,11 +344,9 @@ func (h *Handler) RSVP(w http.ResponseWriter, r *http.Request) {
 	if err := h.db.QueryRow(r.Context(),
 		`SELECT
 			m.capacity,
-			COUNT(ma.user_id)
+			(SELECT COUNT(*) FROM meetup_attendees WHERE meetup_id = $1)
 		FROM meetups m
-		LEFT JOIN meetup_attendees ma ON ma.meetup_id = m.id
-		WHERE m.id = $1
-		GROUP BY m.capacity`,
+		WHERE m.id = $1`,
 		meetupID,
 	).Scan(&capacity, &attendeeCount); err != nil {
 		response.Error(w, http.StatusNotFound, "meetup not found")
