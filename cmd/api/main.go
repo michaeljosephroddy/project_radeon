@@ -72,6 +72,7 @@ func main() {
 	r.Use(chimiddleware.Recoverer)
 	r.Use(chimiddleware.RequestID)
 	r.Use(chimiddleware.Timeout(30 * time.Second))
+	r.Use(middleware.RateLimitIP)
 	r.Use(cors.Handler(cors.Options{
 		AllowedOrigins:   []string{"*"},
 		AllowedMethods:   []string{"GET", "POST", "PATCH", "DELETE", "OPTIONS"},
@@ -96,6 +97,7 @@ func main() {
 	// ── Protected routes ───────────────────────────────────────────
 	r.Group(func(r chi.Router) {
 		r.Use(middleware.Authenticate)
+		r.Use(middleware.RateLimitUser)
 
 		// Feed
 		r.Get("/feed", feedHandler.GetFeed)
