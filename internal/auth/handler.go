@@ -3,6 +3,7 @@ package auth
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -40,6 +41,7 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 	// Basic validation
 	errs := map[string]string{}
 	input.Username = username.Normalize(input.Username)
+	input.Email = strings.ToLower(strings.TrimSpace(input.Email))
 	if msg := username.ValidationError(input.Username); msg != "" {
 		errs["username"] = msg
 	}
@@ -140,6 +142,8 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
+
+	input.Email = strings.ToLower(strings.TrimSpace(input.Email))
 
 	var userID uuid.UUID
 	var passwordHash string

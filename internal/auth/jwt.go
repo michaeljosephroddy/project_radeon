@@ -20,7 +20,7 @@ func GenerateToken(userID uuid.UUID) (string, error) {
 	secret := os.Getenv("JWT_SECRET")
 	hours, _ := strconv.Atoi(os.Getenv("JWT_EXPIRY_HOURS"))
 	if hours == 0 {
-		hours = 168 // 7 days default
+		hours = 8760 // 1 year — tokens are valid until the user signs out
 	}
 
 	// Tokens only carry the user ID plus standard JWT timestamps so the server
