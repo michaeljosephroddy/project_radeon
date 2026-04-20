@@ -2,6 +2,7 @@ package feed
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -15,14 +16,15 @@ import (
 )
 
 type mockQuerier struct {
-	listFeed       func(ctx context.Context, before *time.Time, limit int) ([]Post, error)
-	listUserPosts  func(ctx context.Context, userID uuid.UUID, before *time.Time, limit int) ([]Post, error)
-	createPost     func(ctx context.Context, userID uuid.UUID, body string) (uuid.UUID, error)
-	deletePost     func(ctx context.Context, postID, userID uuid.UUID) error
-	listReactions  func(ctx context.Context, postID uuid.UUID, limit, offset int) ([]Reaction, error)
-	toggleReaction func(ctx context.Context, postID, userID uuid.UUID, reactionType string) (bool, error)
-	addComment     func(ctx context.Context, postID, userID uuid.UUID, body string) (uuid.UUID, error)
-	listComments   func(ctx context.Context, postID uuid.UUID, after *time.Time, limit int) ([]Comment, error)
+	listFeed            func(ctx context.Context, before *time.Time, limit int) ([]Post, error)
+	listUserPosts       func(ctx context.Context, userID uuid.UUID, before *time.Time, limit int) ([]Post, error)
+	createPost          func(ctx context.Context, userID uuid.UUID, body string) (uuid.UUID, error)
+	deletePost          func(ctx context.Context, postID, userID uuid.UUID) error
+	listReactions       func(ctx context.Context, postID uuid.UUID, limit, offset int) ([]Reaction, error)
+	toggleReaction      func(ctx context.Context, postID, userID uuid.UUID, reactionType string) (bool, error)
+	resolveMentionUsers func(ctx context.Context, userIDs []uuid.UUID) ([]MentionedUser, error)
+	addComment          func(ctx context.Context, postID, userID uuid.UUID, body string, mentions []CommentMention) (*Comment, error)
+	listComments        func(ctx context.Context, postID uuid.UUID, after *time.Time, limit int) ([]Comment, error)
 }
 
 func (m *mockQuerier) ListFeed(ctx context.Context, before *time.Time, limit int) ([]Post, error) {
@@ -61,11 +63,17 @@ func (m *mockQuerier) ToggleReaction(ctx context.Context, postID, userID uuid.UU
 	}
 	return true, nil
 }
-func (m *mockQuerier) AddComment(ctx context.Context, postID, userID uuid.UUID, body string) (uuid.UUID, error) {
-	if m.addComment != nil {
-		return m.addComment(ctx, postID, userID, body)
+func (m *mockQuerier) ResolveMentionUsers(ctx context.Context, userIDs []uuid.UUID) ([]MentionedUser, error) {
+	if m.resolveMentionUsers != nil {
+		return m.resolveMentionUsers(ctx, userIDs)
 	}
-	return uuid.New(), nil
+	return nil, nil
+}
+func (m *mockQuerier) AddComment(ctx context.Context, postID, userID uuid.UUID, body string, mentions []CommentMention) (*Comment, error) {
+	if m.addComment != nil {
+		return m.addComment(ctx, postID, userID, body, mentions)
+	}
+	return &Comment{ID: uuid.New(), UserID: userID, Body: body, Mentions: mentions, CreatedAt: time.Now()}, nil
 }
 func (m *mockQuerier) ListComments(ctx context.Context, postID uuid.UUID, after *time.Time, limit int) ([]Comment, error) {
 	if m.listComments != nil {
@@ -363,6 +371,55 @@ func TestAddCommentSuccess(t *testing.T) {
 	}
 }
 
+func TestAddCommentResolvesAndReturnsMentions(t *testing.T) {
+	mentionedUser := uuid.MustParse("00000000-0000-0000-0000-000000000099")
+	h := NewHandler(&mockQuerier{
+		resolveMentionUsers: func(_ context.Context, userIDs []uuid.UUID) ([]MentionedUser, error) {
+			if len(userIDs) != 1 || userIDs[0] != mentionedUser {
+				t.Fatalf("unexpected mention ids: %#v", userIDs)
+			}
+			return []MentionedUser{{UserID: mentionedUser, Username: "alex"}}, nil
+		},
+		addComment: func(_ context.Context, _, _ uuid.UUID, body string, mentions []CommentMention) (*Comment, error) {
+			if body != "hi @alex and @alex again" {
+				t.Fatalf("body = %q", body)
+			}
+			if len(mentions) != 1 || mentions[0].UserID != mentionedUser || mentions[0].Username != "alex" {
+				t.Fatalf("mentions = %#v", mentions)
+			}
+			return &Comment{
+				ID:        uuid.New(),
+				UserID:    fixedUser,
+				Username:  "michael",
+				Body:      body,
+				CreatedAt: time.Now(),
+				Mentions:  mentions,
+			}, nil
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"body":"hi @alex and @alex again","mention_user_ids":["00000000-0000-0000-0000-000000000099"]}`))
+	req = withUserID(req, fixedUser)
+	req = withURLParam(req, "id", fixedPost.String())
+	rec := httptest.NewRecorder()
+
+	h.AddComment(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusCreated)
+	}
+
+	var payload struct {
+		Data Comment `json:"data"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(payload.Data.Mentions) != 1 || payload.Data.Mentions[0].Username != "alex" {
+		t.Fatalf("response mentions = %#v", payload.Data.Mentions)
+	}
+}
+
 // ── GetComments ───────────────────────────────────────────────────────────────
 
 func TestGetCommentsRejectsInvalidUUID(t *testing.T) {
@@ -388,5 +445,12 @@ func TestGetCommentsSuccess(t *testing.T) {
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+}
+
+func TestExtractMentionHandles(t *testing.T) {
+	handles := extractMentionHandles("hello @alex, meet @sam_1 and @alex again. not-an-email test@example.com")
+	if len(handles) != 2 || handles[0] != "alex" || handles[1] != "sam_1" {
+		t.Fatalf("handles = %#v", handles)
 	}
 }

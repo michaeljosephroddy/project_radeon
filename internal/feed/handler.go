@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -23,7 +24,8 @@ type Querier interface {
 	DeletePost(ctx context.Context, postID, userID uuid.UUID) error
 	ListReactions(ctx context.Context, postID uuid.UUID, limit, offset int) ([]Reaction, error)
 	ToggleReaction(ctx context.Context, postID, userID uuid.UUID, reactionType string) (reacted bool, err error)
-	AddComment(ctx context.Context, postID, userID uuid.UUID, body string) (uuid.UUID, error)
+	ResolveMentionUsers(ctx context.Context, userIDs []uuid.UUID) ([]MentionedUser, error)
+	AddComment(ctx context.Context, postID, userID uuid.UUID, body string, mentions []CommentMention) (*Comment, error)
 	ListComments(ctx context.Context, postID uuid.UUID, after *time.Time, limit int) ([]Comment, error)
 }
 
@@ -56,12 +58,23 @@ type Reaction struct {
 }
 
 type Comment struct {
-	ID        uuid.UUID `json:"id"`
-	UserID    uuid.UUID `json:"user_id"`
-	Username  string    `json:"username"`
-	AvatarURL *string   `json:"avatar_url"`
-	Body      string    `json:"body"`
-	CreatedAt time.Time `json:"created_at"`
+	ID        uuid.UUID        `json:"id"`
+	UserID    uuid.UUID        `json:"user_id"`
+	Username  string           `json:"username"`
+	AvatarURL *string          `json:"avatar_url"`
+	Body      string           `json:"body"`
+	CreatedAt time.Time        `json:"created_at"`
+	Mentions  []CommentMention `json:"mentions"`
+}
+
+type CommentMention struct {
+	UserID   uuid.UUID `json:"user_id"`
+	Username string    `json:"username"`
+}
+
+type MentionedUser struct {
+	UserID   uuid.UUID
+	Username string
 }
 
 // GetFeed returns the global post feed with author metadata and aggregate counts.
@@ -206,22 +219,32 @@ func (h *Handler) AddComment(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var input struct {
-		Body string `json:"body"`
+		Body           string      `json:"body"`
+		MentionUserIDs []uuid.UUID `json:"mention_user_ids"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&input); err != nil || input.Body == "" {
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		response.Error(w, http.StatusBadRequest, "body is required")
+		return
+	}
+	input.Body = strings.TrimSpace(input.Body)
+	if input.Body == "" {
 		response.Error(w, http.StatusBadRequest, "body is required")
 		return
 	}
 
-	// Comments only return the new ID; clients are expected to refresh or append
-	// locally rather than relying on the server to hydrate the full record here.
-	commentID, err := h.db.AddComment(r.Context(), postID, userID, input.Body)
+	resolvedMentions, err := h.resolveCommentMentions(r.Context(), input.Body, input.MentionUserIDs, userID)
+	if err != nil {
+		response.Error(w, http.StatusInternalServerError, "could not validate mentions")
+		return
+	}
+
+	comment, err := h.db.AddComment(r.Context(), postID, userID, input.Body, resolvedMentions)
 	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "could not add comment")
 		return
 	}
 
-	response.Success(w, http.StatusCreated, map[string]any{"id": commentID})
+	response.Success(w, http.StatusCreated, comment)
 }
 
 // GetComments returns a page of a post's comments in conversation order.
@@ -242,4 +265,97 @@ func (h *Handler) GetComments(w http.ResponseWriter, r *http.Request) {
 	}
 
 	response.Success(w, http.StatusOK, pagination.CursorSlice(comments, params.Limit, func(c Comment) time.Time { return c.CreatedAt }))
+}
+
+func (h *Handler) resolveCommentMentions(ctx context.Context, body string, mentionUserIDs []uuid.UUID, authorID uuid.UUID) ([]CommentMention, error) {
+	if len(mentionUserIDs) == 0 {
+		return nil, nil
+	}
+
+	uniqueIDs := make([]uuid.UUID, 0, len(mentionUserIDs))
+	seenIDs := make(map[uuid.UUID]struct{}, len(mentionUserIDs))
+	for _, id := range mentionUserIDs {
+		if id == uuid.Nil || id == authorID {
+			continue
+		}
+		if _, seen := seenIDs[id]; seen {
+			continue
+		}
+		seenIDs[id] = struct{}{}
+		uniqueIDs = append(uniqueIDs, id)
+	}
+	if len(uniqueIDs) == 0 {
+		return nil, nil
+	}
+
+	users, err := h.db.ResolveMentionUsers(ctx, uniqueIDs)
+	if err != nil {
+		return nil, err
+	}
+	if len(users) == 0 {
+		return nil, nil
+	}
+
+	userByUsername := make(map[string]MentionedUser, len(users))
+	for _, user := range users {
+		userByUsername[strings.ToLower(user.Username)] = user
+	}
+
+	resolved := make([]CommentMention, 0, len(users))
+	added := make(map[uuid.UUID]struct{}, len(users))
+	for _, username := range extractMentionHandles(body) {
+		user, ok := userByUsername[username]
+		if !ok {
+			continue
+		}
+		if _, seen := added[user.UserID]; seen {
+			continue
+		}
+		added[user.UserID] = struct{}{}
+		resolved = append(resolved, CommentMention{UserID: user.UserID, Username: user.Username})
+	}
+
+	sort.Slice(resolved, func(i, j int) bool {
+		return resolved[i].Username < resolved[j].Username
+	})
+	return resolved, nil
+}
+
+func extractMentionHandles(body string) []string {
+	mentions := []string{}
+	seen := map[string]struct{}{}
+
+	for i := 0; i < len(body); i++ {
+		if body[i] != '@' {
+			continue
+		}
+		if i > 0 && isMentionChar(body[i-1]) {
+			continue
+		}
+
+		j := i + 1
+		for j < len(body) && isMentionChar(body[j]) {
+			j++
+		}
+		if j == i+1 {
+			continue
+		}
+
+		handle := strings.ToLower(body[i+1 : j])
+		if _, exists := seen[handle]; exists {
+			continue
+		}
+		seen[handle] = struct{}{}
+		mentions = append(mentions, handle)
+		i = j - 1
+	}
+
+	return mentions
+}
+
+func isMentionChar(ch byte) bool {
+	return (ch >= 'a' && ch <= 'z') ||
+		(ch >= 'A' && ch <= 'Z') ||
+		(ch >= '0' && ch <= '9') ||
+		ch == '.' || ch == '_'
 }

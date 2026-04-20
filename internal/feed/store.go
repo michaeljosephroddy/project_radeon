@@ -3,9 +3,11 @@ package feed
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -165,13 +167,81 @@ func (s *pgStore) ToggleReaction(ctx context.Context, postID, userID uuid.UUID, 
 	return true, nil
 }
 
-func (s *pgStore) AddComment(ctx context.Context, postID, userID uuid.UUID, body string) (uuid.UUID, error) {
-	var id uuid.UUID
-	err := s.pool.QueryRow(ctx,
-		`INSERT INTO comments (post_id, user_id, body) VALUES ($1, $2, $3) RETURNING id`,
+func (s *pgStore) ResolveMentionUsers(ctx context.Context, userIDs []uuid.UUID) ([]MentionedUser, error) {
+	if len(userIDs) == 0 {
+		return nil, nil
+	}
+
+	rows, err := s.pool.Query(ctx,
+		`SELECT id, username
+		FROM users
+		WHERE id = ANY($1::uuid[])`,
+		userIDs,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	users := make([]MentionedUser, 0, len(userIDs))
+	for rows.Next() {
+		var user MentionedUser
+		if err := rows.Scan(&user.UserID, &user.Username); err != nil {
+			return nil, err
+		}
+		users = append(users, user)
+	}
+	return users, rows.Err()
+}
+
+func (s *pgStore) AddComment(ctx context.Context, postID, userID uuid.UUID, body string, mentions []CommentMention) (*Comment, error) {
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+
+	var comment Comment
+	if err := tx.QueryRow(ctx,
+		`INSERT INTO comments (post_id, user_id, body)
+		VALUES ($1, $2, $3)
+		RETURNING id, created_at`,
 		postID, userID, body,
-	).Scan(&id)
-	return id, err
+	).Scan(&comment.ID, &comment.CreatedAt); err != nil {
+		return nil, err
+	}
+
+	if len(mentions) > 0 {
+		rows := make([][]any, 0, len(mentions))
+		for _, mention := range mentions {
+			rows = append(rows, []any{comment.ID, mention.UserID})
+		}
+		if _, err := tx.CopyFrom(
+			ctx,
+			pgx.Identifier{"comment_mentions"},
+			[]string{"comment_id", "user_id"},
+			pgx.CopyFromRows(rows),
+		); err != nil {
+			return nil, err
+		}
+	}
+
+	if err := tx.QueryRow(ctx,
+		`SELECT u.username, u.avatar_url
+		FROM users u
+		WHERE u.id = $1`,
+		userID,
+	).Scan(&comment.Username, &comment.AvatarURL); err != nil {
+		return nil, err
+	}
+	comment.UserID = userID
+	comment.Body = body
+	comment.Mentions = mentions
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return &comment, nil
 }
 
 func (s *pgStore) ListComments(ctx context.Context, postID uuid.UUID, after *time.Time, limit int) ([]Comment, error) {
@@ -204,7 +274,13 @@ func (s *pgStore) ListComments(ctx context.Context, postID uuid.UUID, after *tim
 		}
 		comments = append(comments, c)
 	}
-	return comments, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := s.attachCommentMentions(ctx, comments); err != nil {
+		return nil, err
+	}
+	return comments, nil
 }
 
 func scanPosts(rows interface {
@@ -221,4 +297,44 @@ func scanPosts(rows interface {
 		posts = append(posts, p)
 	}
 	return posts, rows.Err()
+}
+
+func (s *pgStore) attachCommentMentions(ctx context.Context, comments []Comment) error {
+	if len(comments) == 0 {
+		return nil
+	}
+
+	commentIDs := make([]uuid.UUID, 0, len(comments))
+	commentByID := make(map[uuid.UUID]*Comment, len(comments))
+	for i := range comments {
+		commentIDs = append(commentIDs, comments[i].ID)
+		commentByID[comments[i].ID] = &comments[i]
+	}
+
+	rows, err := s.pool.Query(ctx,
+		`SELECT cm.comment_id, u.id, u.username
+		FROM comment_mentions cm
+		JOIN users u ON u.id = cm.user_id
+		WHERE cm.comment_id = ANY($1::uuid[])
+		ORDER BY cm.comment_id ASC, u.username ASC`,
+		commentIDs,
+	)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var commentID uuid.UUID
+		var mention CommentMention
+		if err := rows.Scan(&commentID, &mention.UserID, &mention.Username); err != nil {
+			return err
+		}
+		comment, ok := commentByID[commentID]
+		if !ok {
+			return fmt.Errorf("comment mention references unknown comment %s", commentID)
+		}
+		comment.Mentions = append(comment.Mentions, mention)
+	}
+	return rows.Err()
 }
