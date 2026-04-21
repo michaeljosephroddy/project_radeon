@@ -161,7 +161,9 @@ func (h *Handler) UpdateMySupportProfile(w http.ResponseWriter, r *http.Request)
 	}
 
 	modes := input.SupportModes
-	if modes == nil {
+	if input.IsAvailableToSupport {
+		modes = normalizeSupportModes(modes)
+	} else if modes == nil {
 		modes = []string{}
 	}
 
@@ -367,6 +369,20 @@ func (h *Handler) CreateSupportResponse(w http.ResponseWriter, r *http.Request) 
 	}
 	if status != "open" || !expiresAt.After(time.Now()) {
 		response.Error(w, http.StatusConflict, "support request is no longer open")
+		return
+	}
+
+	profile, err := h.db.GetSupportProfile(r.Context(), userID)
+	if err != nil {
+		response.Error(w, http.StatusInternalServerError, "could not fetch support profile")
+		return
+	}
+	if !profile.IsAvailableToSupport {
+		response.Error(w, http.StatusForbidden, "turn on support availability to respond")
+		return
+	}
+	if !supportModeEnabled(profile.SupportModes, input.ResponseType) {
+		response.Error(w, http.StatusForbidden, "support mode is not enabled for this response")
 		return
 	}
 

@@ -113,12 +113,46 @@ func formatSupportResponseMessage(responseType string, message *string, schedule
 		return "I'm nearby if company would help."
 	case "check_in_later":
 		if scheduledFor != nil {
-			return fmt.Sprintf("I'll check in later at %s.", scheduledFor.Format(time.RFC3339))
+			return fmt.Sprintf("Busy at the moment but I can check in at %s.", scheduledFor.Format(time.RFC3339))
 		}
-		return "I'll check in later."
+		return "Busy at the moment but I can check in later."
 	default:
 		return "I responded to your support request."
 	}
+}
+
+func defaultSupportModes() []string {
+	return []string{"can_chat", "check_in_later", "nearby"}
+}
+
+func normalizeSupportModes(modes []string) []string {
+	if len(modes) == 0 {
+		return defaultSupportModes()
+	}
+
+	normalized := make([]string, 0, len(modes))
+	seen := make(map[string]bool, len(modes))
+	for _, mode := range modes {
+		trimmed := strings.TrimSpace(mode)
+		if trimmed == "" || seen[trimmed] || !validSupportResponseTypes[trimmed] {
+			continue
+		}
+		seen[trimmed] = true
+		normalized = append(normalized, trimmed)
+	}
+	if len(normalized) == 0 {
+		return defaultSupportModes()
+	}
+	return normalized
+}
+
+func supportModeEnabled(modes []string, responseType string) bool {
+	for _, mode := range normalizeSupportModes(modes) {
+		if mode == responseType {
+			return true
+		}
+	}
+	return false
 }
 
 func isSupportedRequestStatusUpdate(status string) bool {

@@ -34,7 +34,7 @@ func (m *mockQuerier) GetSupportProfile(ctx context.Context, userID uuid.UUID) (
 	if m.getSupportProfile != nil {
 		return m.getSupportProfile(ctx, userID)
 	}
-	return &SupportProfile{SupportModes: []string{}}, nil
+	return &SupportProfile{IsAvailableToSupport: true, SupportModes: []string{}}, nil
 }
 func (m *mockQuerier) UpdateSupportProfile(ctx context.Context, userID uuid.UUID, available bool, modes []string) (*SupportProfile, error) {
 	if m.updateSupportProfile != nil {
@@ -338,6 +338,38 @@ func TestCreateSupportResponseRequestNoLongerOpen(t *testing.T) {
 	h.CreateSupportResponse(rec, authedRequestWithID(http.MethodPost, `{"response_type":"can_chat"}`, fixedRequest.String()))
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusConflict)
+	}
+}
+
+func TestCreateSupportResponseRequiresAvailability(t *testing.T) {
+	h := NewHandler(&mockQuerier{
+		getSupportRequestState: func(_ context.Context, _ uuid.UUID) (uuid.UUID, string, time.Time, error) {
+			return fixedOther, "open", time.Now().Add(time.Hour), nil
+		},
+		getSupportProfile: func(_ context.Context, _ uuid.UUID) (*SupportProfile, error) {
+			return &SupportProfile{IsAvailableToSupport: false}, nil
+		},
+	})
+	rec := httptest.NewRecorder()
+	h.CreateSupportResponse(rec, authedRequestWithID(http.MethodPost, `{"response_type":"can_chat"}`, fixedRequest.String()))
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusForbidden)
+	}
+}
+
+func TestCreateSupportResponseRequiresEnabledMode(t *testing.T) {
+	h := NewHandler(&mockQuerier{
+		getSupportRequestState: func(_ context.Context, _ uuid.UUID) (uuid.UUID, string, time.Time, error) {
+			return fixedOther, "open", time.Now().Add(time.Hour), nil
+		},
+		getSupportProfile: func(_ context.Context, _ uuid.UUID) (*SupportProfile, error) {
+			return &SupportProfile{IsAvailableToSupport: true, SupportModes: []string{"can_chat"}}, nil
+		},
+	})
+	rec := httptest.NewRecorder()
+	h.CreateSupportResponse(rec, authedRequestWithID(http.MethodPost, `{"response_type":"nearby"}`, fixedRequest.String()))
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusForbidden)
 	}
 }
 
