@@ -25,7 +25,7 @@ type mockQuerier struct {
 	listVisibleSupportRequests func(ctx context.Context, userID uuid.UUID, before *time.Time, limit int) ([]SupportRequest, error)
 	fetchSupportSummary        func(ctx context.Context, viewerID uuid.UUID) (int, int, error)
 	getSupportRequestState     func(ctx context.Context, requestID uuid.UUID) (uuid.UUID, string, time.Time, error)
-	createSupportResponse      func(ctx context.Context, requestID, userID uuid.UUID, responseType string, message *string) (*SupportResponse, error)
+	createSupportResponse      func(ctx context.Context, requestID, userID uuid.UUID, responseType string, message *string, scheduledFor *time.Time) (*CreateSupportResponseResult, error)
 	getSupportRequestOwner     func(ctx context.Context, requestID uuid.UUID) (uuid.UUID, error)
 	listSupportResponses       func(ctx context.Context, requestID uuid.UUID, limit, offset int) ([]SupportResponse, error)
 }
@@ -90,11 +90,11 @@ func (m *mockQuerier) GetSupportRequestState(ctx context.Context, requestID uuid
 	}
 	return uuid.Nil, "", time.Time{}, ErrNotFound
 }
-func (m *mockQuerier) CreateSupportResponse(ctx context.Context, requestID, userID uuid.UUID, responseType string, message *string) (*SupportResponse, error) {
+func (m *mockQuerier) CreateSupportResponse(ctx context.Context, requestID, userID uuid.UUID, responseType string, message *string, scheduledFor *time.Time) (*CreateSupportResponseResult, error) {
 	if m.createSupportResponse != nil {
-		return m.createSupportResponse(ctx, requestID, userID, responseType, message)
+		return m.createSupportResponse(ctx, requestID, userID, responseType, message, scheduledFor)
 	}
-	return &SupportResponse{ID: uuid.New()}, nil
+	return &CreateSupportResponseResult{Response: &SupportResponse{ID: uuid.New()}}, nil
 }
 func (m *mockQuerier) GetSupportRequestOwner(ctx context.Context, requestID uuid.UUID) (uuid.UUID, error) {
 	if m.getSupportRequestOwner != nil {

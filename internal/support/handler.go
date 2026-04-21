@@ -26,7 +26,7 @@ type Querier interface {
 	ListVisibleSupportRequests(ctx context.Context, userID uuid.UUID, before *time.Time, limit int) ([]SupportRequest, error)
 	FetchSupportSummary(ctx context.Context, viewerID uuid.UUID) (openCount, availableCount int, err error)
 	GetSupportRequestState(ctx context.Context, requestID uuid.UUID) (requesterID uuid.UUID, status string, expiresAt time.Time, err error)
-	CreateSupportResponse(ctx context.Context, requestID, userID uuid.UUID, responseType string, message *string) (*SupportResponse, error)
+	CreateSupportResponse(ctx context.Context, requestID, userID uuid.UUID, responseType string, message *string, scheduledFor *time.Time) (*CreateSupportResponseResult, error)
 	GetSupportRequestOwner(ctx context.Context, requestID uuid.UUID) (uuid.UUID, error)
 	ListSupportResponses(ctx context.Context, requestID uuid.UUID, limit, offset int) ([]SupportResponse, error)
 }
@@ -83,15 +83,46 @@ type SupportRequest struct {
 }
 
 type SupportResponse struct {
-	ID               uuid.UUID `json:"id"`
-	SupportRequestID uuid.UUID `json:"support_request_id"`
-	ResponderID      uuid.UUID `json:"responder_id"`
-	Username         string    `json:"username"`
-	AvatarURL        *string   `json:"avatar_url"`
-	City             *string   `json:"city"`
-	ResponseType     string    `json:"response_type"`
-	Message          *string   `json:"message"`
-	CreatedAt        time.Time `json:"created_at"`
+	ID               uuid.UUID  `json:"id"`
+	SupportRequestID uuid.UUID  `json:"support_request_id"`
+	ResponderID      uuid.UUID  `json:"responder_id"`
+	Username         string     `json:"username"`
+	AvatarURL        *string    `json:"avatar_url"`
+	City             *string    `json:"city"`
+	ResponseType     string     `json:"response_type"`
+	Message          *string    `json:"message"`
+	ScheduledFor     *time.Time `json:"scheduled_for,omitempty"`
+	CreatedAt        time.Time  `json:"created_at"`
+	ChatID           *uuid.UUID `json:"chat_id,omitempty"`
+}
+
+type SupportChatContext struct {
+	SupportRequestID   uuid.UUID  `json:"support_request_id"`
+	RequestType        string     `json:"request_type"`
+	RequestMessage     *string    `json:"request_message,omitempty"`
+	RequesterID        uuid.UUID  `json:"requester_id"`
+	RequesterUsername  string     `json:"requester_username"`
+	LatestResponseType *string    `json:"latest_response_type,omitempty"`
+	Status             string     `json:"status"`
+	AwaitingUserID     *uuid.UUID `json:"awaiting_user_id,omitempty"`
+}
+
+type ChatSummary struct {
+	ID             uuid.UUID           `json:"id"`
+	IsGroup        bool                `json:"is_group"`
+	Name           *string             `json:"name"`
+	Username       *string             `json:"username"`
+	AvatarURL      *string             `json:"avatar_url"`
+	CreatedAt      time.Time           `json:"created_at"`
+	LastMessage    *string             `json:"last_message,omitempty"`
+	LastMessageAt  *time.Time          `json:"last_message_at,omitempty"`
+	Status         string              `json:"status"`
+	SupportContext *SupportChatContext `json:"support_context,omitempty"`
+}
+
+type CreateSupportResponseResult struct {
+	Response *SupportResponse `json:"response"`
+	Chat     *ChatSummary     `json:"chat,omitempty"`
 }
 
 type SupportRequestsPage struct {
@@ -315,6 +346,12 @@ func (h *Handler) CreateSupportResponse(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	scheduledFor, err := parseSupportResponseScheduledFor(input.ScheduledFor)
+	if err != nil {
+		response.ValidationError(w, map[string]string{"scheduled_for": "invalid"})
+		return
+	}
+
 	requesterID, status, expiresAt, err := h.db.GetSupportRequestState(r.Context(), requestID)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
@@ -333,7 +370,7 @@ func (h *Handler) CreateSupportResponse(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	res, err := h.db.CreateSupportResponse(r.Context(), requestID, userID, input.ResponseType, input.Message)
+	res, err := h.db.CreateSupportResponse(r.Context(), requestID, userID, input.ResponseType, input.Message, scheduledFor)
 	if err != nil {
 		response.Error(w, http.StatusConflict, "could not create support response")
 		return

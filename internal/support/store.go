@@ -277,35 +277,110 @@ func (s *pgStore) GetSupportRequestState(ctx context.Context, requestID uuid.UUI
 	return requesterID, status, expiresAt, err
 }
 
-func (s *pgStore) CreateSupportResponse(ctx context.Context, requestID, userID uuid.UUID, responseType string, message *string) (*SupportResponse, error) {
+func (s *pgStore) CreateSupportResponse(ctx context.Context, requestID, userID uuid.UUID, responseType string, message *string, scheduledFor *time.Time) (*CreateSupportResponseResult, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback(ctx)
 
+	var requesterID uuid.UUID
+	var requestType string
+	var requestMessage *string
+	var requesterUsername string
+	var requesterAvatarURL *string
+	err = tx.QueryRow(ctx,
+		`SELECT sr.requester_id, sr.type, sr.message, u.username, u.avatar_url
+		FROM support_requests sr
+		JOIN users u ON u.id = sr.requester_id
+		WHERE sr.id = $1`,
+		requestID,
+	).Scan(&requesterID, &requestType, &requestMessage, &requesterUsername, &requesterAvatarURL)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+
+	formattedMessage := formatSupportResponseMessage(responseType, message, scheduledFor)
+	messageForInsert := formattedMessage
+
+	var chatID uuid.UUID
+	var chatCreatedAt time.Time
+	var chatStatus string
+	err = tx.QueryRow(ctx,
+		`SELECT ch.id, ch.created_at, ch.status
+		FROM chats ch
+		JOIN chat_members requester_member
+			ON requester_member.chat_id = ch.id
+			AND requester_member.user_id = $2
+		JOIN chat_members responder_member
+			ON responder_member.chat_id = ch.id
+			AND responder_member.user_id = $3
+		WHERE ch.is_group = false
+			AND ch.support_request_id = $1
+		ORDER BY ch.created_at DESC
+		LIMIT 1`,
+		requestID, requesterID, userID,
+	).Scan(&chatID, &chatCreatedAt, &chatStatus)
+	if errors.Is(err, pgx.ErrNoRows) {
+		err = tx.QueryRow(ctx,
+			`INSERT INTO chats (is_group, name, status, support_request_id)
+			VALUES (false, NULL, 'request', $1)
+			RETURNING id, created_at, status`,
+			requestID,
+		).Scan(&chatID, &chatCreatedAt, &chatStatus)
+		if err != nil {
+			return nil, err
+		}
+
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO chat_members (chat_id, user_id, role) VALUES ($1, $2, 'requester')`,
+			chatID, userID,
+		); err != nil {
+			return nil, err
+		}
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO chat_members (chat_id, user_id, role) VALUES ($1, $2, 'addressee')`,
+			chatID, requesterID,
+		); err != nil {
+			return nil, err
+		}
+	} else if err != nil {
+		return nil, err
+	}
+
 	var res SupportResponse
 	err = tx.QueryRow(ctx,
 		`WITH inserted AS (
 			INSERT INTO support_responses (
-				support_request_id, responder_id, response_type, message
+				support_request_id, responder_id, response_type, message, scheduled_for, chat_id
 			)
-			VALUES ($1, $2, $3, $4)
-			RETURNING id, support_request_id, responder_id, response_type, message, created_at
+			VALUES ($1, $2, $3, $4, $5, $6)
+			RETURNING id, support_request_id, responder_id, response_type, message, scheduled_for, created_at, chat_id
 		)
 		SELECT
 			i.id, i.support_request_id, i.responder_id,
 			u.username, u.avatar_url, u.city,
-			i.response_type, i.message, i.created_at
+			i.response_type, i.message, i.scheduled_for, i.created_at, i.chat_id
 		FROM inserted i
 		JOIN users u ON u.id = i.responder_id`,
-		requestID, userID, responseType, message,
+		requestID, userID, responseType, messageForInsert, scheduledFor, chatID,
 	).Scan(
 		&res.ID, &res.SupportRequestID, &res.ResponderID,
 		&res.Username, &res.AvatarURL, &res.City,
-		&res.ResponseType, &res.Message, &res.CreatedAt,
+		&res.ResponseType, &res.Message, &res.ScheduledFor, &res.CreatedAt, &res.ChatID,
 	)
 	if err != nil {
+		return nil, err
+	}
+
+	var lastMessageAt time.Time
+	if err := tx.QueryRow(ctx,
+		`INSERT INTO messages (chat_id, sender_id, body) VALUES ($1, $2, $3) RETURNING sent_at`,
+		chatID, userID, messageForInsert,
+	).Scan(&lastMessageAt); err != nil {
 		return nil, err
 	}
 
@@ -320,7 +395,30 @@ func (s *pgStore) CreateSupportResponse(ctx context.Context, requestID, userID u
 		return nil, err
 	}
 
-	return &res, nil
+	latestResponseType := res.ResponseType
+	awaitingUserID := requesterID
+	chat := &ChatSummary{
+		ID:            chatID,
+		IsGroup:       false,
+		Username:      &requesterUsername,
+		AvatarURL:     requesterAvatarURL,
+		CreatedAt:     chatCreatedAt,
+		LastMessage:   &messageForInsert,
+		LastMessageAt: &lastMessageAt,
+		Status:        chatStatus,
+		SupportContext: &SupportChatContext{
+			SupportRequestID:   requestID,
+			RequestType:        requestType,
+			RequestMessage:     requestMessage,
+			RequesterID:        requesterID,
+			RequesterUsername:  requesterUsername,
+			LatestResponseType: &latestResponseType,
+			Status:             mapSupportChatStatus(chatStatus),
+			AwaitingUserID:     &awaitingUserID,
+		},
+	}
+
+	return &CreateSupportResponseResult{Response: &res, Chat: chat}, nil
 }
 
 func (s *pgStore) GetSupportRequestOwner(ctx context.Context, requestID uuid.UUID) (uuid.UUID, error) {
@@ -340,7 +438,7 @@ func (s *pgStore) ListSupportResponses(ctx context.Context, requestID uuid.UUID,
 		`SELECT
 			sres.id, sres.support_request_id, sres.responder_id,
 			u.username, u.avatar_url, u.city,
-			sres.response_type, sres.message, sres.created_at
+			sres.response_type, sres.message, sres.scheduled_for, sres.created_at, sres.chat_id
 		FROM support_responses sres
 		JOIN users u ON u.id = sres.responder_id
 		WHERE sres.support_request_id = $1
@@ -356,12 +454,23 @@ func (s *pgStore) ListSupportResponses(ctx context.Context, requestID uuid.UUID,
 	var responses []SupportResponse
 	for rows.Next() {
 		var res SupportResponse
-		if err := rows.Scan(&res.ID, &res.SupportRequestID, &res.ResponderID, &res.Username, &res.AvatarURL, &res.City, &res.ResponseType, &res.Message, &res.CreatedAt); err != nil {
+		if err := rows.Scan(&res.ID, &res.SupportRequestID, &res.ResponderID, &res.Username, &res.AvatarURL, &res.City, &res.ResponseType, &res.Message, &res.ScheduledFor, &res.CreatedAt, &res.ChatID); err != nil {
 			return nil, err
 		}
 		responses = append(responses, res)
 	}
 	return responses, rows.Err()
+}
+
+func mapSupportChatStatus(chatStatus string) string {
+	switch chatStatus {
+	case "request":
+		return "pending_requester_acceptance"
+	case "active":
+		return "accepted"
+	default:
+		return chatStatus
+	}
 }
 
 func scanSupportRequests(rows interface {

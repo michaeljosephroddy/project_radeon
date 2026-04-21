@@ -19,14 +19,7 @@ type pgStore struct {
 	pool *pgxpool.Pool
 }
 
-// NewPgStore wraps a pgxpool.Pool as the production Querier implementation.
-func NewPgStore(pool *pgxpool.Pool) Querier {
-	return &pgStore{pool: pool}
-}
-
-func (s *pgStore) ListChats(ctx context.Context, userID uuid.UUID, query string, limit, offset int) ([]Chat, error) {
-	rows, err := s.pool.Query(ctx,
-		`SELECT
+const chatSelectColumns = `SELECT
 			ch.id,
 			ch.is_group,
 			ch.name,
@@ -34,7 +27,35 @@ func (s *pgStore) ListChats(ctx context.Context, userID uuid.UUID, query string,
 			other.avatar_url,
 			ch.created_at,
 			m.body AS last_message,
-			m.sent_at AS last_message_at
+			m.sent_at AS last_message_at,
+			ch.status,
+			sr.id AS support_request_id,
+			sr.type AS support_request_type,
+			sr.message AS support_request_message,
+			sr.requester_id,
+			requester.username AS requester_username,
+			latest_support.response_type AS latest_response_type,
+			CASE
+				WHEN sr.id IS NULL THEN NULL
+				WHEN ch.status = 'request' THEN 'pending_requester_acceptance'
+				WHEN ch.status = 'active' THEN 'accepted'
+				WHEN ch.status = 'declined' THEN 'declined'
+				ELSE ch.status
+			END AS support_status,
+			CASE
+				WHEN sr.id IS NULL THEN NULL
+				WHEN ch.status = 'request' THEN sr.requester_id
+				ELSE NULL
+			END AS awaiting_user_id`
+
+// NewPgStore wraps a pgxpool.Pool as the production Querier implementation.
+func NewPgStore(pool *pgxpool.Pool) Querier {
+	return &pgStore{pool: pool}
+}
+
+func (s *pgStore) ListChats(ctx context.Context, userID uuid.UUID, query string, limit, offset int) ([]Chat, error) {
+	rows, err := s.pool.Query(ctx,
+		chatSelectColumns+`
 		FROM chats ch
 		JOIN chat_members cm
 			ON cm.chat_id = ch.id
@@ -58,7 +79,19 @@ func (s *pgStore) ListChats(ctx context.Context, userID uuid.UUID, query string,
 			ORDER BY sent_at DESC
 			LIMIT 1
 		) m ON true
-		WHERE ch.status = 'active'
+		LEFT JOIN support_requests sr ON sr.id = ch.support_request_id
+		LEFT JOIN users requester ON requester.id = sr.requester_id
+		LEFT JOIN LATERAL (
+			SELECT response_type
+			FROM support_responses
+			WHERE chat_id = ch.id
+			ORDER BY created_at DESC
+			LIMIT 1
+		) latest_support ON true
+		WHERE (
+				ch.status IN ('active', 'request')
+				OR (ch.status = 'declined' AND ch.support_request_id IS NOT NULL)
+			)
 			AND (
 				$2 = ''
 				OR (
@@ -83,15 +116,7 @@ func (s *pgStore) ListChats(ctx context.Context, userID uuid.UUID, query string,
 
 func (s *pgStore) ListChatRequests(ctx context.Context, userID uuid.UUID) ([]Chat, error) {
 	rows, err := s.pool.Query(ctx,
-		`SELECT
-			ch.id,
-			ch.is_group,
-			ch.name,
-			other.username,
-			other.avatar_url,
-			ch.created_at,
-			m.body AS last_message,
-			m.sent_at AS last_message_at
+		chatSelectColumns+`
 		FROM chats ch
 		JOIN chat_members cm
 			ON cm.chat_id = ch.id
@@ -116,6 +141,15 @@ func (s *pgStore) ListChatRequests(ctx context.Context, userID uuid.UUID) ([]Cha
 			ORDER BY sent_at DESC
 			LIMIT 1
 		) m ON true
+		LEFT JOIN support_requests sr ON sr.id = ch.support_request_id
+		LEFT JOIN users requester ON requester.id = sr.requester_id
+		LEFT JOIN LATERAL (
+			SELECT response_type
+			FROM support_responses
+			WHERE chat_id = ch.id
+			ORDER BY created_at DESC
+			LIMIT 1
+		) latest_support ON true
 		WHERE ch.status = 'request'
 		ORDER BY ch.created_at DESC`,
 		userID,
@@ -127,16 +161,120 @@ func (s *pgStore) ListChatRequests(ctx context.Context, userID uuid.UUID) ([]Cha
 	return scanChats(rows)
 }
 
+func (s *pgStore) GetChat(ctx context.Context, userID, chatID uuid.UUID) (*Chat, error) {
+	rows, err := s.pool.Query(ctx,
+		chatSelectColumns+`
+		FROM chats ch
+		JOIN chat_members cm
+			ON cm.chat_id = ch.id
+			AND cm.user_id = $1
+		LEFT JOIN LATERAL (
+			SELECT
+				u.username,
+				u.avatar_url
+			FROM chat_members cm2
+			JOIN users u ON u.id = cm2.user_id
+			WHERE cm2.chat_id = ch.id
+				AND cm2.user_id != $1
+			LIMIT 1
+		) other ON NOT ch.is_group
+		LEFT JOIN LATERAL (
+			SELECT
+				body,
+				sent_at
+			FROM messages
+			WHERE chat_id = ch.id
+			ORDER BY sent_at DESC
+			LIMIT 1
+		) m ON true
+		LEFT JOIN support_requests sr ON sr.id = ch.support_request_id
+		LEFT JOIN users requester ON requester.id = sr.requester_id
+		LEFT JOIN LATERAL (
+			SELECT response_type
+			FROM support_responses
+			WHERE chat_id = ch.id
+			ORDER BY created_at DESC
+			LIMIT 1
+		) latest_support ON true
+		WHERE ch.id = $2
+		LIMIT 1`,
+		userID, chatID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	chats, err := scanChats(rows)
+	if err != nil {
+		return nil, err
+	}
+	if len(chats) == 0 {
+		return nil, ErrNotFound
+	}
+	return &chats[0], nil
+}
+
 func scanChats(rows pgx.Rows) ([]Chat, error) {
 	var chats []Chat
 	for rows.Next() {
 		var ch Chat
-		if err := rows.Scan(&ch.ID, &ch.IsGroup, &ch.Name, &ch.Username, &ch.AvatarURL, &ch.CreatedAt, &ch.LastMessage, &ch.LastMessageAt); err != nil {
+		var supportRequestID *uuid.UUID
+		var requestType *string
+		var requestMessage *string
+		var requesterID *uuid.UUID
+		var requesterUsername *string
+		var latestResponseType *string
+		var supportStatus *string
+		var awaitingUserID *uuid.UUID
+		if err := rows.Scan(
+			&ch.ID,
+			&ch.IsGroup,
+			&ch.Name,
+			&ch.Username,
+			&ch.AvatarURL,
+			&ch.CreatedAt,
+			&ch.LastMessage,
+			&ch.LastMessageAt,
+			&ch.Status,
+			&supportRequestID,
+			&requestType,
+			&requestMessage,
+			&requesterID,
+			&requesterUsername,
+			&latestResponseType,
+			&supportStatus,
+			&awaitingUserID,
+		); err != nil {
 			return nil, err
+		}
+		if supportRequestID != nil && requestType != nil && requesterID != nil && requesterUsername != nil && supportStatus != nil {
+			ch.SupportContext = &SupportChatContext{
+				SupportRequestID:   *supportRequestID,
+				RequestType:        *requestType,
+				RequestMessage:     requestMessage,
+				RequesterID:        *requesterID,
+				RequesterUsername:  *requesterUsername,
+				LatestResponseType: latestResponseType,
+				Status:             *supportStatus,
+				AwaitingUserID:     awaitingUserID,
+			}
 		}
 		chats = append(chats, ch)
 	}
 	return chats, rows.Err()
+}
+
+func (s *pgStore) GetChatStatus(ctx context.Context, chatID uuid.UUID) (string, error) {
+	var status string
+	err := s.pool.QueryRow(ctx,
+		`SELECT status FROM chats WHERE id = $1`,
+		chatID,
+	).Scan(&status)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", ErrNotFound
+	}
+	return status, err
 }
 
 func (s *pgStore) FindDirectChat(ctx context.Context, userID, otherUserID uuid.UUID) (uuid.UUID, bool, error) {
@@ -151,6 +289,7 @@ func (s *pgStore) FindDirectChat(ctx context.Context, userID, otherUserID uuid.U
 			ON cm2.chat_id = ch.id
 			AND cm2.user_id = $2
 		WHERE ch.is_group = false
+			AND ch.support_request_id IS NULL
 		LIMIT 1`,
 		userID, otherUserID,
 	).Scan(&chatID)
@@ -172,7 +311,7 @@ func (s *pgStore) CreateChat(ctx context.Context, userID uuid.UUID, isGroup bool
 
 	var chatID uuid.UUID
 	if err := tx.QueryRow(ctx,
-		`INSERT INTO chats (is_group, name, status) VALUES ($1, $2, 'active') RETURNING id`,
+		`INSERT INTO chats (is_group, name, status, support_request_id) VALUES ($1, $2, 'active', NULL) RETURNING id`,
 		isGroup, name,
 	).Scan(&chatID); err != nil {
 		return uuid.Nil, err
@@ -225,7 +364,7 @@ func (s *pgStore) AcceptChatRequest(ctx context.Context, chatID uuid.UUID) error
 
 func (s *pgStore) DeclineChatRequest(ctx context.Context, chatID uuid.UUID) error {
 	_, err := s.pool.Exec(ctx,
-		`DELETE FROM chats WHERE id = $1`,
+		`UPDATE chats SET status = 'declined' WHERE id = $1`,
 		chatID,
 	)
 	return err
