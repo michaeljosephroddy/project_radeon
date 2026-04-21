@@ -1,6 +1,6 @@
-# CLAUDE.md
+# AGENTS.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to Codex when working with code in this repository.
 
 ## Commands
 
@@ -19,7 +19,7 @@ There are no tests in this project.
 
 Go REST API for a sobriety/recovery social community. Uses **chi** for routing, **pgx** for direct SQL against PostgreSQL (no ORM), and **JWT** (HS256) for auth.
 
-Using the repository pattern
+- Using the repository pattern
 
 ### Package layout
 
@@ -68,6 +68,7 @@ Validation: `{"errors": {"field": "message"}}`
 - Accept interfaces, return concrete types — this keeps callsites flexible and implementations simple
 - The database layer should be behind an interface (e.g. `db Querier`) so handlers can be unit-tested with a mock or stub without a real Postgres connection
 - Constructors (`NewHandler`, etc.) should accept dependencies by interface so they can be swapped in tests
+- Tests should be added for all new features in accordance with the current test patterns.
 
 ### Handler pattern
 - Handlers must do exactly three things: parse input, call business logic, write response — no SQL inside helpers that also do formatting, no response writing inside query functions
@@ -104,3 +105,7 @@ Validation: `{"errors": {"field": "message"}}`
 - Always plan before writing code
 - Present a plan and wait for approval before implementing
 - Break tasks into steps and confirm each one
+
+### ExecPlans
+
+- When writing complex features or significant refactors, use an ExecPlan (as described in PLANS.md) from design to implementation.
