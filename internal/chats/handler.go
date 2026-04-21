@@ -19,6 +19,8 @@ import (
 type Querier interface {
 	ListChats(ctx context.Context, userID uuid.UUID, query string, limit, offset int) ([]Chat, error)
 	ListChatRequests(ctx context.Context, userID uuid.UUID) ([]Chat, error)
+	GetChat(ctx context.Context, userID, chatID uuid.UUID) (*Chat, error)
+	GetChatStatus(ctx context.Context, chatID uuid.UUID) (string, error)
 	FindDirectChat(ctx context.Context, userID, otherUserID uuid.UUID) (uuid.UUID, bool, error)
 	CreateChat(ctx context.Context, userID uuid.UUID, isGroup bool, name *string, memberIDs []uuid.UUID) (uuid.UUID, error)
 	IsAddresseeOfChat(ctx context.Context, chatID, userID uuid.UUID) (bool, error)
@@ -34,15 +36,28 @@ type Handler struct {
 	db Querier
 }
 
+type SupportChatContext struct {
+	SupportRequestID   uuid.UUID  `json:"support_request_id"`
+	RequestType        string     `json:"request_type"`
+	RequestMessage     *string    `json:"request_message,omitempty"`
+	RequesterID        uuid.UUID  `json:"requester_id"`
+	RequesterUsername  string     `json:"requester_username"`
+	LatestResponseType *string    `json:"latest_response_type,omitempty"`
+	Status             string     `json:"status"`
+	AwaitingUserID     *uuid.UUID `json:"awaiting_user_id,omitempty"`
+}
+
 type Chat struct {
-	ID            uuid.UUID  `json:"id"`
-	IsGroup       bool       `json:"is_group"`
-	Name          *string    `json:"name"`
-	Username      *string    `json:"username"`
-	AvatarURL     *string    `json:"avatar_url"`
-	CreatedAt     time.Time  `json:"created_at"`
-	LastMessage   *string    `json:"last_message"`
-	LastMessageAt *time.Time `json:"last_message_at"`
+	ID             uuid.UUID           `json:"id"`
+	IsGroup        bool                `json:"is_group"`
+	Name           *string             `json:"name"`
+	Username       *string             `json:"username"`
+	AvatarURL      *string             `json:"avatar_url"`
+	CreatedAt      time.Time           `json:"created_at"`
+	LastMessage    *string             `json:"last_message"`
+	LastMessageAt  *time.Time          `json:"last_message_at"`
+	Status         string              `json:"status"`
+	SupportContext *SupportChatContext `json:"support_context,omitempty"`
 }
 
 type Message struct {
@@ -173,7 +188,13 @@ func (h *Handler) UpdateChatStatus(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	response.Success(w, http.StatusOK, map[string]string{"status": input.Status})
+	chat, err := h.db.GetChat(r.Context(), userID, chatID)
+	if err != nil {
+		response.Error(w, http.StatusInternalServerError, "could not fetch chat")
+		return
+	}
+
+	response.Success(w, http.StatusOK, chat)
 }
 
 // GetMessages pages backwards through a chat transcript using an optional "before" cursor.
@@ -254,6 +275,16 @@ func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
 	}
 	if !isMember {
 		response.Error(w, http.StatusForbidden, "not a member of this chat")
+		return
+	}
+
+	status, err := h.db.GetChatStatus(r.Context(), chatID)
+	if err != nil {
+		response.Error(w, http.StatusInternalServerError, "could not fetch chat")
+		return
+	}
+	if status != "active" {
+		response.Error(w, http.StatusConflict, "chat is not open for messaging")
 		return
 	}
 

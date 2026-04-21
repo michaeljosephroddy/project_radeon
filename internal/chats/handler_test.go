@@ -15,17 +15,19 @@ import (
 )
 
 type mockQuerier struct {
-	listChats         func(ctx context.Context, userID uuid.UUID, query string, limit, offset int) ([]Chat, error)
-	listChatRequests  func(ctx context.Context, userID uuid.UUID) ([]Chat, error)
-	findDirectChat    func(ctx context.Context, userID, otherUserID uuid.UUID) (uuid.UUID, bool, error)
-	createChat        func(ctx context.Context, userID uuid.UUID, isGroup bool, name *string, memberIDs []uuid.UUID) (uuid.UUID, error)
-	isAddresseeOfChat func(ctx context.Context, chatID, userID uuid.UUID) (bool, error)
-	acceptChatRequest func(ctx context.Context, chatID uuid.UUID) error
+	listChats          func(ctx context.Context, userID uuid.UUID, query string, limit, offset int) ([]Chat, error)
+	listChatRequests   func(ctx context.Context, userID uuid.UUID) ([]Chat, error)
+	getChat            func(ctx context.Context, userID, chatID uuid.UUID) (*Chat, error)
+	getChatStatus      func(ctx context.Context, chatID uuid.UUID) (string, error)
+	findDirectChat     func(ctx context.Context, userID, otherUserID uuid.UUID) (uuid.UUID, bool, error)
+	createChat         func(ctx context.Context, userID uuid.UUID, isGroup bool, name *string, memberIDs []uuid.UUID) (uuid.UUID, error)
+	isAddresseeOfChat  func(ctx context.Context, chatID, userID uuid.UUID) (bool, error)
+	acceptChatRequest  func(ctx context.Context, chatID uuid.UUID) error
 	declineChatRequest func(ctx context.Context, chatID uuid.UUID) error
-	isMemberOfChat    func(ctx context.Context, chatID, userID uuid.UUID) (bool, error)
-	listMessages      func(ctx context.Context, chatID uuid.UUID, before *time.Time, limit int) ([]Message, error)
-	insertMessage     func(ctx context.Context, chatID, userID uuid.UUID, body string) (uuid.UUID, error)
-	deleteOrLeaveChat func(ctx context.Context, chatID, userID uuid.UUID) (string, error)
+	isMemberOfChat     func(ctx context.Context, chatID, userID uuid.UUID) (bool, error)
+	listMessages       func(ctx context.Context, chatID uuid.UUID, before *time.Time, limit int) ([]Message, error)
+	insertMessage      func(ctx context.Context, chatID, userID uuid.UUID, body string) (uuid.UUID, error)
+	deleteOrLeaveChat  func(ctx context.Context, chatID, userID uuid.UUID) (string, error)
 }
 
 func (m *mockQuerier) ListChats(ctx context.Context, userID uuid.UUID, query string, limit, offset int) ([]Chat, error) {
@@ -39,6 +41,18 @@ func (m *mockQuerier) ListChatRequests(ctx context.Context, userID uuid.UUID) ([
 		return m.listChatRequests(ctx, userID)
 	}
 	return nil, nil
+}
+func (m *mockQuerier) GetChat(ctx context.Context, userID, chatID uuid.UUID) (*Chat, error) {
+	if m.getChat != nil {
+		return m.getChat(ctx, userID, chatID)
+	}
+	return &Chat{ID: chatID, Status: "active"}, nil
+}
+func (m *mockQuerier) GetChatStatus(ctx context.Context, chatID uuid.UUID) (string, error) {
+	if m.getChatStatus != nil {
+		return m.getChatStatus(ctx, chatID)
+	}
+	return "active", nil
 }
 func (m *mockQuerier) FindDirectChat(ctx context.Context, userID, otherUserID uuid.UUID) (uuid.UUID, bool, error) {
 	if m.findDirectChat != nil {
