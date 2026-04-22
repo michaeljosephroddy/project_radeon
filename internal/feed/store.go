@@ -50,7 +50,14 @@ func (s *pgStore) ListFeed(ctx context.Context, before *time.Time, limit int) ([
 		return nil, err
 	}
 	defer rows.Close()
-	return scanPosts(rows)
+	posts, err := scanPosts(rows)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.attachPostImages(ctx, posts); err != nil {
+		return nil, err
+	}
+	return posts, nil
 }
 
 func (s *pgStore) ListUserPosts(ctx context.Context, userID uuid.UUID, before *time.Time, limit int) ([]Post, error) {
@@ -82,16 +89,46 @@ func (s *pgStore) ListUserPosts(ctx context.Context, userID uuid.UUID, before *t
 		return nil, err
 	}
 	defer rows.Close()
-	return scanPosts(rows)
+	posts, err := scanPosts(rows)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.attachPostImages(ctx, posts); err != nil {
+		return nil, err
+	}
+	return posts, nil
 }
 
-func (s *pgStore) CreatePost(ctx context.Context, userID uuid.UUID, body string) (uuid.UUID, error) {
+func (s *pgStore) CreatePost(ctx context.Context, userID uuid.UUID, body string, images []PostImage) (uuid.UUID, error) {
 	var id uuid.UUID
-	err := s.pool.QueryRow(ctx,
-		`INSERT INTO posts (user_id, body) VALUES ($1, $2) RETURNING id`,
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return uuid.Nil, err
+	}
+	defer tx.Rollback(ctx)
+
+	err = tx.QueryRow(ctx,
+		`INSERT INTO posts (user_id, body) VALUES ($1, NULLIF($2, '')) RETURNING id`,
 		userID, body,
 	).Scan(&id)
-	return id, err
+	if err != nil {
+		return uuid.Nil, err
+	}
+
+	for _, image := range images {
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO post_images (post_id, image_url, width, height, sort_order)
+			VALUES ($1, $2, $3, $4, $5)`,
+			id, image.ImageURL, image.Width, image.Height, image.SortOrder,
+		); err != nil {
+			return uuid.Nil, err
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return uuid.Nil, err
+	}
+	return id, nil
 }
 
 func (s *pgStore) DeletePost(ctx context.Context, postID, userID uuid.UUID) error {
@@ -297,6 +334,46 @@ func scanPosts(rows interface {
 		posts = append(posts, p)
 	}
 	return posts, rows.Err()
+}
+
+func (s *pgStore) attachPostImages(ctx context.Context, posts []Post) error {
+	if len(posts) == 0 {
+		return nil
+	}
+
+	postIDs := make([]uuid.UUID, 0, len(posts))
+	postByID := make(map[uuid.UUID]*Post, len(posts))
+	for index := range posts {
+		postIDs = append(postIDs, posts[index].ID)
+		postByID[posts[index].ID] = &posts[index]
+	}
+
+	rows, err := s.pool.Query(ctx,
+		`SELECT id, post_id, image_url, width, height, sort_order
+		FROM post_images
+		WHERE post_id = ANY($1::uuid[])
+		ORDER BY post_id ASC, sort_order ASC, created_at ASC`,
+		postIDs,
+	)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var image PostImage
+		var postID uuid.UUID
+		if err := rows.Scan(&image.ID, &postID, &image.ImageURL, &image.Width, &image.Height, &image.SortOrder); err != nil {
+			return err
+		}
+		post, ok := postByID[postID]
+		if !ok {
+			return fmt.Errorf("post image references unknown post %s", postID)
+		}
+		post.Images = append(post.Images, image)
+	}
+
+	return rows.Err()
 }
 
 func (s *pgStore) attachCommentMentions(ctx context.Context, comments []Comment) error {

@@ -1,14 +1,18 @@
 package feed
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/disintegration/imaging"
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/project_radeon/api/pkg/middleware"
@@ -20,13 +24,17 @@ import (
 type Querier interface {
 	ListFeed(ctx context.Context, before *time.Time, limit int) ([]Post, error)
 	ListUserPosts(ctx context.Context, userID uuid.UUID, before *time.Time, limit int) ([]Post, error)
-	CreatePost(ctx context.Context, userID uuid.UUID, body string) (uuid.UUID, error)
+	CreatePost(ctx context.Context, userID uuid.UUID, body string, images []PostImage) (uuid.UUID, error)
 	DeletePost(ctx context.Context, postID, userID uuid.UUID) error
 	ListReactions(ctx context.Context, postID uuid.UUID, limit, offset int) ([]Reaction, error)
 	ToggleReaction(ctx context.Context, postID, userID uuid.UUID, reactionType string) (reacted bool, err error)
 	ResolveMentionUsers(ctx context.Context, userIDs []uuid.UUID) ([]MentionedUser, error)
 	AddComment(ctx context.Context, postID, userID uuid.UUID, body string, mentions []CommentMention) (*Comment, error)
 	ListComments(ctx context.Context, postID uuid.UUID, after *time.Time, limit int) ([]Comment, error)
+}
+
+type Uploader interface {
+	Upload(ctx context.Context, key, contentType string, body io.Reader) (string, error)
 }
 
 type MentionNotifier interface {
@@ -36,26 +44,36 @@ type MentionNotifier interface {
 type Handler struct {
 	db       Querier
 	notifier MentionNotifier
+	uploader Uploader
 }
 
 // NewHandler builds a feed handler. Pass feed.NewPgStore(pool) for production.
-func NewHandler(db Querier) *Handler {
-	return &Handler{db: db}
+func NewHandler(db Querier, uploader Uploader) *Handler {
+	return &Handler{db: db, uploader: uploader}
 }
 
-func NewHandlerWithNotifier(db Querier, notifier MentionNotifier) *Handler {
-	return &Handler{db: db, notifier: notifier}
+func NewHandlerWithNotifier(db Querier, notifier MentionNotifier, uploader Uploader) *Handler {
+	return &Handler{db: db, notifier: notifier, uploader: uploader}
 }
 
 type Post struct {
-	ID           uuid.UUID `json:"id"`
-	UserID       uuid.UUID `json:"user_id"`
-	Username     string    `json:"username"`
-	AvatarURL    *string   `json:"avatar_url"`
-	Body         string    `json:"body"`
-	CreatedAt    time.Time `json:"created_at"`
-	CommentCount int       `json:"comment_count"`
-	LikeCount    int       `json:"like_count"`
+	ID           uuid.UUID   `json:"id"`
+	UserID       uuid.UUID   `json:"user_id"`
+	Username     string      `json:"username"`
+	AvatarURL    *string     `json:"avatar_url"`
+	Body         string      `json:"body"`
+	CreatedAt    time.Time   `json:"created_at"`
+	CommentCount int         `json:"comment_count"`
+	LikeCount    int         `json:"like_count"`
+	Images       []PostImage `json:"images"`
+}
+
+type PostImage struct {
+	ID        uuid.UUID `json:"id"`
+	ImageURL  string    `json:"image_url"`
+	Width     int       `json:"width"`
+	Height    int       `json:"height"`
+	SortOrder int       `json:"sort_order"`
 }
 
 type Reaction struct {
@@ -125,7 +143,8 @@ func (h *Handler) CreatePost(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.CurrentUserID(r)
 
 	var input struct {
-		Body string `json:"body"`
+		Body   string      `json:"body"`
+		Images []PostImage `json:"images"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 		response.Error(w, http.StatusBadRequest, "body is required")
@@ -133,18 +152,99 @@ func (h *Handler) CreatePost(w http.ResponseWriter, r *http.Request) {
 	}
 
 	input.Body = strings.TrimSpace(input.Body)
-	if input.Body == "" {
-		response.Error(w, http.StatusBadRequest, "body is required")
+	if input.Body == "" && len(input.Images) == 0 {
+		response.Error(w, http.StatusBadRequest, "body or image is required")
 		return
 	}
+	if len(input.Images) > 1 {
+		response.Error(w, http.StatusBadRequest, "only one image is supported")
+		return
+	}
+	for index := range input.Images {
+		input.Images[index].ImageURL = strings.TrimSpace(input.Images[index].ImageURL)
+		input.Images[index].SortOrder = index
+		if input.Images[index].ImageURL == "" {
+			response.Error(w, http.StatusBadRequest, "image_url is required")
+			return
+		}
+		if input.Images[index].Width <= 0 || input.Images[index].Height <= 0 {
+			response.Error(w, http.StatusBadRequest, "image dimensions are required")
+			return
+		}
+	}
 
-	postID, err := h.db.CreatePost(r.Context(), userID, input.Body)
+	postID, err := h.db.CreatePost(r.Context(), userID, input.Body, input.Images)
 	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "could not create post")
 		return
 	}
 
 	response.Success(w, http.StatusCreated, map[string]any{"id": postID})
+}
+
+// UploadPostImage validates, resizes, uploads, and returns a post image payload.
+func (h *Handler) UploadPostImage(w http.ResponseWriter, r *http.Request) {
+	if h.uploader == nil {
+		response.Error(w, http.StatusInternalServerError, "image uploads are not configured")
+		return
+	}
+
+	userID := middleware.CurrentUserID(r)
+	if err := r.ParseMultipartForm(12 << 20); err != nil {
+		response.Error(w, http.StatusBadRequest, "file too large or invalid form data")
+		return
+	}
+
+	file, header, err := r.FormFile("image")
+	if err != nil {
+		response.Error(w, http.StatusBadRequest, "image field is required")
+		return
+	}
+	defer file.Close()
+
+	fileBytes, err := io.ReadAll(file)
+	if err != nil {
+		response.Error(w, http.StatusBadRequest, "could not read image")
+		return
+	}
+
+	contentType := header.Header.Get("Content-Type")
+	if contentType == "" || contentType == "application/octet-stream" {
+		contentType = http.DetectContentType(fileBytes)
+	}
+	if contentType != "image/jpeg" && contentType != "image/png" {
+		response.Error(w, http.StatusBadRequest, "image must be a JPEG or PNG image")
+		return
+	}
+
+	img, err := imaging.Decode(bytes.NewReader(fileBytes))
+	if err != nil {
+		response.Error(w, http.StatusBadRequest, "could not decode image")
+		return
+	}
+
+	img = imaging.Fit(img, 1600, 1600, imaging.Lanczos)
+	bounds := img.Bounds()
+
+	var buf bytes.Buffer
+	if err := imaging.Encode(&buf, img, imaging.JPEG, imaging.JPEGQuality(82)); err != nil {
+		response.Error(w, http.StatusInternalServerError, "could not encode image")
+		return
+	}
+
+	key := fmt.Sprintf("posts/%s/%s.jpg", userID, uuid.New())
+	imageURL, err := h.uploader.Upload(r.Context(), key, "image/jpeg", &buf)
+	if err != nil {
+		response.Error(w, http.StatusInternalServerError, "could not upload image")
+		return
+	}
+
+	response.Success(w, http.StatusOK, PostImage{
+		ID:       uuid.New(),
+		ImageURL: imageURL,
+		Width:    bounds.Dx(),
+		Height:   bounds.Dy(),
+	})
 }
 
 // DeletePost removes a post only when it belongs to the authenticated user.

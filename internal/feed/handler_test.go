@@ -1,9 +1,15 @@
 package feed
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"image"
+	"image/color"
+	"image/png"
+	"io"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -18,7 +24,7 @@ import (
 type mockQuerier struct {
 	listFeed            func(ctx context.Context, before *time.Time, limit int) ([]Post, error)
 	listUserPosts       func(ctx context.Context, userID uuid.UUID, before *time.Time, limit int) ([]Post, error)
-	createPost          func(ctx context.Context, userID uuid.UUID, body string) (uuid.UUID, error)
+	createPost          func(ctx context.Context, userID uuid.UUID, body string, images []PostImage) (uuid.UUID, error)
 	deletePost          func(ctx context.Context, postID, userID uuid.UUID) error
 	listReactions       func(ctx context.Context, postID uuid.UUID, limit, offset int) ([]Reaction, error)
 	toggleReaction      func(ctx context.Context, postID, userID uuid.UUID, reactionType string) (bool, error)
@@ -39,9 +45,9 @@ func (m *mockQuerier) ListUserPosts(ctx context.Context, userID uuid.UUID, befor
 	}
 	return nil, nil
 }
-func (m *mockQuerier) CreatePost(ctx context.Context, userID uuid.UUID, body string) (uuid.UUID, error) {
+func (m *mockQuerier) CreatePost(ctx context.Context, userID uuid.UUID, body string, images []PostImage) (uuid.UUID, error) {
 	if m.createPost != nil {
-		return m.createPost(ctx, userID, body)
+		return m.createPost(ctx, userID, body, images)
 	}
 	return uuid.New(), nil
 }
@@ -82,6 +88,17 @@ func (m *mockQuerier) ListComments(ctx context.Context, postID uuid.UUID, after 
 	return nil, nil
 }
 
+type mockUploader struct {
+	upload func(ctx context.Context, key, contentType string, body io.Reader) (string, error)
+}
+
+func (m *mockUploader) Upload(ctx context.Context, key, contentType string, body io.Reader) (string, error) {
+	if m.upload != nil {
+		return m.upload(ctx, key, contentType, body)
+	}
+	return "https://example.com/post.jpg", nil
+}
+
 var (
 	fixedUser = uuid.MustParse("00000000-0000-0000-0000-000000000001")
 	fixedPost = uuid.MustParse("00000000-0000-0000-0000-000000000002")
@@ -104,7 +121,7 @@ func TestGetFeedSuccess(t *testing.T) {
 		listFeed: func(_ context.Context, _ *time.Time, _ int) ([]Post, error) {
 			return []Post{{ID: fixedPost, Body: "hello", CreatedAt: time.Now()}}, nil
 		},
-	})
+	}, &mockUploader{})
 	req := httptest.NewRequest(http.MethodGet, "/feed", nil)
 	rec := httptest.NewRecorder()
 
@@ -120,7 +137,7 @@ func TestGetFeedDBError(t *testing.T) {
 		listFeed: func(_ context.Context, _ *time.Time, _ int) ([]Post, error) {
 			return nil, errors.New("db error")
 		},
-	})
+	}, &mockUploader{})
 	rec := httptest.NewRecorder()
 	h.GetFeed(rec, httptest.NewRequest(http.MethodGet, "/feed", nil))
 	if rec.Code != http.StatusInternalServerError {
@@ -131,7 +148,7 @@ func TestGetFeedDBError(t *testing.T) {
 // ── GetUserPosts ──────────────────────────────────────────────────────────────
 
 func TestGetUserPostsRejectsInvalidUUID(t *testing.T) {
-	h := NewHandler(&mockQuerier{})
+	h := NewHandler(&mockQuerier{}, &mockUploader{})
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req = withURLParam(req, "id", "not-a-uuid")
 	rec := httptest.NewRecorder()
@@ -144,7 +161,7 @@ func TestGetUserPostsRejectsInvalidUUID(t *testing.T) {
 }
 
 func TestGetUserPostsSuccess(t *testing.T) {
-	h := NewHandler(&mockQuerier{})
+	h := NewHandler(&mockQuerier{}, &mockUploader{})
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req = withURLParam(req, "id", fixedUser.String())
 	rec := httptest.NewRecorder()
@@ -159,7 +176,7 @@ func TestGetUserPostsSuccess(t *testing.T) {
 // ── CreatePost ────────────────────────────────────────────────────────────────
 
 func TestCreatePostRejectsEmptyBody(t *testing.T) {
-	h := NewHandler(&mockQuerier{})
+	h := NewHandler(&mockQuerier{}, &mockUploader{})
 	req := httptest.NewRequest(http.MethodPost, "/posts", strings.NewReader(`{"body":""}`))
 	req = withUserID(req, fixedUser)
 	rec := httptest.NewRecorder()
@@ -171,8 +188,33 @@ func TestCreatePostRejectsEmptyBody(t *testing.T) {
 	}
 }
 
+func TestCreatePostAllowsImageOnly(t *testing.T) {
+	var gotImages []PostImage
+	h := NewHandler(&mockQuerier{
+		createPost: func(_ context.Context, _ uuid.UUID, body string, images []PostImage) (uuid.UUID, error) {
+			if body != "" {
+				t.Fatalf("body = %q, want empty", body)
+			}
+			gotImages = images
+			return uuid.New(), nil
+		},
+	}, &mockUploader{})
+	req := httptest.NewRequest(http.MethodPost, "/posts", strings.NewReader(`{"images":[{"image_url":"https://example.com/post.jpg","width":1200,"height":900}]}`))
+	req = withUserID(req, fixedUser)
+	rec := httptest.NewRecorder()
+
+	h.CreatePost(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusCreated)
+	}
+	if len(gotImages) != 1 {
+		t.Fatalf("images length = %d, want 1", len(gotImages))
+	}
+}
+
 func TestCreatePostSuccess(t *testing.T) {
-	h := NewHandler(&mockQuerier{})
+	h := NewHandler(&mockQuerier{}, &mockUploader{})
 	req := httptest.NewRequest(http.MethodPost, "/posts", strings.NewReader(`{"body":"hello world"}`))
 	req = withUserID(req, fixedUser)
 	rec := httptest.NewRecorder()
@@ -186,10 +228,10 @@ func TestCreatePostSuccess(t *testing.T) {
 
 func TestCreatePostDBError(t *testing.T) {
 	h := NewHandler(&mockQuerier{
-		createPost: func(_ context.Context, _ uuid.UUID, _ string) (uuid.UUID, error) {
+		createPost: func(_ context.Context, _ uuid.UUID, _ string, _ []PostImage) (uuid.UUID, error) {
 			return uuid.Nil, errors.New("db error")
 		},
-	})
+	}, &mockUploader{})
 	req := httptest.NewRequest(http.MethodPost, "/posts", strings.NewReader(`{"body":"hello"}`))
 	req = withUserID(req, fixedUser)
 	rec := httptest.NewRecorder()
@@ -201,10 +243,40 @@ func TestCreatePostDBError(t *testing.T) {
 	}
 }
 
+func TestUploadPostImageSuccess(t *testing.T) {
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, err := writer.CreateFormFile("image", "post.png")
+	if err != nil {
+		t.Fatalf("CreateFormFile error = %v", err)
+	}
+
+	img := image.NewRGBA(image.Rect(0, 0, 8, 8))
+	img.Set(0, 0, color.RGBA{R: 255, A: 255})
+	if err := png.Encode(part, img); err != nil {
+		t.Fatalf("png.Encode error = %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("writer.Close error = %v", err)
+	}
+
+	h := NewHandler(&mockQuerier{}, &mockUploader{})
+	req := httptest.NewRequest(http.MethodPost, "/posts/images", &body)
+	req = withUserID(req, fixedUser)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	rec := httptest.NewRecorder()
+
+	h.UploadPostImage(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+}
+
 // ── DeletePost ────────────────────────────────────────────────────────────────
 
 func TestDeletePostRejectsInvalidUUID(t *testing.T) {
-	h := NewHandler(&mockQuerier{})
+	h := NewHandler(&mockQuerier{}, &mockUploader{})
 	req := httptest.NewRequest(http.MethodDelete, "/", nil)
 	req = withUserID(req, fixedUser)
 	req = withURLParam(req, "id", "bad")
@@ -220,7 +292,7 @@ func TestDeletePostRejectsInvalidUUID(t *testing.T) {
 func TestDeletePostNotFound(t *testing.T) {
 	h := NewHandler(&mockQuerier{
 		deletePost: func(_ context.Context, _, _ uuid.UUID) error { return ErrNotFound },
-	})
+	}, &mockUploader{})
 	req := httptest.NewRequest(http.MethodDelete, "/", nil)
 	req = withUserID(req, fixedUser)
 	req = withURLParam(req, "id", fixedPost.String())
@@ -234,7 +306,7 @@ func TestDeletePostNotFound(t *testing.T) {
 }
 
 func TestDeletePostSuccess(t *testing.T) {
-	h := NewHandler(&mockQuerier{})
+	h := NewHandler(&mockQuerier{}, &mockUploader{})
 	req := httptest.NewRequest(http.MethodDelete, "/", nil)
 	req = withUserID(req, fixedUser)
 	req = withURLParam(req, "id", fixedPost.String())
@@ -250,7 +322,7 @@ func TestDeletePostSuccess(t *testing.T) {
 // ── GetReactions ──────────────────────────────────────────────────────────────
 
 func TestGetReactionsRejectsInvalidUUID(t *testing.T) {
-	h := NewHandler(&mockQuerier{})
+	h := NewHandler(&mockQuerier{}, &mockUploader{})
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req = withURLParam(req, "id", "bad")
 	rec := httptest.NewRecorder()
@@ -263,7 +335,7 @@ func TestGetReactionsRejectsInvalidUUID(t *testing.T) {
 }
 
 func TestGetReactionsSuccess(t *testing.T) {
-	h := NewHandler(&mockQuerier{})
+	h := NewHandler(&mockQuerier{}, &mockUploader{})
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req = withURLParam(req, "id", fixedPost.String())
 	rec := httptest.NewRecorder()
@@ -278,7 +350,7 @@ func TestGetReactionsSuccess(t *testing.T) {
 // ── ReactToPost ───────────────────────────────────────────────────────────────
 
 func TestReactToPostRejectsInvalidUUID(t *testing.T) {
-	h := NewHandler(&mockQuerier{})
+	h := NewHandler(&mockQuerier{}, &mockUploader{})
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"type":"like"}`))
 	req = withUserID(req, fixedUser)
 	req = withURLParam(req, "id", "bad")
@@ -296,7 +368,7 @@ func TestReactToPostTogglesOn(t *testing.T) {
 		toggleReaction: func(_ context.Context, _, _ uuid.UUID, _ string) (bool, error) {
 			return true, nil
 		},
-	})
+	}, &mockUploader{})
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"type":"like"}`))
 	req = withUserID(req, fixedUser)
 	req = withURLParam(req, "id", fixedPost.String())
@@ -314,7 +386,7 @@ func TestReactToPostTogglesOff(t *testing.T) {
 		toggleReaction: func(_ context.Context, _, _ uuid.UUID, _ string) (bool, error) {
 			return false, nil
 		},
-	})
+	}, &mockUploader{})
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"type":"like"}`))
 	req = withUserID(req, fixedUser)
 	req = withURLParam(req, "id", fixedPost.String())
@@ -330,7 +402,7 @@ func TestReactToPostTogglesOff(t *testing.T) {
 // ── AddComment ────────────────────────────────────────────────────────────────
 
 func TestAddCommentRejectsInvalidUUID(t *testing.T) {
-	h := NewHandler(&mockQuerier{})
+	h := NewHandler(&mockQuerier{}, &mockUploader{})
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"body":"hi"}`))
 	req = withUserID(req, fixedUser)
 	req = withURLParam(req, "id", "bad")
@@ -344,7 +416,7 @@ func TestAddCommentRejectsInvalidUUID(t *testing.T) {
 }
 
 func TestAddCommentRejectsEmptyBody(t *testing.T) {
-	h := NewHandler(&mockQuerier{})
+	h := NewHandler(&mockQuerier{}, &mockUploader{})
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"body":""}`))
 	req = withUserID(req, fixedUser)
 	req = withURLParam(req, "id", fixedPost.String())
@@ -358,7 +430,7 @@ func TestAddCommentRejectsEmptyBody(t *testing.T) {
 }
 
 func TestAddCommentSuccess(t *testing.T) {
-	h := NewHandler(&mockQuerier{})
+	h := NewHandler(&mockQuerier{}, &mockUploader{})
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"body":"great post"}`))
 	req = withUserID(req, fixedUser)
 	req = withURLParam(req, "id", fixedPost.String())
@@ -396,7 +468,7 @@ func TestAddCommentResolvesAndReturnsMentions(t *testing.T) {
 				Mentions:  mentions,
 			}, nil
 		},
-	})
+	}, &mockUploader{})
 
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"body":"hi @alex and @alex again","mention_user_ids":["00000000-0000-0000-0000-000000000099"]}`))
 	req = withUserID(req, fixedUser)
@@ -423,7 +495,7 @@ func TestAddCommentResolvesAndReturnsMentions(t *testing.T) {
 // ── GetComments ───────────────────────────────────────────────────────────────
 
 func TestGetCommentsRejectsInvalidUUID(t *testing.T) {
-	h := NewHandler(&mockQuerier{})
+	h := NewHandler(&mockQuerier{}, &mockUploader{})
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req = withURLParam(req, "id", "bad")
 	rec := httptest.NewRecorder()
@@ -436,7 +508,7 @@ func TestGetCommentsRejectsInvalidUUID(t *testing.T) {
 }
 
 func TestGetCommentsSuccess(t *testing.T) {
-	h := NewHandler(&mockQuerier{})
+	h := NewHandler(&mockQuerier{}, &mockUploader{})
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req = withURLParam(req, "id", fixedPost.String())
 	rec := httptest.NewRecorder()

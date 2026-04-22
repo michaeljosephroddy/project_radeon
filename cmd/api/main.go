@@ -61,7 +61,7 @@ func main() {
 
 	authHandler := auth.NewHandler(auth.NewPgStore(db))
 	userHandler := user.NewHandler(user.NewPgStore(db), uploader)
-	feedHandler := feed.NewHandler(feed.NewPgStore(db))
+	feedHandler := feed.NewHandler(feed.NewPgStore(db), uploader)
 	meetupsHandler := meetups.NewHandler(meetups.NewPgStore(db))
 	notificationsService := notifications.NewService(
 		notifications.NewPgStore(db),
@@ -70,7 +70,7 @@ func main() {
 	notificationsHandler := notifications.NewHandler(notificationsService)
 	chatsHandler := chats.NewHandlerWithNotifier(chats.NewPgStore(db), notificationsService)
 	friendsHandler := friends.NewHandler(friends.NewPgStore(db))
-	feedHandler = feed.NewHandlerWithNotifier(feed.NewPgStore(db), notificationsService)
+	feedHandler = feed.NewHandlerWithNotifier(feed.NewPgStore(db), notificationsService, uploader)
 	supportHandler := support.NewHandler(support.NewPgStore(db))
 
 	r := chi.NewRouter()
@@ -112,6 +112,7 @@ func main() {
 
 		// Posts
 		r.Post("/posts", feedHandler.CreatePost)
+		r.Post("/posts/images", feedHandler.UploadPostImage)
 		r.Delete("/posts/{id}", feedHandler.DeletePost)
 		r.Post("/posts/{id}/react", feedHandler.ReactToPost)
 		r.Get("/posts/{id}/reactions", feedHandler.GetReactions)
