@@ -62,6 +62,8 @@ CREATE TABLE IF NOT EXISTS post_images (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     post_id UUID NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
     image_url TEXT NOT NULL,
+    original_image_url TEXT NOT NULL,
+    display_image_url TEXT NOT NULL,
     width INT NOT NULL,
     height INT NOT NULL,
     sort_order INT NOT NULL DEFAULT 0,

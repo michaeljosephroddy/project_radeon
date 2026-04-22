@@ -211,6 +211,9 @@ func TestCreatePostAllowsImageOnly(t *testing.T) {
 	if len(gotImages) != 1 {
 		t.Fatalf("images length = %d, want 1", len(gotImages))
 	}
+	if gotImages[0].ImageURL != "https://example.com/post.jpg" {
+		t.Fatalf("image_url = %q, want %q", gotImages[0].ImageURL, "https://example.com/post.jpg")
+	}
 }
 
 func TestCreatePostSuccess(t *testing.T) {
@@ -246,21 +249,34 @@ func TestCreatePostDBError(t *testing.T) {
 func TestUploadPostImageSuccess(t *testing.T) {
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
-	part, err := writer.CreateFormFile("image", "post.png")
+	displayPart, err := writer.CreateFormFile("display", "post.png")
 	if err != nil {
 		t.Fatalf("CreateFormFile error = %v", err)
 	}
 
 	img := image.NewRGBA(image.Rect(0, 0, 8, 8))
 	img.Set(0, 0, color.RGBA{R: 255, A: 255})
-	if err := png.Encode(part, img); err != nil {
+	if err := png.Encode(displayPart, img); err != nil {
+		t.Fatalf("png.Encode error = %v", err)
+	}
+	originalPart, err := writer.CreateFormFile("original", "post-original.png")
+	if err != nil {
+		t.Fatalf("CreateFormFile error = %v", err)
+	}
+	if err := png.Encode(originalPart, img); err != nil {
 		t.Fatalf("png.Encode error = %v", err)
 	}
 	if err := writer.Close(); err != nil {
 		t.Fatalf("writer.Close error = %v", err)
 	}
 
-	h := NewHandler(&mockQuerier{}, &mockUploader{})
+	var uploadKeys []string
+	h := NewHandler(&mockQuerier{}, &mockUploader{
+		upload: func(_ context.Context, key, _ string, _ io.Reader) (string, error) {
+			uploadKeys = append(uploadKeys, key)
+			return "https://example.com/" + key, nil
+		},
+	})
 	req := httptest.NewRequest(http.MethodPost, "/posts/images", &body)
 	req = withUserID(req, fixedUser)
 	req.Header.Set("Content-Type", writer.FormDataContentType())
@@ -270,6 +286,9 @@ func TestUploadPostImageSuccess(t *testing.T) {
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if len(uploadKeys) != 2 {
+		t.Fatalf("upload count = %d, want 2", len(uploadKeys))
 	}
 }
 

@@ -29,7 +29,7 @@ func (s *pgStore) ListFeed(ctx context.Context, before *time.Time, limit int) ([
 			p.user_id,
 			u.username,
 			u.avatar_url,
-			p.body,
+			COALESCE(p.body, ''),
 			p.created_at,
 			COALESCE(cc.cnt, 0) AS comment_count,
 			COALESCE(lc.cnt, 0) AS like_count
@@ -67,7 +67,7 @@ func (s *pgStore) ListUserPosts(ctx context.Context, userID uuid.UUID, before *t
 			p.user_id,
 			u.username,
 			u.avatar_url,
-			p.body,
+			COALESCE(p.body, ''),
 			p.created_at,
 			COALESCE(cc.cnt, 0) AS comment_count,
 			COALESCE(lc.cnt, 0) AS like_count
@@ -116,10 +116,22 @@ func (s *pgStore) CreatePost(ctx context.Context, userID uuid.UUID, body string,
 	}
 
 	for _, image := range images {
+		imageURL := image.ImageURL
+		if image.DisplayImageURL != "" {
+			imageURL = image.DisplayImageURL
+		}
+		originalImageURL := image.OriginalImageURL
+		if originalImageURL == "" {
+			originalImageURL = imageURL
+		}
+		displayImageURL := image.DisplayImageURL
+		if displayImageURL == "" {
+			displayImageURL = imageURL
+		}
 		if _, err := tx.Exec(ctx,
-			`INSERT INTO post_images (post_id, image_url, width, height, sort_order)
-			VALUES ($1, $2, $3, $4, $5)`,
-			id, image.ImageURL, image.Width, image.Height, image.SortOrder,
+			`INSERT INTO post_images (post_id, image_url, original_image_url, display_image_url, width, height, sort_order)
+			VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+			id, imageURL, originalImageURL, displayImageURL, image.Width, image.Height, image.SortOrder,
 		); err != nil {
 			return uuid.Nil, err
 		}
@@ -349,7 +361,7 @@ func (s *pgStore) attachPostImages(ctx context.Context, posts []Post) error {
 	}
 
 	rows, err := s.pool.Query(ctx,
-		`SELECT id, post_id, image_url, width, height, sort_order
+		`SELECT id, post_id, image_url, original_image_url, display_image_url, width, height, sort_order
 		FROM post_images
 		WHERE post_id = ANY($1::uuid[])
 		ORDER BY post_id ASC, sort_order ASC, created_at ASC`,
@@ -363,8 +375,20 @@ func (s *pgStore) attachPostImages(ctx context.Context, posts []Post) error {
 	for rows.Next() {
 		var image PostImage
 		var postID uuid.UUID
-		if err := rows.Scan(&image.ID, &postID, &image.ImageURL, &image.Width, &image.Height, &image.SortOrder); err != nil {
+		if err := rows.Scan(
+			&image.ID,
+			&postID,
+			&image.ImageURL,
+			&image.OriginalImageURL,
+			&image.DisplayImageURL,
+			&image.Width,
+			&image.Height,
+			&image.SortOrder,
+		); err != nil {
 			return err
+		}
+		if image.DisplayImageURL != "" {
+			image.ImageURL = image.DisplayImageURL
 		}
 		post, ok := postByID[postID]
 		if !ok {

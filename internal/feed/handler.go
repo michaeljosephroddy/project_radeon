@@ -6,18 +6,22 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
 	"io"
+	"log"
 	"net/http"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 
-	"github.com/disintegration/imaging"
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/project_radeon/api/pkg/middleware"
 	"github.com/project_radeon/api/pkg/pagination"
 	"github.com/project_radeon/api/pkg/response"
+	_ "image/jpeg"
+	_ "image/png"
 )
 
 // Querier is the database interface required by the feed handler.
@@ -69,11 +73,13 @@ type Post struct {
 }
 
 type PostImage struct {
-	ID        uuid.UUID `json:"id"`
-	ImageURL  string    `json:"image_url"`
-	Width     int       `json:"width"`
-	Height    int       `json:"height"`
-	SortOrder int       `json:"sort_order"`
+	ID               uuid.UUID `json:"id"`
+	ImageURL         string    `json:"image_url"`
+	OriginalImageURL string    `json:"original_image_url"`
+	DisplayImageURL  string    `json:"display_image_url"`
+	Width            int       `json:"width"`
+	Height           int       `json:"height"`
+	SortOrder        int       `json:"sort_order"`
 }
 
 type Reaction struct {
@@ -111,6 +117,7 @@ func (h *Handler) GetFeed(w http.ResponseWriter, r *http.Request) {
 
 	posts, err := h.db.ListFeed(r.Context(), params.Before, params.Limit+1)
 	if err != nil {
+		log.Printf("list feed failed: %v", err)
 		response.Error(w, http.StatusInternalServerError, "could not fetch feed")
 		return
 	}
@@ -131,6 +138,7 @@ func (h *Handler) GetUserPosts(w http.ResponseWriter, r *http.Request) {
 
 	posts, err := h.db.ListUserPosts(r.Context(), targetID, params.Before, params.Limit+1)
 	if err != nil {
+		log.Printf("list user posts failed for %s: %v", targetID, err)
 		response.Error(w, http.StatusInternalServerError, "could not fetch posts")
 		return
 	}
@@ -162,6 +170,17 @@ func (h *Handler) CreatePost(w http.ResponseWriter, r *http.Request) {
 	}
 	for index := range input.Images {
 		input.Images[index].ImageURL = strings.TrimSpace(input.Images[index].ImageURL)
+		input.Images[index].DisplayImageURL = strings.TrimSpace(input.Images[index].DisplayImageURL)
+		input.Images[index].OriginalImageURL = strings.TrimSpace(input.Images[index].OriginalImageURL)
+		if input.Images[index].DisplayImageURL == "" {
+			input.Images[index].DisplayImageURL = input.Images[index].ImageURL
+		}
+		if input.Images[index].ImageURL == "" {
+			input.Images[index].ImageURL = input.Images[index].DisplayImageURL
+		}
+		if input.Images[index].OriginalImageURL == "" {
+			input.Images[index].OriginalImageURL = input.Images[index].DisplayImageURL
+		}
 		input.Images[index].SortOrder = index
 		if input.Images[index].ImageURL == "" {
 			response.Error(w, http.StatusBadRequest, "image_url is required")
@@ -182,7 +201,7 @@ func (h *Handler) CreatePost(w http.ResponseWriter, r *http.Request) {
 	response.Success(w, http.StatusCreated, map[string]any{"id": postID})
 }
 
-// UploadPostImage validates, resizes, uploads, and returns a post image payload.
+// UploadPostImage validates and uploads a display image plus an optional untouched original.
 func (h *Handler) UploadPostImage(w http.ResponseWriter, r *http.Request) {
 	if h.uploader == nil {
 		response.Error(w, http.StatusInternalServerError, "image uploads are not configured")
@@ -190,61 +209,122 @@ func (h *Handler) UploadPostImage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	userID := middleware.CurrentUserID(r)
-	if err := r.ParseMultipartForm(12 << 20); err != nil {
+	if err := r.ParseMultipartForm(24 << 20); err != nil {
 		response.Error(w, http.StatusBadRequest, "file too large or invalid form data")
 		return
 	}
 
-	file, header, err := r.FormFile("image")
+	displayVariant, err := readMultipartVariant(r, "display", "image")
 	if err != nil {
-		response.Error(w, http.StatusBadRequest, "image field is required")
+		response.Error(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	defer file.Close()
-
-	fileBytes, err := io.ReadAll(file)
+	originalVariant, err := readMultipartVariant(r, "original")
 	if err != nil {
-		response.Error(w, http.StatusBadRequest, "could not read image")
+		response.Error(w, http.StatusBadRequest, err.Error())
 		return
 	}
-
-	contentType := header.Header.Get("Content-Type")
-	if contentType == "" || contentType == "application/octet-stream" {
-		contentType = http.DetectContentType(fileBytes)
-	}
-	if contentType != "image/jpeg" && contentType != "image/png" {
-		response.Error(w, http.StatusBadRequest, "image must be a JPEG or PNG image")
-		return
+	if originalVariant == nil {
+		originalVariant = displayVariant
 	}
 
-	img, err := imaging.Decode(bytes.NewReader(fileBytes))
+	displayConfig, _, err := image.DecodeConfig(bytes.NewReader(displayVariant.body))
 	if err != nil {
 		response.Error(w, http.StatusBadRequest, "could not decode image")
 		return
 	}
-
-	img = imaging.Fit(img, 1600, 1600, imaging.Lanczos)
-	bounds := img.Bounds()
-
-	var buf bytes.Buffer
-	if err := imaging.Encode(&buf, img, imaging.JPEG, imaging.JPEGQuality(82)); err != nil {
-		response.Error(w, http.StatusInternalServerError, "could not encode image")
+	if displayConfig.Width <= 0 || displayConfig.Height <= 0 {
+		response.Error(w, http.StatusBadRequest, "image dimensions are required")
 		return
 	}
 
-	key := fmt.Sprintf("posts/%s/%s.jpg", userID, uuid.New())
-	imageURL, err := h.uploader.Upload(r.Context(), key, "image/jpeg", &buf)
+	originalKey := fmt.Sprintf("posts/%s/%s/original%s", userID, uuid.New(), originalVariant.extension)
+	originalImageURL, err := h.uploader.Upload(r.Context(), originalKey, originalVariant.contentType, bytes.NewReader(originalVariant.body))
+	if err != nil {
+		response.Error(w, http.StatusInternalServerError, "could not upload image")
+		return
+	}
+
+	displayKey := fmt.Sprintf("posts/%s/%s/display%s", userID, uuid.New(), displayVariant.extension)
+	displayImageURL, err := h.uploader.Upload(r.Context(), displayKey, displayVariant.contentType, bytes.NewReader(displayVariant.body))
 	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "could not upload image")
 		return
 	}
 
 	response.Success(w, http.StatusOK, PostImage{
-		ID:       uuid.New(),
-		ImageURL: imageURL,
-		Width:    bounds.Dx(),
-		Height:   bounds.Dy(),
+		ID:               uuid.New(),
+		ImageURL:         displayImageURL,
+		OriginalImageURL: originalImageURL,
+		DisplayImageURL:  displayImageURL,
+		Width:            displayConfig.Width,
+		Height:           displayConfig.Height,
 	})
+}
+
+type uploadVariant struct {
+	body        []byte
+	contentType string
+	extension   string
+}
+
+func readMultipartVariant(r *http.Request, primaryField string, fallbackFields ...string) (*uploadVariant, error) {
+	fieldNames := append([]string{primaryField}, fallbackFields...)
+	for _, fieldName := range fieldNames {
+		file, header, err := r.FormFile(fieldName)
+		if err != nil {
+			if errors.Is(err, http.ErrMissingFile) {
+				continue
+			}
+			return nil, fmt.Errorf("%s field is invalid", primaryField)
+		}
+		defer file.Close()
+
+		fileBytes, err := io.ReadAll(file)
+		if err != nil {
+			return nil, errors.New("could not read image")
+		}
+
+		contentType := header.Header.Get("Content-Type")
+		if contentType == "" || contentType == "application/octet-stream" {
+			contentType = http.DetectContentType(fileBytes)
+		}
+		extension, ok := imageExtension(contentType, header.Filename)
+		if !ok {
+			return nil, errors.New("image must be a JPEG or PNG image")
+		}
+
+		return &uploadVariant{
+			body:        fileBytes,
+			contentType: contentType,
+			extension:   extension,
+		}, nil
+	}
+
+	if primaryField == "display" {
+		return nil, errors.New("display field is required")
+	}
+
+	return nil, nil
+}
+
+func imageExtension(contentType, filename string) (string, bool) {
+	switch contentType {
+	case "image/jpeg":
+		return ".jpg", true
+	case "image/png":
+		return ".png", true
+	default:
+		extension := strings.ToLower(filepath.Ext(filename))
+		switch extension {
+		case ".jpg", ".jpeg":
+			return ".jpg", true
+		case ".png":
+			return ".png", true
+		default:
+			return "", false
+		}
+	}
 }
 
 // DeletePost removes a post only when it belongs to the authenticated user.
