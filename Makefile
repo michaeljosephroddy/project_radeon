@@ -5,7 +5,7 @@ GO := /usr/local/go/bin/go
 MIGRATE := $(GO) run ./cmd/migrate
 
 run:
-	$(GO) run ./cmd/api
+	air
 
 dev:
 	air

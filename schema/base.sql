@@ -9,6 +9,7 @@ CREATE TABLE IF NOT EXISTS users (
     avatar_url TEXT,
     city TEXT,
     country TEXT,
+    bio TEXT,
     sober_since DATE,
     is_available_to_support BOOLEAN NOT NULL DEFAULT FALSE,
     support_modes TEXT[] NOT NULL DEFAULT '{}',
@@ -32,6 +33,23 @@ CREATE INDEX IF NOT EXISTS idx_users_username_trgm
 
 CREATE INDEX IF NOT EXISTS idx_users_city
     ON users(city);
+
+CREATE TABLE IF NOT EXISTS interests (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name TEXT NOT NULL UNIQUE
+);
+
+CREATE TABLE IF NOT EXISTS user_interests (
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    interest_id UUID NOT NULL REFERENCES interests(id) ON DELETE CASCADE,
+    PRIMARY KEY (user_id, interest_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_interests_user_id
+    ON user_interests(user_id);
+
+CREATE INDEX IF NOT EXISTS idx_user_interests_interest_id
+    ON user_interests(interest_id);
 
 CREATE TABLE IF NOT EXISTS posts (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

@@ -9,6 +9,8 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/disintegration/imaging"
@@ -29,9 +31,10 @@ type Uploader interface {
 type Querier interface {
 	GetUser(ctx context.Context, viewerID, userID uuid.UUID) (*User, error)
 	UsernameExistsForOthers(ctx context.Context, username string, userID uuid.UUID) (bool, error)
-	UpdateUser(ctx context.Context, userID uuid.UUID, username, city, country *string) error
+	UpdateUser(ctx context.Context, userID uuid.UUID, username, city, country, bio *string, soberSince *time.Time, replaceSoberSince bool, interests []string, replaceInterests bool) error
 	UpdateAvatarURL(ctx context.Context, userID uuid.UUID, avatarURL string) error
 	DiscoverUsers(ctx context.Context, currentUserID uuid.UUID, city, query string, limit, offset int) ([]User, error)
+	ListInterests(ctx context.Context) ([]string, error)
 }
 
 type Handler struct {
@@ -50,6 +53,8 @@ type User struct {
 	AvatarURL               *string    `json:"avatar_url"`
 	City                    *string    `json:"city"`
 	Country                 *string    `json:"country"`
+	Bio                     *string    `json:"bio"`
+	Interests               []string   `json:"interests"`
 	SoberSince              *time.Time `json:"sober_since"`
 	CreatedAt               time.Time  `json:"created_at"`
 	FriendshipStatus        string     `json:"friendship_status"`
@@ -90,9 +95,12 @@ func (h *Handler) UpdateMe(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.CurrentUserID(r)
 
 	var input struct {
-		Username *string `json:"username"`
-		City     *string `json:"city"`
-		Country  *string `json:"country"`
+		Username   *string   `json:"username"`
+		City       *string   `json:"city"`
+		Country    *string   `json:"country"`
+		Bio        *string   `json:"bio"`
+		SoberSince *string   `json:"sober_since"`
+		Interests  *[]string `json:"interests"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
@@ -111,6 +119,7 @@ func (h *Handler) UpdateMe(w http.ResponseWriter, r *http.Request) {
 		// registration so profile edits cannot bypass signup constraints.
 		exists, err := h.db.UsernameExistsForOthers(r.Context(), normalized, userID)
 		if err != nil {
+			log.Printf("update profile username validation failed for user %s: %v", userID, err)
 			response.Error(w, http.StatusInternalServerError, "could not validate username")
 			return
 		}
@@ -122,13 +131,111 @@ func (h *Handler) UpdateMe(w http.ResponseWriter, r *http.Request) {
 		input.Username = &normalized
 	}
 
-	if err := h.db.UpdateUser(r.Context(), userID, input.Username, input.City, input.Country); err != nil {
+	if input.Bio != nil {
+		trimmedBio := strings.TrimSpace(*input.Bio)
+		if len(trimmedBio) > 160 {
+			response.ValidationError(w, map[string]string{"bio": "bio must be 160 characters or fewer"})
+			return
+		}
+		input.Bio = &trimmedBio
+	}
+
+	var parsedSoberSince *time.Time
+	if input.SoberSince != nil {
+		trimmedSoberSince := strings.TrimSpace(*input.SoberSince)
+		if trimmedSoberSince == "" {
+			input.SoberSince = &trimmedSoberSince
+		} else {
+			parsed, err := parseSoberSince(trimmedSoberSince)
+			if err != nil {
+				response.Error(w, http.StatusBadRequest, "sober_since must be YYYY-MM-DD")
+				return
+			}
+			parsedSoberSince = parsed
+			input.SoberSince = &trimmedSoberSince
+		}
+	}
+
+	normalizedInterests := make([]string, 0)
+	if input.Interests != nil {
+		if len(*input.Interests) > 5 {
+			response.ValidationError(w, map[string]string{"interests": "pick up to 5 interests"})
+			return
+		}
+
+		allowedInterests, err := h.db.ListInterests(r.Context())
+		if err != nil {
+			log.Printf("update profile interests lookup failed for user %s: %v", userID, err)
+			response.Error(w, http.StatusInternalServerError, "could not load interests")
+			return
+		}
+
+		allowedSet := make(map[string]struct{}, len(allowedInterests))
+		for _, interest := range allowedInterests {
+			allowedSet[interest] = struct{}{}
+		}
+
+		seen := make(map[string]struct{}, len(*input.Interests))
+		for _, rawInterest := range *input.Interests {
+			interest := strings.TrimSpace(rawInterest)
+			if interest == "" {
+				response.ValidationError(w, map[string]string{"interests": "interests cannot contain empty values"})
+				return
+			}
+			if _, exists := allowedSet[interest]; !exists {
+				response.ValidationError(w, map[string]string{"interests": "one or more interests are invalid"})
+				return
+			}
+			if _, exists := seen[interest]; exists {
+				response.ValidationError(w, map[string]string{"interests": "duplicate interests are not allowed"})
+				return
+			}
+			seen[interest] = struct{}{}
+			normalizedInterests = append(normalizedInterests, interest)
+		}
+
+		slices.Sort(normalizedInterests)
+	}
+
+	if err := h.db.UpdateUser(
+		r.Context(),
+		userID,
+		input.Username,
+		input.City,
+		input.Country,
+		input.Bio,
+		parsedSoberSince,
+		input.SoberSince != nil,
+		normalizedInterests,
+		input.Interests != nil,
+	); err != nil {
+		log.Printf("update profile failed for user %s: %v", userID, err)
 		response.Error(w, http.StatusInternalServerError, "could not update profile")
 		return
 	}
 
 	user, _ := h.db.GetUser(r.Context(), userID, userID)
 	response.Success(w, http.StatusOK, user)
+}
+
+// ListInterests returns the curated interest tags available for user profiles.
+func (h *Handler) ListInterests(w http.ResponseWriter, r *http.Request) {
+	interests, err := h.db.ListInterests(r.Context())
+	if err != nil {
+		response.Error(w, http.StatusInternalServerError, "could not fetch interests")
+		return
+	}
+
+	response.Success(w, http.StatusOK, map[string][]string{"items": interests})
+}
+
+func parseSoberSince(raw string) (*time.Time, error) {
+	parsed, err := time.Parse("2006-01-02", raw)
+	if err != nil {
+		return nil, err
+	}
+
+	return &parsed, nil
 }
 
 // UploadAvatar validates, resizes, uploads, and saves the caller's avatar image.

@@ -100,6 +100,7 @@ func main() {
 	// ── Public routes ──────────────────────────────────────────────
 	r.Post("/auth/register", authHandler.Register)
 	r.Post("/auth/login", authHandler.Login)
+	r.Get("/interests", userHandler.ListInterests)
 
 	// ── Protected routes ───────────────────────────────────────────
 	r.Group(func(r chi.Router) {

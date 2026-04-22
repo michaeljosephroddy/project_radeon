@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -15,11 +16,12 @@ import (
 )
 
 type mockQuerier struct {
-	getUser                func(ctx context.Context, viewerID, userID uuid.UUID) (*User, error)
+	getUser                 func(ctx context.Context, viewerID, userID uuid.UUID) (*User, error)
 	usernameExistsForOthers func(ctx context.Context, username string, userID uuid.UUID) (bool, error)
-	updateUser             func(ctx context.Context, userID uuid.UUID, username, city, country *string) error
-	updateAvatarURL        func(ctx context.Context, userID uuid.UUID, avatarURL string) error
-	discoverUsers          func(ctx context.Context, currentUserID uuid.UUID, city, query string, limit, offset int) ([]User, error)
+	updateUser              func(ctx context.Context, userID uuid.UUID, username, city, country, bio *string, soberSince *time.Time, replaceSoberSince bool, interests []string, replaceInterests bool) error
+	updateAvatarURL         func(ctx context.Context, userID uuid.UUID, avatarURL string) error
+	discoverUsers           func(ctx context.Context, currentUserID uuid.UUID, city, query string, limit, offset int) ([]User, error)
+	listInterests           func(ctx context.Context) ([]string, error)
 }
 
 func (m *mockQuerier) GetUser(ctx context.Context, viewerID, userID uuid.UUID) (*User, error) {
@@ -34,9 +36,9 @@ func (m *mockQuerier) UsernameExistsForOthers(ctx context.Context, uname string,
 	}
 	return false, nil
 }
-func (m *mockQuerier) UpdateUser(ctx context.Context, userID uuid.UUID, username, city, country *string) error {
+func (m *mockQuerier) UpdateUser(ctx context.Context, userID uuid.UUID, username, city, country, bio *string, soberSince *time.Time, replaceSoberSince bool, interests []string, replaceInterests bool) error {
 	if m.updateUser != nil {
-		return m.updateUser(ctx, userID, username, city, country)
+		return m.updateUser(ctx, userID, username, city, country, bio, soberSince, replaceSoberSince, interests, replaceInterests)
 	}
 	return nil
 }
@@ -51,6 +53,13 @@ func (m *mockQuerier) DiscoverUsers(ctx context.Context, currentUserID uuid.UUID
 		return m.discoverUsers(ctx, currentUserID, city, query, limit, offset)
 	}
 	return nil, nil
+}
+
+func (m *mockQuerier) ListInterests(ctx context.Context) ([]string, error) {
+	if m.listInterests != nil {
+		return m.listInterests(ctx)
+	}
+	return []string{"Coffee", "Hiking", "Meditation"}, nil
 }
 
 type mockUploader struct {
@@ -208,7 +217,7 @@ func TestUpdateMeSuccess(t *testing.T) {
 
 func TestUpdateMeDBError(t *testing.T) {
 	h := NewHandler(&mockQuerier{
-		updateUser: func(_ context.Context, _ uuid.UUID, _, _, _ *string) error {
+		updateUser: func(_ context.Context, _ uuid.UUID, _, _, _, _ *string, _ *time.Time, _ bool, _ []string, _ bool) error {
 			return errors.New("db error")
 		},
 	}, &mockUploader{})
@@ -219,6 +228,80 @@ func TestUpdateMeDBError(t *testing.T) {
 
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusInternalServerError)
+	}
+}
+
+func TestUpdateMePersistsSoberSince(t *testing.T) {
+	var gotSoberSince *time.Time
+	var gotReplace bool
+	h := NewHandler(&mockQuerier{
+		updateUser: func(_ context.Context, _ uuid.UUID, _, _, _, _ *string, soberSince *time.Time, replaceSoberSince bool, _ []string, _ bool) error {
+			gotSoberSince = soberSince
+			gotReplace = replaceSoberSince
+			return nil
+		},
+	}, &mockUploader{})
+	req := withUserID(httptest.NewRequest(http.MethodPatch, "/users/me", strings.NewReader(`{"sober_since":"2026-04-01"}`)), fixedUser)
+	rec := httptest.NewRecorder()
+
+	h.UpdateMe(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if !gotReplace {
+		t.Fatal("expected sober_since replacement flag to be true")
+	}
+	if gotSoberSince == nil || gotSoberSince.Format("2006-01-02") != "2026-04-01" {
+		t.Fatalf("unexpected sober_since value: %v", gotSoberSince)
+	}
+}
+
+func TestUpdateMeRejectsInvalidSoberSince(t *testing.T) {
+	h := NewHandler(&mockQuerier{}, &mockUploader{})
+	req := withUserID(httptest.NewRequest(http.MethodPatch, "/users/me", strings.NewReader(`{"sober_since":"04/01/2026"}`)), fixedUser)
+	rec := httptest.NewRecorder()
+
+	h.UpdateMe(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+}
+
+func TestUpdateMeRejectsLongBio(t *testing.T) {
+	h := NewHandler(&mockQuerier{}, &mockUploader{})
+	req := withUserID(httptest.NewRequest(http.MethodPatch, "/users/me", strings.NewReader(`{"bio":"`+strings.Repeat("a", 161)+`"}`)), fixedUser)
+	rec := httptest.NewRecorder()
+
+	h.UpdateMe(rec, req)
+
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnprocessableEntity)
+	}
+}
+
+func TestUpdateMeRejectsInvalidInterest(t *testing.T) {
+	h := NewHandler(&mockQuerier{}, &mockUploader{})
+	req := withUserID(httptest.NewRequest(http.MethodPatch, "/users/me", strings.NewReader(`{"interests":["Coffee","Clubbing"]}`)), fixedUser)
+	rec := httptest.NewRecorder()
+
+	h.UpdateMe(rec, req)
+
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnprocessableEntity)
+	}
+}
+
+func TestListInterestsSuccess(t *testing.T) {
+	h := NewHandler(&mockQuerier{}, &mockUploader{})
+	req := withUserID(httptest.NewRequest(http.MethodGet, "/interests", nil), fixedUser)
+	rec := httptest.NewRecorder()
+
+	h.ListInterests(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
 	}
 }
 
