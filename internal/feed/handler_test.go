@@ -249,21 +249,14 @@ func TestCreatePostDBError(t *testing.T) {
 func TestUploadPostImageSuccess(t *testing.T) {
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
-	displayPart, err := writer.CreateFormFile("display", "post.png")
+	part, err := writer.CreateFormFile("image", "post.png")
 	if err != nil {
 		t.Fatalf("CreateFormFile error = %v", err)
 	}
 
 	img := image.NewRGBA(image.Rect(0, 0, 8, 8))
 	img.Set(0, 0, color.RGBA{R: 255, A: 255})
-	if err := png.Encode(displayPart, img); err != nil {
-		t.Fatalf("png.Encode error = %v", err)
-	}
-	originalPart, err := writer.CreateFormFile("original", "post-original.png")
-	if err != nil {
-		t.Fatalf("CreateFormFile error = %v", err)
-	}
-	if err := png.Encode(originalPart, img); err != nil {
+	if err := png.Encode(part, img); err != nil {
 		t.Fatalf("png.Encode error = %v", err)
 	}
 	if err := writer.Close(); err != nil {
@@ -287,8 +280,8 @@ func TestUploadPostImageSuccess(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
 	}
-	if len(uploadKeys) != 2 {
-		t.Fatalf("upload count = %d, want 2", len(uploadKeys))
+	if len(uploadKeys) != 1 {
+		t.Fatalf("upload count = %d, want 1", len(uploadKeys))
 	}
 }
 

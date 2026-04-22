@@ -73,13 +73,11 @@ type Post struct {
 }
 
 type PostImage struct {
-	ID               uuid.UUID `json:"id"`
-	ImageURL         string    `json:"image_url"`
-	OriginalImageURL string    `json:"original_image_url"`
-	DisplayImageURL  string    `json:"display_image_url"`
-	Width            int       `json:"width"`
-	Height           int       `json:"height"`
-	SortOrder        int       `json:"sort_order"`
+	ID        uuid.UUID `json:"id"`
+	ImageURL  string    `json:"image_url"`
+	Width     int       `json:"width"`
+	Height    int       `json:"height"`
+	SortOrder int       `json:"sort_order"`
 }
 
 type Reaction struct {
@@ -170,17 +168,6 @@ func (h *Handler) CreatePost(w http.ResponseWriter, r *http.Request) {
 	}
 	for index := range input.Images {
 		input.Images[index].ImageURL = strings.TrimSpace(input.Images[index].ImageURL)
-		input.Images[index].DisplayImageURL = strings.TrimSpace(input.Images[index].DisplayImageURL)
-		input.Images[index].OriginalImageURL = strings.TrimSpace(input.Images[index].OriginalImageURL)
-		if input.Images[index].DisplayImageURL == "" {
-			input.Images[index].DisplayImageURL = input.Images[index].ImageURL
-		}
-		if input.Images[index].ImageURL == "" {
-			input.Images[index].ImageURL = input.Images[index].DisplayImageURL
-		}
-		if input.Images[index].OriginalImageURL == "" {
-			input.Images[index].OriginalImageURL = input.Images[index].DisplayImageURL
-		}
 		input.Images[index].SortOrder = index
 		if input.Images[index].ImageURL == "" {
 			response.Error(w, http.StatusBadRequest, "image_url is required")
@@ -201,7 +188,7 @@ func (h *Handler) CreatePost(w http.ResponseWriter, r *http.Request) {
 	response.Success(w, http.StatusCreated, map[string]any{"id": postID})
 }
 
-// UploadPostImage validates and uploads a display image plus an optional untouched original.
+// UploadPostImage validates and uploads the original image without modifying it.
 func (h *Handler) UploadPostImage(w http.ResponseWriter, r *http.Request) {
 	if h.uploader == nil {
 		response.Error(w, http.StatusInternalServerError, "image uploads are not configured")
@@ -214,98 +201,73 @@ func (h *Handler) UploadPostImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	displayVariant, err := readMultipartVariant(r, "display", "image")
+	imageFile, err := readUploadedImage(r, "image")
 	if err != nil {
 		response.Error(w, http.StatusBadRequest, err.Error())
 		return
-	}
-	originalVariant, err := readMultipartVariant(r, "original")
-	if err != nil {
-		response.Error(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	if originalVariant == nil {
-		originalVariant = displayVariant
 	}
 
-	displayConfig, _, err := image.DecodeConfig(bytes.NewReader(displayVariant.body))
+	// DecodeConfig reads image dimensions without re-encoding the upload.
+	imageConfig, _, err := image.DecodeConfig(bytes.NewReader(imageFile.body))
 	if err != nil {
 		response.Error(w, http.StatusBadRequest, "could not decode image")
 		return
 	}
-	if displayConfig.Width <= 0 || displayConfig.Height <= 0 {
+	if imageConfig.Width <= 0 || imageConfig.Height <= 0 {
 		response.Error(w, http.StatusBadRequest, "image dimensions are required")
 		return
 	}
 
-	originalKey := fmt.Sprintf("posts/%s/%s/original%s", userID, uuid.New(), originalVariant.extension)
-	originalImageURL, err := h.uploader.Upload(r.Context(), originalKey, originalVariant.contentType, bytes.NewReader(originalVariant.body))
-	if err != nil {
-		response.Error(w, http.StatusInternalServerError, "could not upload image")
-		return
-	}
-
-	displayKey := fmt.Sprintf("posts/%s/%s/display%s", userID, uuid.New(), displayVariant.extension)
-	displayImageURL, err := h.uploader.Upload(r.Context(), displayKey, displayVariant.contentType, bytes.NewReader(displayVariant.body))
+	key := fmt.Sprintf("posts/%s/%s%s", userID, uuid.New(), imageFile.extension)
+	imageURL, err := h.uploader.Upload(r.Context(), key, imageFile.contentType, bytes.NewReader(imageFile.body))
 	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "could not upload image")
 		return
 	}
 
 	response.Success(w, http.StatusOK, PostImage{
-		ID:               uuid.New(),
-		ImageURL:         displayImageURL,
-		OriginalImageURL: originalImageURL,
-		DisplayImageURL:  displayImageURL,
-		Width:            displayConfig.Width,
-		Height:           displayConfig.Height,
+		ID:       uuid.New(),
+		ImageURL: imageURL,
+		Width:    imageConfig.Width,
+		Height:   imageConfig.Height,
 	})
 }
 
-type uploadVariant struct {
+type uploadedImage struct {
 	body        []byte
 	contentType string
 	extension   string
 }
 
-func readMultipartVariant(r *http.Request, primaryField string, fallbackFields ...string) (*uploadVariant, error) {
-	fieldNames := append([]string{primaryField}, fallbackFields...)
-	for _, fieldName := range fieldNames {
-		file, header, err := r.FormFile(fieldName)
-		if err != nil {
-			if errors.Is(err, http.ErrMissingFile) {
-				continue
-			}
-			return nil, fmt.Errorf("%s field is invalid", primaryField)
+func readUploadedImage(r *http.Request, fieldName string) (*uploadedImage, error) {
+	file, header, err := r.FormFile(fieldName)
+	if err != nil {
+		if errors.Is(err, http.ErrMissingFile) {
+			return nil, fmt.Errorf("%s field is required", fieldName)
 		}
-		defer file.Close()
+		return nil, fmt.Errorf("%s field is invalid", fieldName)
+	}
+	defer file.Close()
 
-		fileBytes, err := io.ReadAll(file)
-		if err != nil {
-			return nil, errors.New("could not read image")
-		}
-
-		contentType := header.Header.Get("Content-Type")
-		if contentType == "" || contentType == "application/octet-stream" {
-			contentType = http.DetectContentType(fileBytes)
-		}
-		extension, ok := imageExtension(contentType, header.Filename)
-		if !ok {
-			return nil, errors.New("image must be a JPEG or PNG image")
-		}
-
-		return &uploadVariant{
-			body:        fileBytes,
-			contentType: contentType,
-			extension:   extension,
-		}, nil
+	fileBytes, err := io.ReadAll(file)
+	if err != nil {
+		return nil, errors.New("could not read image")
 	}
 
-	if primaryField == "display" {
-		return nil, errors.New("display field is required")
+	contentType := header.Header.Get("Content-Type")
+	if contentType == "" || contentType == "application/octet-stream" {
+		contentType = http.DetectContentType(fileBytes)
+	}
+	extension, ok := imageExtension(contentType, header.Filename)
+	if !ok {
+		return nil, errors.New("image must be a JPEG or PNG image")
 	}
 
-	return nil, nil
+	return &uploadedImage{
+		body:        fileBytes,
+		contentType: contentType,
+		extension:   extension,
+	}, nil
 }
 
 func imageExtension(contentType, filename string) (string, bool) {
