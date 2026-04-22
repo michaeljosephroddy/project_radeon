@@ -10,7 +10,8 @@ Go REST API for a sober social network and people discovery app.
 
 ## Running locally
 - Create a `.env` file with the values listed below
-- `make migrate` to apply DB schema
+- `make migrate` to bootstrap a new DB or apply new tracked migrations
+- `make migrate-status` to view applied vs pending migration files
 - `make run` to start the server
 
 ## .env values

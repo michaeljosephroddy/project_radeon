@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -32,8 +33,14 @@ type Querier interface {
 	DeleteOrLeaveChat(ctx context.Context, chatID, userID uuid.UUID) (string, error)
 }
 
+type Notifier interface {
+	NotifyChatMessage(ctx context.Context, chatID, messageID, senderID uuid.UUID, body string) error
+	MarkChatRead(ctx context.Context, chatID, userID uuid.UUID, lastReadMessageID *uuid.UUID, readAt time.Time) error
+}
+
 type Handler struct {
-	db Querier
+	db       Querier
+	notifier Notifier
 }
 
 type SupportChatContext struct {
@@ -56,6 +63,7 @@ type Chat struct {
 	CreatedAt      time.Time           `json:"created_at"`
 	LastMessage    *string             `json:"last_message"`
 	LastMessageAt  *time.Time          `json:"last_message_at"`
+	UnreadCount    int                 `json:"unread_count"`
 	Status         string              `json:"status"`
 	SupportContext *SupportChatContext `json:"support_context,omitempty"`
 }
@@ -79,6 +87,10 @@ type MessagePage struct {
 // NewHandler builds a chats handler. Pass chats.NewPgStore(pool) for production.
 func NewHandler(db Querier) *Handler {
 	return &Handler{db: db}
+}
+
+func NewHandlerWithNotifier(db Querier, notifier Notifier) *Handler {
+	return &Handler{db: db, notifier: notifier}
 }
 
 // ListChats returns one page of the caller's active chats.
@@ -107,6 +119,28 @@ func (h *Handler) ListChatRequests(w http.ResponseWriter, r *http.Request) {
 	}
 
 	response.Success(w, http.StatusOK, chats)
+}
+
+// GetChat returns a single chat summary for the current member.
+func (h *Handler) GetChat(w http.ResponseWriter, r *http.Request) {
+	userID := middleware.CurrentUserID(r)
+	chatID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		response.Error(w, http.StatusBadRequest, "invalid chat id")
+		return
+	}
+
+	chat, err := h.db.GetChat(r.Context(), userID, chatID)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			response.Error(w, http.StatusNotFound, "chat not found")
+			return
+		}
+		response.Error(w, http.StatusInternalServerError, "could not fetch chat")
+		return
+	}
+
+	response.Success(w, http.StatusOK, chat)
 }
 
 // CreateChat creates a new direct or group chat unless an equivalent direct chat already exists.
@@ -308,7 +342,53 @@ func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if h.notifier != nil {
+		// Message delivery is the primary action; notification failures should not
+		// turn a successful send into a retried duplicate from the client.
+		_ = h.notifier.NotifyChatMessage(r.Context(), chatID, msgID, userID, input.Body)
+		_ = h.notifier.MarkChatRead(r.Context(), chatID, userID, &msgID, time.Now().UTC())
+	}
+
 	response.Success(w, http.StatusCreated, map[string]any{"id": msgID})
+}
+
+// MarkRead records that the caller has caught up with the current thread.
+func (h *Handler) MarkRead(w http.ResponseWriter, r *http.Request) {
+	if h.notifier == nil {
+		response.Success(w, http.StatusOK, map[string]bool{"read": true})
+		return
+	}
+
+	userID := middleware.CurrentUserID(r)
+	chatID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		response.Error(w, http.StatusBadRequest, "invalid chat id")
+		return
+	}
+
+	isMember, err := h.db.IsMemberOfChat(r.Context(), chatID, userID)
+	if err != nil {
+		response.Error(w, http.StatusInternalServerError, "could not check chat membership")
+		return
+	}
+	if !isMember {
+		response.Error(w, http.StatusForbidden, "not a member of this chat")
+		return
+	}
+
+	var input struct {
+		LastReadMessageID *uuid.UUID `json:"last_read_message_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil && !errors.Is(err, io.EOF) {
+		response.Error(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	if err := h.notifier.MarkChatRead(r.Context(), chatID, userID, input.LastReadMessageID, time.Now().UTC()); err != nil {
+		response.Error(w, http.StatusInternalServerError, "could not update read state")
+		return
+	}
+	response.Success(w, http.StatusOK, map[string]bool{"read": true})
 }
 
 // DeleteChat deletes a direct chat or removes the caller from a group chat.

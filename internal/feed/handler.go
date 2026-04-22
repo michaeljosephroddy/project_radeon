@@ -29,13 +29,22 @@ type Querier interface {
 	ListComments(ctx context.Context, postID uuid.UUID, after *time.Time, limit int) ([]Comment, error)
 }
 
+type MentionNotifier interface {
+	NotifyCommentMentions(ctx context.Context, postID, commentID, authorID uuid.UUID, mentionedUserIDs []uuid.UUID, body string) error
+}
+
 type Handler struct {
-	db Querier
+	db       Querier
+	notifier MentionNotifier
 }
 
 // NewHandler builds a feed handler. Pass feed.NewPgStore(pool) for production.
 func NewHandler(db Querier) *Handler {
 	return &Handler{db: db}
+}
+
+func NewHandlerWithNotifier(db Querier, notifier MentionNotifier) *Handler {
+	return &Handler{db: db, notifier: notifier}
 }
 
 type Post struct {
@@ -242,6 +251,16 @@ func (h *Handler) AddComment(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "could not add comment")
 		return
+	}
+
+	if h.notifier != nil && len(resolvedMentions) > 0 {
+		mentionedUserIDs := make([]uuid.UUID, 0, len(resolvedMentions))
+		for _, mention := range resolvedMentions {
+			mentionedUserIDs = append(mentionedUserIDs, mention.UserID)
+		}
+		// Comment creation is the primary action; best-effort notification enqueue
+		// avoids retrying the comment after the write already succeeded.
+		_ = h.notifier.NotifyCommentMentions(r.Context(), postID, comment.ID, userID, mentionedUserIDs, input.Body)
 	}
 
 	response.Success(w, http.StatusCreated, comment)

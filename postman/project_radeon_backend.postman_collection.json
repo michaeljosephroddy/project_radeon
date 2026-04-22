@@ -1,0 +1,865 @@
+{
+  "info": {
+    "_postman_id": "3fdb5c52-8dfc-4d74-b34c-9fbc0d5d7f7d",
+    "name": "Project Radeon Backend API",
+    "description": "Complete Postman collection for the Project Radeon backend mounted in cmd/api/main.go. Import this file into Postman, set the collection variables, call Register or Login to populate {{token}}, then use the protected requests.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      {
+        "key": "token",
+        "value": "{{token}}",
+        "type": "string"
+      }
+    ]
+  },
+  "variable": [
+    { "key": "base_url", "value": "http://localhost:8080", "type": "string" },
+    { "key": "token", "value": "", "type": "string" },
+    { "key": "username", "value": "postman_user", "type": "string" },
+    { "key": "email", "value": "postman_user@example.com", "type": "string" },
+    { "key": "password", "value": "Password123!", "type": "string" },
+    { "key": "user_id", "value": "", "type": "string" },
+    { "key": "other_user_id", "value": "00000000-0000-0000-0000-000000000002", "type": "string" },
+    { "key": "post_id", "value": "00000000-0000-0000-0000-000000000003", "type": "string" },
+    { "key": "comment_id", "value": "00000000-0000-0000-0000-000000000004", "type": "string" },
+    { "key": "meetup_id", "value": "00000000-0000-0000-0000-000000000005", "type": "string" },
+    { "key": "support_request_id", "value": "00000000-0000-0000-0000-000000000006", "type": "string" },
+    { "key": "chat_id", "value": "00000000-0000-0000-0000-000000000007", "type": "string" },
+    { "key": "notification_id", "value": "00000000-0000-0000-0000-000000000008", "type": "string" },
+    { "key": "device_id", "value": "00000000-0000-0000-0000-000000000009", "type": "string" },
+    { "key": "expo_push_token", "value": "ExponentPushToken[example-token]", "type": "string" }
+  ],
+  "item": [
+    {
+      "name": "Health",
+      "item": [
+        {
+          "name": "Health Check",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/health",
+              "host": ["{{base_url}}"],
+              "path": ["health"]
+            },
+            "description": "Public health endpoint."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Auth",
+      "item": [
+        {
+          "name": "Register",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "  const json = pm.response.json();",
+                  "  pm.collectionVariables.set('token', json.data.token);",
+                  "  pm.collectionVariables.set('user_id', json.data.user_id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"{{username}}\",\n  \"email\": \"{{email}}\",\n  \"password\": \"{{password}}\",\n  \"city\": \"Dublin\",\n  \"country\": \"Ireland\",\n  \"sober_since\": \"2024-01-01\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/auth/register",
+              "host": ["{{base_url}}"],
+              "path": ["auth", "register"]
+            }
+          }
+        },
+        {
+          "name": "Login",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "  const json = pm.response.json();",
+                  "  pm.collectionVariables.set('token', json.data.token);",
+                  "  pm.collectionVariables.set('user_id', json.data.user_id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{email}}\",\n  \"password\": \"{{password}}\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/auth/login",
+              "host": ["{{base_url}}"],
+              "path": ["auth", "login"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Feed & Posts",
+      "item": [
+        {
+          "name": "Get Feed",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/feed?limit=20",
+              "host": ["{{base_url}}"],
+              "path": ["feed"],
+              "query": [
+                { "key": "limit", "value": "20" },
+                { "key": "before", "value": "", "disabled": true }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Create Post",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"body\": \"Checking in from Postman.\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/posts",
+              "host": ["{{base_url}}"],
+              "path": ["posts"]
+            }
+          }
+        },
+        {
+          "name": "Delete Post",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/posts/{{post_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["posts", "{{post_id}}"]
+            }
+          }
+        },
+        {
+          "name": "React To Post",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"type\": \"like\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/posts/{{post_id}}/react",
+              "host": ["{{base_url}}"],
+              "path": ["posts", "{{post_id}}", "react"]
+            }
+          }
+        },
+        {
+          "name": "Get Reactions",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/posts/{{post_id}}/reactions?limit=50&page=1",
+              "host": ["{{base_url}}"],
+              "path": ["posts", "{{post_id}}", "reactions"],
+              "query": [
+                { "key": "limit", "value": "50" },
+                { "key": "page", "value": "1" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Add Comment",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"body\": \"Great post @postman_friend\",\n  \"mention_user_ids\": [\"{{other_user_id}}\"]\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/posts/{{post_id}}/comments",
+              "host": ["{{base_url}}"],
+              "path": ["posts", "{{post_id}}", "comments"]
+            }
+          }
+        },
+        {
+          "name": "Get Comments",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/posts/{{post_id}}/comments?limit=20",
+              "host": ["{{base_url}}"],
+              "path": ["posts", "{{post_id}}", "comments"],
+              "query": [
+                { "key": "limit", "value": "20" },
+                { "key": "after", "value": "", "disabled": true }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get User Posts",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/users/{{other_user_id}}/posts?limit=20",
+              "host": ["{{base_url}}"],
+              "path": ["users", "{{other_user_id}}", "posts"],
+              "query": [
+                { "key": "limit", "value": "20" },
+                { "key": "before", "value": "", "disabled": true }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Users & Friends",
+      "item": [
+        {
+          "name": "Get Me",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{base_url}}/users/me", "host": ["{{base_url}}"], "path": ["users", "me"] }
+          }
+        },
+        {
+          "name": "Update Me",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"{{username}}\",\n  \"city\": \"Dublin\",\n  \"country\": \"Ireland\"\n}"
+            },
+            "url": { "raw": "{{base_url}}/users/me", "host": ["{{base_url}}"], "path": ["users", "me"] }
+          }
+        },
+        {
+          "name": "Upload Avatar",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "avatar",
+                  "type": "file",
+                  "src": ""
+                }
+              ]
+            },
+            "url": { "raw": "{{base_url}}/users/me/avatar", "host": ["{{base_url}}"], "path": ["users", "me", "avatar"] },
+            "description": "Choose a JPEG or PNG file in Postman before sending."
+          }
+        },
+        {
+          "name": "Discover Users",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/users/discover?q=postman&city=Dublin&page=1&limit=20",
+              "host": ["{{base_url}}"],
+              "path": ["users", "discover"],
+              "query": [
+                { "key": "q", "value": "postman" },
+                { "key": "city", "value": "Dublin" },
+                { "key": "page", "value": "1" },
+                { "key": "limit", "value": "20" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get User",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{base_url}}/users/{{other_user_id}}", "host": ["{{base_url}}"], "path": ["users", "{{other_user_id}}"] }
+          }
+        },
+        {
+          "name": "Send Friend Request",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": { "raw": "{{base_url}}/users/{{other_user_id}}/friend-request", "host": ["{{base_url}}"], "path": ["users", "{{other_user_id}}", "friend-request"] }
+          }
+        },
+        {
+          "name": "Accept Friend Request",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"action\": \"accept\"\n}"
+            },
+            "url": { "raw": "{{base_url}}/users/{{other_user_id}}/friend-request", "host": ["{{base_url}}"], "path": ["users", "{{other_user_id}}", "friend-request"] }
+          }
+        },
+        {
+          "name": "Decline Friend Request",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"action\": \"decline\"\n}"
+            },
+            "url": { "raw": "{{base_url}}/users/{{other_user_id}}/friend-request", "host": ["{{base_url}}"], "path": ["users", "{{other_user_id}}", "friend-request"] }
+          }
+        },
+        {
+          "name": "Cancel Friend Request",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": { "raw": "{{base_url}}/users/{{other_user_id}}/friend-request", "host": ["{{base_url}}"], "path": ["users", "{{other_user_id}}", "friend-request"] }
+          }
+        },
+        {
+          "name": "Remove Friend",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": { "raw": "{{base_url}}/users/{{other_user_id}}/friend", "host": ["{{base_url}}"], "path": ["users", "{{other_user_id}}", "friend"] }
+          }
+        },
+        {
+          "name": "List Friends",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/users/me/friends?limit=25",
+              "host": ["{{base_url}}"],
+              "path": ["users", "me", "friends"],
+              "query": [
+                { "key": "limit", "value": "25" },
+                { "key": "before", "value": "", "disabled": true }
+              ]
+            }
+          }
+        },
+        {
+          "name": "List Incoming Friend Requests",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/users/me/friend-requests/incoming?limit=25",
+              "host": ["{{base_url}}"],
+              "path": ["users", "me", "friend-requests", "incoming"],
+              "query": [
+                { "key": "limit", "value": "25" },
+                { "key": "before", "value": "", "disabled": true }
+              ]
+            }
+          }
+        },
+        {
+          "name": "List Outgoing Friend Requests",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/users/me/friend-requests/outgoing?limit=25",
+              "host": ["{{base_url}}"],
+              "path": ["users", "me", "friend-requests", "outgoing"],
+              "query": [
+                { "key": "limit", "value": "25" },
+                { "key": "before", "value": "", "disabled": true }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Meetups",
+      "item": [
+        {
+          "name": "List Meetups",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/meetups?q=coffee&city=Dublin&page=1&limit=20",
+              "host": ["{{base_url}}"],
+              "path": ["meetups"],
+              "query": [
+                { "key": "q", "value": "coffee" },
+                { "key": "city", "value": "Dublin" },
+                { "key": "page", "value": "1" },
+                { "key": "limit", "value": "20" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Create Meetup",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"Morning Recovery Coffee\",\n  \"description\": \"Casual check-in and coffee.\",\n  \"city\": \"Dublin\",\n  \"starts_at\": \"2026-05-01T09:00:00Z\",\n  \"capacity\": 12\n}"
+            },
+            "url": { "raw": "{{base_url}}/meetups", "host": ["{{base_url}}"], "path": ["meetups"] }
+          }
+        },
+        {
+          "name": "Get Meetup",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{base_url}}/meetups/{{meetup_id}}", "host": ["{{base_url}}"], "path": ["meetups", "{{meetup_id}}"] }
+          }
+        },
+        {
+          "name": "RSVP Toggle",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": { "raw": "{{base_url}}/meetups/{{meetup_id}}/rsvp", "host": ["{{base_url}}"], "path": ["meetups", "{{meetup_id}}", "rsvp"] }
+          }
+        },
+        {
+          "name": "Get Meetup Attendees",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/meetups/{{meetup_id}}/attendees?page=1&limit=50",
+              "host": ["{{base_url}}"],
+              "path": ["meetups", "{{meetup_id}}", "attendees"],
+              "query": [
+                { "key": "page", "value": "1" },
+                { "key": "limit", "value": "50" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "List My Meetups",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/users/me/meetups?page=1&limit=20",
+              "host": ["{{base_url}}"],
+              "path": ["users", "me", "meetups"],
+              "query": [
+                { "key": "page", "value": "1" },
+                { "key": "limit", "value": "20" }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Support",
+      "item": [
+        {
+          "name": "Get My Support Profile",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{base_url}}/support/me", "host": ["{{base_url}}"], "path": ["support", "me"] }
+          }
+        },
+        {
+          "name": "Update My Support Profile",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"is_available_to_support\": true,\n  \"support_modes\": [\"can_chat\", \"check_in_later\"]\n}"
+            },
+            "url": { "raw": "{{base_url}}/support/me", "host": ["{{base_url}}"], "path": ["support", "me"] }
+          }
+        },
+        {
+          "name": "Create Support Request",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"type\": \"need_to_talk\",\n  \"message\": \"Having a rough morning and could use support.\",\n  \"audience\": \"community\",\n  \"expires_at\": \"2026-05-01T12:00:00Z\"\n}"
+            },
+            "url": { "raw": "{{base_url}}/support/requests", "host": ["{{base_url}}"], "path": ["support", "requests"] }
+          }
+        },
+        {
+          "name": "List Support Requests",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/support/requests?limit=20",
+              "host": ["{{base_url}}"],
+              "path": ["support", "requests"],
+              "query": [
+                { "key": "limit", "value": "20" },
+                { "key": "before", "value": "", "disabled": true }
+              ]
+            }
+          }
+        },
+        {
+          "name": "List My Support Requests",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/support/requests/mine?limit=20",
+              "host": ["{{base_url}}"],
+              "path": ["support", "requests", "mine"],
+              "query": [
+                { "key": "limit", "value": "20" },
+                { "key": "before", "value": "", "disabled": true }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Support Request",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{base_url}}/support/requests/{{support_request_id}}", "host": ["{{base_url}}"], "path": ["support", "requests", "{{support_request_id}}"] }
+          }
+        },
+        {
+          "name": "Close Support Request",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"closed\"\n}"
+            },
+            "url": { "raw": "{{base_url}}/support/requests/{{support_request_id}}", "host": ["{{base_url}}"], "path": ["support", "requests", "{{support_request_id}}"] }
+          }
+        },
+        {
+          "name": "Create Support Response",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"response_type\": \"can_chat\",\n  \"message\": \"I can listen for a while.\",\n  \"scheduled_for\": \"2026-05-01T10:30:00Z\"\n}"
+            },
+            "url": { "raw": "{{base_url}}/support/requests/{{support_request_id}}/responses", "host": ["{{base_url}}"], "path": ["support", "requests", "{{support_request_id}}", "responses"] }
+          }
+        },
+        {
+          "name": "List Support Responses",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/support/requests/{{support_request_id}}/responses?page=1&limit=50",
+              "host": ["{{base_url}}"],
+              "path": ["support", "requests", "{{support_request_id}}", "responses"],
+              "query": [
+                { "key": "page", "value": "1" },
+                { "key": "limit", "value": "50" }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Chats",
+      "item": [
+        {
+          "name": "List Chats",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/chats?page=1&limit=20&q=",
+              "host": ["{{base_url}}"],
+              "path": ["chats"],
+              "query": [
+                { "key": "page", "value": "1" },
+                { "key": "limit", "value": "20" },
+                { "key": "q", "value": "" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "List Chat Requests",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{base_url}}/chats/requests", "host": ["{{base_url}}"], "path": ["chats", "requests"] }
+          }
+        },
+        {
+          "name": "Create Direct Chat",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"member_ids\": [\"{{other_user_id}}\"]\n}"
+            },
+            "url": { "raw": "{{base_url}}/chats", "host": ["{{base_url}}"], "path": ["chats"] }
+          }
+        },
+        {
+          "name": "Create Group Chat",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"member_ids\": [\"{{other_user_id}}\", \"{{user_id}}\"],\n  \"name\": \"Postman Group\"\n}"
+            },
+            "url": { "raw": "{{base_url}}/chats", "host": ["{{base_url}}"], "path": ["chats"] }
+          }
+        },
+        {
+          "name": "Get Chat",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{base_url}}/chats/{{chat_id}}", "host": ["{{base_url}}"], "path": ["chats", "{{chat_id}}"] }
+          }
+        },
+        {
+          "name": "Get Messages",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/chats/{{chat_id}}/messages?limit=50",
+              "host": ["{{base_url}}"],
+              "path": ["chats", "{{chat_id}}", "messages"],
+              "query": [
+                { "key": "limit", "value": "50" },
+                { "key": "before", "value": "", "disabled": true }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Send Message",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"body\": \"Hello from Postman\"\n}"
+            },
+            "url": { "raw": "{{base_url}}/chats/{{chat_id}}/messages", "host": ["{{base_url}}"], "path": ["chats", "{{chat_id}}", "messages"] }
+          }
+        },
+        {
+          "name": "Mark Chat Read",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"last_read_message_id\": null\n}"
+            },
+            "url": { "raw": "{{base_url}}/chats/{{chat_id}}/read", "host": ["{{base_url}}"], "path": ["chats", "{{chat_id}}", "read"] }
+          }
+        },
+        {
+          "name": "Delete Or Leave Chat",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": { "raw": "{{base_url}}/chats/{{chat_id}}", "host": ["{{base_url}}"], "path": ["chats", "{{chat_id}}"] }
+          }
+        },
+        {
+          "name": "Accept Chat Request",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"active\"\n}"
+            },
+            "url": { "raw": "{{base_url}}/chats/{{chat_id}}/status", "host": ["{{base_url}}"], "path": ["chats", "{{chat_id}}", "status"] }
+          }
+        },
+        {
+          "name": "Decline Chat Request",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"declined\"\n}"
+            },
+            "url": { "raw": "{{base_url}}/chats/{{chat_id}}/status", "host": ["{{base_url}}"], "path": ["chats", "{{chat_id}}", "status"] }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Notifications",
+      "item": [
+        {
+          "name": "Register Device",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"push_token\": \"{{expo_push_token}}\",\n  \"platform\": \"android\",\n  \"device_name\": \"Pixel Emulator\",\n  \"app_version\": \"1.0.0\"\n}"
+            },
+            "url": { "raw": "{{base_url}}/notifications/devices", "host": ["{{base_url}}"], "path": ["notifications", "devices"] }
+          }
+        },
+        {
+          "name": "Delete Device",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": { "raw": "{{base_url}}/notifications/devices/{{device_id}}", "host": ["{{base_url}}"], "path": ["notifications", "devices", "{{device_id}}"] }
+          }
+        },
+        {
+          "name": "List Notifications",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/notifications?limit=20",
+              "host": ["{{base_url}}"],
+              "path": ["notifications"],
+              "query": [
+                { "key": "limit", "value": "20" },
+                { "key": "before", "value": "", "disabled": true }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Mark Notification Read",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": { "raw": "{{base_url}}/notifications/{{notification_id}}/read", "host": ["{{base_url}}"], "path": ["notifications", "{{notification_id}}", "read"] }
+          }
+        },
+        {
+          "name": "Get Notification Preferences",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{base_url}}/notifications/preferences", "host": ["{{base_url}}"], "path": ["notifications", "preferences"] }
+          }
+        },
+        {
+          "name": "Update Notification Preferences",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"chat_messages\": true,\n  \"comment_mentions\": true\n}"
+            },
+            "url": { "raw": "{{base_url}}/notifications/preferences", "host": ["{{base_url}}"], "path": ["notifications", "preferences"] }
+          }
+        }
+      ]
+    }
+  ]
+}

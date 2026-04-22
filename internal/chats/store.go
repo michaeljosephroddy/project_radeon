@@ -28,6 +28,7 @@ const chatSelectColumns = `SELECT
 			ch.created_at,
 			m.body AS last_message,
 			m.sent_at AS last_message_at,
+			COALESCE(unread.unread_count, 0) AS unread_count,
 			ch.status,
 			sr.id AS support_request_id,
 			sr.type AS support_request_type,
@@ -79,6 +80,16 @@ func (s *pgStore) ListChats(ctx context.Context, userID uuid.UUID, query string,
 			ORDER BY sent_at DESC
 			LIMIT 1
 		) m ON true
+		LEFT JOIN LATERAL (
+			SELECT COUNT(*) AS unread_count
+			FROM messages unread
+			LEFT JOIN chat_reads cr
+				ON cr.chat_id = ch.id
+				AND cr.user_id = $1
+			WHERE unread.chat_id = ch.id
+				AND unread.sender_id <> $1
+				AND (cr.last_read_at IS NULL OR unread.sent_at > cr.last_read_at)
+		) unread ON true
 		LEFT JOIN support_requests sr ON sr.id = ch.support_request_id
 		LEFT JOIN users requester ON requester.id = sr.requester_id
 		LEFT JOIN LATERAL (
@@ -141,6 +152,16 @@ func (s *pgStore) ListChatRequests(ctx context.Context, userID uuid.UUID) ([]Cha
 			ORDER BY sent_at DESC
 			LIMIT 1
 		) m ON true
+		LEFT JOIN LATERAL (
+			SELECT COUNT(*) AS unread_count
+			FROM messages unread
+			LEFT JOIN chat_reads cr
+				ON cr.chat_id = ch.id
+				AND cr.user_id = $1
+			WHERE unread.chat_id = ch.id
+				AND unread.sender_id <> $1
+				AND (cr.last_read_at IS NULL OR unread.sent_at > cr.last_read_at)
+		) unread ON true
 		LEFT JOIN support_requests sr ON sr.id = ch.support_request_id
 		LEFT JOIN users requester ON requester.id = sr.requester_id
 		LEFT JOIN LATERAL (
@@ -187,6 +208,16 @@ func (s *pgStore) GetChat(ctx context.Context, userID, chatID uuid.UUID) (*Chat,
 			ORDER BY sent_at DESC
 			LIMIT 1
 		) m ON true
+		LEFT JOIN LATERAL (
+			SELECT COUNT(*) AS unread_count
+			FROM messages unread
+			LEFT JOIN chat_reads cr
+				ON cr.chat_id = ch.id
+				AND cr.user_id = $1
+			WHERE unread.chat_id = ch.id
+				AND unread.sender_id <> $1
+				AND (cr.last_read_at IS NULL OR unread.sent_at > cr.last_read_at)
+		) unread ON true
 		LEFT JOIN support_requests sr ON sr.id = ch.support_request_id
 		LEFT JOIN users requester ON requester.id = sr.requester_id
 		LEFT JOIN LATERAL (
@@ -236,6 +267,7 @@ func scanChats(rows pgx.Rows) ([]Chat, error) {
 			&ch.CreatedAt,
 			&ch.LastMessage,
 			&ch.LastMessageAt,
+			&ch.UnreadCount,
 			&ch.Status,
 			&supportRequestID,
 			&requestType,

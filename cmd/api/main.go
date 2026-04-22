@@ -23,6 +23,7 @@ import (
 	"github.com/project_radeon/api/internal/feed"
 	"github.com/project_radeon/api/internal/friends"
 	"github.com/project_radeon/api/internal/meetups"
+	"github.com/project_radeon/api/internal/notifications"
 	"github.com/project_radeon/api/internal/support"
 	"github.com/project_radeon/api/internal/user"
 	"github.com/project_radeon/api/pkg/database"
@@ -62,8 +63,14 @@ func main() {
 	userHandler := user.NewHandler(user.NewPgStore(db), uploader)
 	feedHandler := feed.NewHandler(feed.NewPgStore(db))
 	meetupsHandler := meetups.NewHandler(meetups.NewPgStore(db))
-	chatsHandler := chats.NewHandler(chats.NewPgStore(db))
+	notificationsService := notifications.NewService(
+		notifications.NewPgStore(db),
+		notifications.NewExpoProvider(nil),
+	)
+	notificationsHandler := notifications.NewHandler(notificationsService)
+	chatsHandler := chats.NewHandlerWithNotifier(chats.NewPgStore(db), notificationsService)
 	friendsHandler := friends.NewHandler(friends.NewPgStore(db))
+	feedHandler = feed.NewHandlerWithNotifier(feed.NewPgStore(db), notificationsService)
 	supportHandler := support.NewHandler(support.NewPgStore(db))
 
 	r := chi.NewRouter()
@@ -146,12 +153,22 @@ func main() {
 
 		// Chats
 		r.Get("/chats", chatsHandler.ListChats)
+		r.Get("/chats/requests", chatsHandler.ListChatRequests)
 		r.Post("/chats", chatsHandler.CreateChat)
+		r.Get("/chats/{id}", chatsHandler.GetChat)
 		r.Get("/chats/{id}/messages", chatsHandler.GetMessages)
 		r.Post("/chats/{id}/messages", chatsHandler.SendMessage)
+		r.Post("/chats/{id}/read", chatsHandler.MarkRead)
 		r.Delete("/chats/{id}", chatsHandler.DeleteChat)
-		r.Get("/chats/requests", chatsHandler.ListChatRequests)
 		r.Patch("/chats/{id}/status", chatsHandler.UpdateChatStatus)
+
+		// Notifications
+		r.Post("/notifications/devices", notificationsHandler.RegisterDevice)
+		r.Delete("/notifications/devices/{id}", notificationsHandler.DeleteDevice)
+		r.Get("/notifications", notificationsHandler.ListNotifications)
+		r.Post("/notifications/{id}/read", notificationsHandler.MarkNotificationRead)
+		r.Get("/notifications/preferences", notificationsHandler.GetPreferences)
+		r.Patch("/notifications/preferences", notificationsHandler.UpdatePreferences)
 	})
 
 	port := os.Getenv("PORT")
@@ -172,6 +189,8 @@ func main() {
 	// requests to finish before the process exits.
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGTERM, syscall.SIGINT)
+	workerCtx, stopWorker := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	defer stopWorker()
 
 	go func() {
 		<-quit
@@ -182,6 +201,8 @@ func main() {
 			log.Fatalf("forced shutdown: %v", err)
 		}
 	}()
+
+	go notifications.RunWorker(workerCtx, log.Default(), notificationsService, 15*time.Second, 25)
 
 	fmt.Printf("project_radeon api running on :%s\n", port)
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
