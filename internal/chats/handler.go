@@ -28,7 +28,7 @@ type Querier interface {
 	AcceptChatRequest(ctx context.Context, chatID uuid.UUID) error
 	DeclineChatRequest(ctx context.Context, chatID uuid.UUID) error
 	IsMemberOfChat(ctx context.Context, chatID, userID uuid.UUID) (bool, error)
-	ListMessages(ctx context.Context, chatID uuid.UUID, before *time.Time, limit int) ([]Message, error)
+	ListMessages(ctx context.Context, chatID, userID uuid.UUID, before *time.Time, limit int) ([]Message, *uuid.UUID, error)
 	InsertMessage(ctx context.Context, chatID, userID uuid.UUID, body string) (uuid.UUID, error)
 	DeleteOrLeaveChat(ctx context.Context, chatID, userID uuid.UUID) (string, error)
 }
@@ -78,10 +78,11 @@ type Message struct {
 }
 
 type MessagePage struct {
-	Items      []Message  `json:"items"`
-	Limit      int        `json:"limit"`
-	HasMore    bool       `json:"has_more"`
-	NextBefore *time.Time `json:"next_before,omitempty"`
+	Items                      []Message  `json:"items"`
+	Limit                      int        `json:"limit"`
+	HasMore                    bool       `json:"has_more"`
+	NextBefore                 *time.Time `json:"next_before,omitempty"`
+	OtherUserLastReadMessageID *uuid.UUID `json:"other_user_last_read_message_id,omitempty"`
 }
 
 // NewHandler builds a chats handler. Pass chats.NewPgStore(pool) for production.
@@ -265,7 +266,7 @@ func (h *Handler) GetMessages(w http.ResponseWriter, r *http.Request) {
 		before = &parsed
 	}
 
-	msgs, err := h.db.ListMessages(r.Context(), chatID, before, limit+1)
+	msgs, otherUserLastReadMessageID, err := h.db.ListMessages(r.Context(), chatID, userID, before, limit+1)
 	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "could not fetch messages")
 		return
@@ -286,10 +287,11 @@ func (h *Handler) GetMessages(w http.ResponseWriter, r *http.Request) {
 	}
 
 	response.Success(w, http.StatusOK, MessagePage{
-		Items:      msgs,
-		Limit:      limit,
-		HasMore:    hasMore,
-		NextBefore: nextBefore,
+		Items:                      msgs,
+		Limit:                      limit,
+		HasMore:                    hasMore,
+		NextBefore:                 nextBefore,
+		OtherUserLastReadMessageID: otherUserLastReadMessageID,
 	})
 }
 

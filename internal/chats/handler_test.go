@@ -25,7 +25,7 @@ type mockQuerier struct {
 	acceptChatRequest  func(ctx context.Context, chatID uuid.UUID) error
 	declineChatRequest func(ctx context.Context, chatID uuid.UUID) error
 	isMemberOfChat     func(ctx context.Context, chatID, userID uuid.UUID) (bool, error)
-	listMessages       func(ctx context.Context, chatID uuid.UUID, before *time.Time, limit int) ([]Message, error)
+	listMessages       func(ctx context.Context, chatID, userID uuid.UUID, before *time.Time, limit int) ([]Message, *uuid.UUID, error)
 	insertMessage      func(ctx context.Context, chatID, userID uuid.UUID, body string) (uuid.UUID, error)
 	deleteOrLeaveChat  func(ctx context.Context, chatID, userID uuid.UUID) (string, error)
 }
@@ -90,11 +90,11 @@ func (m *mockQuerier) IsMemberOfChat(ctx context.Context, chatID, userID uuid.UU
 	}
 	return true, nil
 }
-func (m *mockQuerier) ListMessages(ctx context.Context, chatID uuid.UUID, before *time.Time, limit int) ([]Message, error) {
+func (m *mockQuerier) ListMessages(ctx context.Context, chatID, userID uuid.UUID, before *time.Time, limit int) ([]Message, *uuid.UUID, error) {
 	if m.listMessages != nil {
-		return m.listMessages(ctx, chatID, before, limit)
+		return m.listMessages(ctx, chatID, userID, before, limit)
 	}
-	return nil, nil
+	return nil, nil, nil
 }
 func (m *mockQuerier) InsertMessage(ctx context.Context, chatID, userID uuid.UUID, body string) (uuid.UUID, error) {
 	if m.insertMessage != nil {
@@ -404,8 +404,8 @@ func TestGetMessagesSuccess(t *testing.T) {
 
 func TestGetMessagesDBError(t *testing.T) {
 	h := NewHandler(&mockQuerier{
-		listMessages: func(_ context.Context, _ uuid.UUID, _ *time.Time, _ int) ([]Message, error) {
-			return nil, errors.New("db error")
+		listMessages: func(_ context.Context, _ uuid.UUID, _ uuid.UUID, _ *time.Time, _ int) ([]Message, *uuid.UUID, error) {
+			return nil, nil, errors.New("db error")
 		},
 	})
 	req := withUserID(httptest.NewRequest(http.MethodGet, "/", nil), fixedUser)

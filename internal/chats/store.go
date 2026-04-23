@@ -416,7 +416,7 @@ func (s *pgStore) IsMemberOfChat(ctx context.Context, chatID, userID uuid.UUID) 
 	return is, err
 }
 
-func (s *pgStore) ListMessages(ctx context.Context, chatID uuid.UUID, before *time.Time, limit int) ([]Message, error) {
+func (s *pgStore) ListMessages(ctx context.Context, chatID, userID uuid.UUID, before *time.Time, limit int) ([]Message, *uuid.UUID, error) {
 	rows, err := s.pool.Query(ctx,
 		`SELECT
 			m.id,
@@ -434,7 +434,7 @@ func (s *pgStore) ListMessages(ctx context.Context, chatID uuid.UUID, before *ti
 		chatID, before, limit,
 	)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer rows.Close()
 
@@ -442,11 +442,37 @@ func (s *pgStore) ListMessages(ctx context.Context, chatID uuid.UUID, before *ti
 	for rows.Next() {
 		var m Message
 		if err := rows.Scan(&m.ID, &m.SenderID, &m.Username, &m.AvatarURL, &m.Body, &m.SentAt); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		msgs = append(msgs, m)
 	}
-	return msgs, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, nil, err
+	}
+
+	var otherUserLastReadMessageID *uuid.UUID
+	err = s.pool.QueryRow(ctx,
+		`SELECT cr.last_read_message_id
+		FROM chats ch
+		JOIN chat_members cm
+			ON cm.chat_id = ch.id
+			AND cm.user_id <> $2
+		LEFT JOIN chat_reads cr
+			ON cr.chat_id = ch.id
+			AND cr.user_id = cm.user_id
+		WHERE ch.id = $1
+			AND ch.is_group = false
+		LIMIT 1`,
+		chatID, userID,
+	).Scan(&otherUserLastReadMessageID)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil, err
+	}
+	if errors.Is(err, pgx.ErrNoRows) {
+		otherUserLastReadMessageID = nil
+	}
+
+	return msgs, otherUserLastReadMessageID, nil
 }
 
 func (s *pgStore) InsertMessage(ctx context.Context, chatID, userID uuid.UUID, body string) (uuid.UUID, error) {
