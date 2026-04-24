@@ -65,25 +65,36 @@ func (s *pgStore) CountOpenSupportRequests(ctx context.Context, userID uuid.UUID
 	return count, err
 }
 
-func (s *pgStore) CreateSupportRequest(ctx context.Context, userID uuid.UUID, reqType string, message *string, audience string, expiresAt time.Time) (*SupportRequest, error) {
+func (s *pgStore) CreateSupportRequest(
+	ctx context.Context,
+	userID uuid.UUID,
+	reqType string,
+	message *string,
+	audience string,
+	expiresAt time.Time,
+	priorityVisibility bool,
+	priorityExpiresAt *time.Time,
+) (*SupportRequest, error) {
 	var req SupportRequest
 	err := s.pool.QueryRow(ctx,
 		`WITH inserted AS (
 			INSERT INTO support_requests (
-				requester_id, type, message, audience, city, status, expires_at
+				requester_id, type, message, audience, city, status, expires_at, priority_visibility, priority_expires_at
 			)
-			SELECT u.id, $2, $3, $4, u.city, 'open', $5
+			SELECT u.id, $2, $3, $4, u.city, 'open', $5, $6, $7
 			FROM users u WHERE u.id = $1
-			RETURNING id, requester_id, type, message, audience, status, expires_at, created_at
+			RETURNING id, requester_id, type, message, audience, status, expires_at, created_at, priority_visibility, priority_expires_at
 		)
 		SELECT
 			i.id, i.requester_id, i.type, i.message, i.audience, i.status, i.expires_at, i.created_at,
+			i.priority_visibility, i.priority_expires_at,
 			u.username, u.avatar_url, u.city
 		FROM inserted i
 		JOIN users u ON u.id = i.requester_id`,
-		userID, reqType, message, audience, expiresAt,
+		userID, reqType, message, audience, expiresAt, priorityVisibility, priorityExpiresAt,
 	).Scan(
 		&req.ID, &req.RequesterID, &req.Type, &req.Message, &req.Audience, &req.Status, &req.ExpiresAt, &req.CreatedAt,
+		&req.PriorityVisibility, &req.PriorityExpiresAt,
 		&req.Username, &req.AvatarURL, &req.City,
 	)
 	if err != nil {
@@ -92,6 +103,10 @@ func (s *pgStore) CreateSupportRequest(ctx context.Context, userID uuid.UUID, re
 	req.ResponseCount = 0
 	req.HasResponded = false
 	req.IsOwnRequest = true
+	req.SortAt = req.CreatedAt
+	if req.PriorityVisibility && req.PriorityExpiresAt != nil && req.PriorityExpiresAt.After(time.Now()) {
+		req.SortAt = *req.PriorityExpiresAt
+	}
 	return &req, nil
 }
 
@@ -114,6 +129,8 @@ func (s *pgStore) GetSupportRequest(ctx context.Context, viewerID, requestID uui
 			sr.response_count,
 			sr.expires_at,
 			sr.created_at,
+			sr.priority_visibility,
+			sr.priority_expires_at,
 			EXISTS(
 				SELECT 1 FROM support_responses own_res
 				WHERE own_res.support_request_id = sr.id
@@ -127,7 +144,7 @@ func (s *pgStore) GetSupportRequest(ctx context.Context, viewerID, requestID uui
 	).Scan(
 		&req.ID, &req.RequesterID, &req.Username, &req.AvatarURL, &req.City,
 		&req.Type, &req.Message, &req.Audience, &req.Status, &req.ResponseCount,
-		&req.ExpiresAt, &req.CreatedAt, &req.HasResponded, &req.IsOwnRequest,
+		&req.ExpiresAt, &req.CreatedAt, &req.PriorityVisibility, &req.PriorityExpiresAt, &req.HasResponded, &req.IsOwnRequest,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
@@ -163,9 +180,10 @@ func (s *pgStore) ListMySupportRequests(ctx context.Context, userID uuid.UUID, b
 				WHEN sr.status = 'open' AND sr.expires_at <= NOW() THEN 'expired'
 				ELSE sr.status
 			END AS status,
-			sr.response_count, sr.expires_at, sr.created_at,
+			sr.response_count, sr.expires_at, sr.created_at, sr.priority_visibility, sr.priority_expires_at,
 			false AS has_responded,
-			true AS is_own_request
+			true AS is_own_request,
+			sr.created_at AS sort_at
 		FROM support_requests sr
 		JOIN users u ON u.id = sr.requester_id
 		WHERE sr.requester_id = $1
@@ -186,19 +204,33 @@ func (s *pgStore) ListVisibleSupportRequests(ctx context.Context, userID uuid.UU
 		`SELECT
 			sr.id, sr.requester_id, u.username, u.avatar_url, u.city,
 			sr.type, sr.message, sr.audience, sr.status, sr.response_count,
-			sr.expires_at, sr.created_at,
+			sr.expires_at, sr.created_at, sr.priority_visibility, sr.priority_expires_at,
 			EXISTS(
 				SELECT 1 FROM support_responses own_res
 				WHERE own_res.support_request_id = sr.id
 					AND own_res.responder_id = $1
 			) AS has_responded,
-			false AS is_own_request
+			false AS is_own_request,
+			CASE
+				WHEN sr.priority_visibility = true AND sr.priority_expires_at IS NOT NULL AND sr.priority_expires_at > NOW()
+					THEN sr.priority_expires_at
+				ELSE sr.created_at
+			END AS sort_at
 		FROM support_requests sr
 		JOIN users u ON u.id = sr.requester_id
 		WHERE sr.status = 'open'
 			AND sr.expires_at > NOW()
 			AND sr.requester_id != $1
-			AND ($2::timestamptz IS NULL OR sr.created_at < $2)
+			AND (
+				$2::timestamptz IS NULL
+				OR (
+					CASE
+						WHEN sr.priority_visibility = true AND sr.priority_expires_at IS NOT NULL AND sr.priority_expires_at > NOW()
+							THEN sr.priority_expires_at
+						ELSE sr.created_at
+					END
+				) < $2
+			)
 			AND (
 				sr.audience = 'community'
 				OR (sr.audience = 'city' AND u.city IS NOT NULL AND u.city = (SELECT city FROM users WHERE id = $1))
@@ -212,7 +244,9 @@ func (s *pgStore) ListVisibleSupportRequests(ctx context.Context, userID uuid.UU
 					)
 				)
 			)
-		ORDER BY sr.created_at DESC
+		ORDER BY
+			sort_at DESC,
+			sr.created_at DESC
 		LIMIT $3`,
 		userID, before, limit,
 	)
@@ -484,9 +518,12 @@ func scanSupportRequests(rows interface {
 		if err := rows.Scan(
 			&req.ID, &req.RequesterID, &req.Username, &req.AvatarURL, &req.City,
 			&req.Type, &req.Message, &req.Audience, &req.Status, &req.ResponseCount,
-			&req.ExpiresAt, &req.CreatedAt, &req.HasResponded, &req.IsOwnRequest,
+			&req.ExpiresAt, &req.CreatedAt, &req.PriorityVisibility, &req.PriorityExpiresAt, &req.HasResponded, &req.IsOwnRequest, &req.SortAt,
 		); err != nil {
 			return nil, err
+		}
+		if req.SortAt.IsZero() {
+			req.SortAt = req.CreatedAt
 		}
 		requests = append(requests, req)
 	}

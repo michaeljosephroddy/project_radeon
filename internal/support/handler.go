@@ -19,7 +19,7 @@ type Querier interface {
 	GetSupportProfile(ctx context.Context, userID uuid.UUID) (*SupportProfile, error)
 	UpdateSupportProfile(ctx context.Context, userID uuid.UUID, available bool, modes []string) (*SupportProfile, error)
 	CountOpenSupportRequests(ctx context.Context, userID uuid.UUID) (int, error)
-	CreateSupportRequest(ctx context.Context, userID uuid.UUID, reqType string, message *string, audience string, expiresAt time.Time) (*SupportRequest, error)
+	CreateSupportRequest(ctx context.Context, userID uuid.UUID, reqType string, message *string, audience string, expiresAt time.Time, priorityVisibility bool, priorityExpiresAt *time.Time) (*SupportRequest, error)
 	GetSupportRequest(ctx context.Context, viewerID, requestID uuid.UUID) (*SupportRequest, error)
 	CloseSupportRequest(ctx context.Context, requestID, userID uuid.UUID) error
 	ListMySupportRequests(ctx context.Context, userID uuid.UUID, before *time.Time, limit int) ([]SupportRequest, error)
@@ -78,8 +78,11 @@ type SupportRequest struct {
 	ResponseCount int       `json:"response_count"`
 	ExpiresAt     time.Time `json:"expires_at"`
 	CreatedAt     time.Time `json:"created_at"`
+	PriorityVisibility bool       `json:"priority_visibility"`
+	PriorityExpiresAt  *time.Time `json:"priority_expires_at,omitempty"`
 	HasResponded  bool      `json:"has_responded"`
 	IsOwnRequest  bool      `json:"is_own_request"`
+	SortAt        time.Time `json:"-"`
 }
 
 type SupportResponse struct {
@@ -181,10 +184,11 @@ func (h *Handler) CreateSupportRequest(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.CurrentUserID(r)
 
 	var input struct {
-		Type      string  `json:"type"`
-		Message   *string `json:"message"`
-		Audience  string  `json:"audience"`
-		ExpiresAt string  `json:"expires_at"`
+		Type               string  `json:"type"`
+		Message            *string `json:"message"`
+		Audience           string  `json:"audience"`
+		ExpiresAt          string  `json:"expires_at"`
+		PriorityVisibility bool    `json:"priority_visibility"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 		response.Error(w, http.StatusBadRequest, "invalid request body")
@@ -214,7 +218,22 @@ func (h *Handler) CreateSupportRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	req, err := h.db.CreateSupportRequest(r.Context(), userID, normalized.Type, normalized.Message, normalized.Audience, expiresAt)
+	var priorityExpiresAt *time.Time
+	if input.PriorityVisibility {
+		expires := time.Now().Add(time.Hour)
+		priorityExpiresAt = &expires
+	}
+
+	req, err := h.db.CreateSupportRequest(
+		r.Context(),
+		userID,
+		normalized.Type,
+		normalized.Message,
+		normalized.Audience,
+		expiresAt,
+		input.PriorityVisibility,
+		priorityExpiresAt,
+	)
 	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "could not create support request")
 		return
@@ -234,7 +253,7 @@ func (h *Handler) ListMySupportRequests(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	page := pagination.CursorSlice(requests, params.Limit, func(sr SupportRequest) time.Time { return sr.CreatedAt })
+	page := pagination.CursorSlice(requests, params.Limit, func(sr SupportRequest) time.Time { return sr.SortAt })
 	response.Success(w, http.StatusOK, SupportRequestsPage{
 		Items:      page.Items,
 		Limit:      page.Limit,
@@ -260,7 +279,7 @@ func (h *Handler) ListSupportRequests(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	page := pagination.CursorSlice(requests, params.Limit, func(sr SupportRequest) time.Time { return sr.CreatedAt })
+	page := pagination.CursorSlice(requests, params.Limit, func(sr SupportRequest) time.Time { return sr.SortAt })
 	response.Success(w, http.StatusOK, SupportRequestsPage{
 		Items:                   page.Items,
 		Limit:                   page.Limit,

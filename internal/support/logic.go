@@ -7,10 +7,11 @@ import (
 )
 
 type createSupportRequestInput struct {
-	Type      string  `json:"type"`
-	Message   *string `json:"message"`
-	Audience  string  `json:"audience"`
-	ExpiresAt string  `json:"expires_at"`
+	Type               string  `json:"type"`
+	Message            *string `json:"message"`
+	Audience           string  `json:"audience"`
+	ExpiresAt          string  `json:"expires_at"`
+	PriorityVisibility bool    `json:"priority_visibility"`
 }
 
 type createSupportResponseInput struct {

@@ -18,7 +18,7 @@ type mockQuerier struct {
 	getSupportProfile          func(ctx context.Context, userID uuid.UUID) (*SupportProfile, error)
 	updateSupportProfile       func(ctx context.Context, userID uuid.UUID, available bool, modes []string) (*SupportProfile, error)
 	countOpenSupportRequests   func(ctx context.Context, userID uuid.UUID) (int, error)
-	createSupportRequest       func(ctx context.Context, userID uuid.UUID, reqType string, message *string, audience string, expiresAt time.Time) (*SupportRequest, error)
+	createSupportRequest       func(ctx context.Context, userID uuid.UUID, reqType string, message *string, audience string, expiresAt time.Time, priorityVisibility bool, priorityExpiresAt *time.Time) (*SupportRequest, error)
 	getSupportRequest          func(ctx context.Context, viewerID, requestID uuid.UUID) (*SupportRequest, error)
 	closeSupportRequest        func(ctx context.Context, requestID, userID uuid.UUID) error
 	listMySupportRequests      func(ctx context.Context, userID uuid.UUID, before *time.Time, limit int) ([]SupportRequest, error)
@@ -48,9 +48,9 @@ func (m *mockQuerier) CountOpenSupportRequests(ctx context.Context, userID uuid.
 	}
 	return 0, nil
 }
-func (m *mockQuerier) CreateSupportRequest(ctx context.Context, userID uuid.UUID, reqType string, message *string, audience string, expiresAt time.Time) (*SupportRequest, error) {
+func (m *mockQuerier) CreateSupportRequest(ctx context.Context, userID uuid.UUID, reqType string, message *string, audience string, expiresAt time.Time, priorityVisibility bool, priorityExpiresAt *time.Time) (*SupportRequest, error) {
 	if m.createSupportRequest != nil {
-		return m.createSupportRequest(ctx, userID, reqType, message, audience, expiresAt)
+		return m.createSupportRequest(ctx, userID, reqType, message, audience, expiresAt, priorityVisibility, priorityExpiresAt)
 	}
 	return &SupportRequest{ID: uuid.New(), RequesterID: userID}, nil
 }
