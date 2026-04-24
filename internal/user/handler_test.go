@@ -20,6 +20,7 @@ type mockQuerier struct {
 	usernameExistsForOthers func(ctx context.Context, username string, userID uuid.UUID) (bool, error)
 	updateUser              func(ctx context.Context, userID uuid.UUID, username, city, country, bio *string, soberSince *time.Time, replaceSoberSince bool, interests []string, replaceInterests bool, lat, lng *float64) error
 	updateAvatarURL         func(ctx context.Context, userID uuid.UUID, avatarURL string) error
+	updateBannerURL         func(ctx context.Context, userID uuid.UUID, bannerURL string) error
 	discoverUsers           func(ctx context.Context, currentUserID uuid.UUID, city, query string, lat, lng *float64, limit, offset int) ([]User, error)
 	listInterests           func(ctx context.Context) ([]string, error)
 }
@@ -45,6 +46,12 @@ func (m *mockQuerier) UpdateUser(ctx context.Context, userID uuid.UUID, username
 func (m *mockQuerier) UpdateAvatarURL(ctx context.Context, userID uuid.UUID, avatarURL string) error {
 	if m.updateAvatarURL != nil {
 		return m.updateAvatarURL(ctx, userID, avatarURL)
+	}
+	return nil
+}
+func (m *mockQuerier) UpdateBannerURL(ctx context.Context, userID uuid.UUID, bannerURL string) error {
+	if m.updateBannerURL != nil {
+		return m.updateBannerURL(ctx, userID, bannerURL)
 	}
 	return nil
 }

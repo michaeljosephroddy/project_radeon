@@ -385,9 +385,9 @@ func (s *pgStore) discoverRanked(ctx context.Context, currentUserID uuid.UUID, c
 	defer rows.Close()
 
 	var users []User
+	var score float64
 	for rows.Next() {
 		var u User
-		var score float64
 		if err := rows.Scan(&u.ID, &u.Username, &u.AvatarURL, &u.City, &u.Country, &u.Bio, &u.Interests, &u.SoberSince, &u.CreatedAt, &u.FriendshipStatus, &score); err != nil {
 			return nil, err
 		}
@@ -411,8 +411,6 @@ func scanUsers(rows interface {
 	}
 	return users, rows.Err()
 }
-
-
 
 func (s *pgStore) ListInterests(ctx context.Context) ([]string, error) {
 	rows, err := s.pool.Query(ctx, `SELECT name FROM interests ORDER BY name ASC`)
