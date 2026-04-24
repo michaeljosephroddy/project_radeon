@@ -24,28 +24,28 @@ func NewPgStore(pool *pgxpool.Pool) Querier {
 func (s *pgStore) GetSupportProfile(ctx context.Context, userID uuid.UUID) (*SupportProfile, error) {
 	var p SupportProfile
 	err := s.pool.QueryRow(ctx,
-		`SELECT is_available_to_support, support_modes, support_updated_at
+		`SELECT is_available_to_support, COALESCE(support_mode, ''), support_updated_at
 		FROM users WHERE id = $1`,
 		userID,
-	).Scan(&p.IsAvailableToSupport, &p.SupportModes, &p.SupportUpdatedAt)
+	).Scan(&p.IsAvailableToSupport, &p.SupportMode, &p.SupportUpdatedAt)
 	if err != nil {
 		return nil, err
 	}
 	return &p, nil
 }
 
-func (s *pgStore) UpdateSupportProfile(ctx context.Context, userID uuid.UUID, available bool, modes []string) (*SupportProfile, error) {
+func (s *pgStore) UpdateSupportProfile(ctx context.Context, userID uuid.UUID, available bool, mode string) (*SupportProfile, error) {
 	var p SupportProfile
 	err := s.pool.QueryRow(ctx,
 		`UPDATE users
 		SET
 			is_available_to_support = $2,
-			support_modes = $3,
+			support_mode = $3,
 			support_updated_at = NOW()
 		WHERE id = $1
-		RETURNING is_available_to_support, support_modes, support_updated_at`,
-		userID, available, modes,
-	).Scan(&p.IsAvailableToSupport, &p.SupportModes, &p.SupportUpdatedAt)
+		RETURNING is_available_to_support, COALESCE(support_mode, ''), support_updated_at`,
+		userID, available, mode,
+	).Scan(&p.IsAvailableToSupport, &p.SupportMode, &p.SupportUpdatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -58,8 +58,7 @@ func (s *pgStore) CountOpenSupportRequests(ctx context.Context, userID uuid.UUID
 		`SELECT COUNT(*)
 		FROM support_requests
 		WHERE requester_id = $1
-			AND status = 'open'
-			AND expires_at > NOW()`,
+			AND status = 'open'`,
 		userID,
 	).Scan(&count)
 	return count, err
@@ -70,8 +69,7 @@ func (s *pgStore) CreateSupportRequest(
 	userID uuid.UUID,
 	reqType string,
 	message *string,
-	audience string,
-	expiresAt time.Time,
+	urgency string,
 	priorityVisibility bool,
 	priorityExpiresAt *time.Time,
 ) (*SupportRequest, error) {
@@ -79,21 +77,21 @@ func (s *pgStore) CreateSupportRequest(
 	err := s.pool.QueryRow(ctx,
 		`WITH inserted AS (
 			INSERT INTO support_requests (
-				requester_id, type, message, audience, city, status, expires_at, priority_visibility, priority_expires_at
+				requester_id, type, message, city, status, urgency, priority_visibility, priority_expires_at
 			)
-			SELECT u.id, $2, $3, $4, u.city, 'open', $5, $6, $7
+			SELECT u.id, $2, $3, u.city, 'open', $4, $5, $6
 			FROM users u WHERE u.id = $1
-			RETURNING id, requester_id, type, message, audience, status, expires_at, created_at, priority_visibility, priority_expires_at
+			RETURNING id, requester_id, type, message, urgency, status, created_at, priority_visibility, priority_expires_at
 		)
 		SELECT
-			i.id, i.requester_id, i.type, i.message, i.audience, i.status, i.expires_at, i.created_at,
+			i.id, i.requester_id, i.type, i.message, i.urgency, i.status, i.created_at,
 			i.priority_visibility, i.priority_expires_at,
 			u.username, u.avatar_url, u.city
 		FROM inserted i
 		JOIN users u ON u.id = i.requester_id`,
-		userID, reqType, message, audience, expiresAt, priorityVisibility, priorityExpiresAt,
+		userID, reqType, message, urgency, priorityVisibility, priorityExpiresAt,
 	).Scan(
-		&req.ID, &req.RequesterID, &req.Type, &req.Message, &req.Audience, &req.Status, &req.ExpiresAt, &req.CreatedAt,
+		&req.ID, &req.RequesterID, &req.Type, &req.Message, &req.Urgency, &req.Status, &req.CreatedAt,
 		&req.PriorityVisibility, &req.PriorityExpiresAt,
 		&req.Username, &req.AvatarURL, &req.City,
 	)
@@ -121,13 +119,12 @@ func (s *pgStore) GetSupportRequest(ctx context.Context, viewerID, requestID uui
 			u.city,
 			sr.type,
 			sr.message,
-			sr.audience,
+			sr.urgency,
 			CASE
-				WHEN sr.status = 'open' AND sr.expires_at <= NOW() THEN 'expired'
+				WHEN sr.status = 'open' THEN 'open'
 				ELSE sr.status
 			END AS status,
 			sr.response_count,
-			sr.expires_at,
 			sr.created_at,
 			sr.priority_visibility,
 			sr.priority_expires_at,
@@ -143,8 +140,8 @@ func (s *pgStore) GetSupportRequest(ctx context.Context, viewerID, requestID uui
 		requestID, viewerID,
 	).Scan(
 		&req.ID, &req.RequesterID, &req.Username, &req.AvatarURL, &req.City,
-		&req.Type, &req.Message, &req.Audience, &req.Status, &req.ResponseCount,
-		&req.ExpiresAt, &req.CreatedAt, &req.PriorityVisibility, &req.PriorityExpiresAt, &req.HasResponded, &req.IsOwnRequest,
+		&req.Type, &req.Message, &req.Urgency, &req.Status, &req.ResponseCount,
+		&req.CreatedAt, &req.PriorityVisibility, &req.PriorityExpiresAt, &req.HasResponded, &req.IsOwnRequest,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
@@ -175,12 +172,8 @@ func (s *pgStore) ListMySupportRequests(ctx context.Context, userID uuid.UUID, b
 	rows, err := s.pool.Query(ctx,
 		`SELECT
 			sr.id, sr.requester_id, u.username, u.avatar_url, u.city,
-			sr.type, sr.message, sr.audience,
-			CASE
-				WHEN sr.status = 'open' AND sr.expires_at <= NOW() THEN 'expired'
-				ELSE sr.status
-			END AS status,
-			sr.response_count, sr.expires_at, sr.created_at, sr.priority_visibility, sr.priority_expires_at,
+			sr.type, sr.message, sr.urgency, sr.status,
+			sr.response_count, sr.created_at, sr.priority_visibility, sr.priority_expires_at,
 			false AS has_responded,
 			true AS is_own_request,
 			sr.created_at AS sort_at
@@ -201,52 +194,121 @@ func (s *pgStore) ListMySupportRequests(ctx context.Context, userID uuid.UUID, b
 
 func (s *pgStore) ListVisibleSupportRequests(ctx context.Context, userID uuid.UUID, before *time.Time, limit int) ([]SupportRequest, error) {
 	rows, err := s.pool.Query(ctx,
-		`SELECT
-			sr.id, sr.requester_id, u.username, u.avatar_url, u.city,
-			sr.type, sr.message, sr.audience, sr.status, sr.response_count,
-			sr.expires_at, sr.created_at, sr.priority_visibility, sr.priority_expires_at,
-			EXISTS(
-				SELECT 1 FROM support_responses own_res
-				WHERE own_res.support_request_id = sr.id
-					AND own_res.responder_id = $1
-			) AS has_responded,
+		`WITH viewer_data AS (
+			SELECT
+				u.support_mode,
+				u.lat,
+				u.lng,
+				CASE WHEN u.sober_since IS NOT NULL
+					THEN EXTRACT(EPOCH FROM (NOW() - u.sober_since::timestamptz)) / 86400.0
+					ELSE NULL
+				END AS days_sober
+			FROM users u WHERE u.id = $1
+		),
+		viewer_band AS (
+			SELECT CASE
+				WHEN (SELECT days_sober FROM viewer_data) IS NULL    THEN NULL
+				WHEN (SELECT days_sober FROM viewer_data) < 30       THEN 1
+				WHEN (SELECT days_sober FROM viewer_data) < 90       THEN 2
+				WHEN (SELECT days_sober FROM viewer_data) < 365      THEN 3
+				WHEN (SELECT days_sober FROM viewer_data) < 730      THEN 4
+				WHEN (SELECT days_sober FROM viewer_data) < 1825     THEN 5
+				ELSE 6
+			END AS band
+		),
+		candidates AS (
+			SELECT
+				sr.id,
+				sr.requester_id,
+				sr.type,
+				sr.message,
+				sr.status,
+				sr.urgency,
+				sr.response_count,
+				sr.created_at,
+				sr.priority_visibility,
+				sr.priority_expires_at,
+				u.username,
+				u.avatar_url,
+				u.city,
+				u.lat AS req_lat,
+				u.lng AS req_lng,
+				CASE
+					WHEN u.sober_since IS NULL THEN NULL
+					WHEN EXTRACT(EPOCH FROM (NOW() - u.sober_since::timestamptz)) / 86400.0 < 30   THEN 1
+					WHEN EXTRACT(EPOCH FROM (NOW() - u.sober_since::timestamptz)) / 86400.0 < 90   THEN 2
+					WHEN EXTRACT(EPOCH FROM (NOW() - u.sober_since::timestamptz)) / 86400.0 < 365  THEN 3
+					WHEN EXTRACT(EPOCH FROM (NOW() - u.sober_since::timestamptz)) / 86400.0 < 730  THEN 4
+					WHEN EXTRACT(EPOCH FROM (NOW() - u.sober_since::timestamptz)) / 86400.0 < 1825 THEN 5
+					ELSE 6
+				END AS cand_band,
+				EXISTS(
+					SELECT 1 FROM support_responses own_res
+					WHERE own_res.support_request_id = sr.id
+					  AND own_res.responder_id = $1
+				) AS has_responded
+			FROM support_requests sr
+			JOIN users u ON u.id = sr.requester_id
+			WHERE sr.status = 'open'
+			  AND sr.requester_id != $1
+			  AND ($2::timestamptz IS NULL OR sr.created_at < $2)
+		)
+		SELECT
+			c.id,
+			c.requester_id,
+			c.username,
+			c.avatar_url,
+			c.city,
+			c.type,
+			c.message,
+			c.urgency,
+			c.status,
+			c.response_count,
+			c.created_at,
+			c.priority_visibility,
+			c.priority_expires_at,
+			c.has_responded,
 			false AS is_own_request,
+			c.created_at AS sort_at,
+			(
+				CASE c.urgency
+					WHEN 'right_now' THEN 0.40
+					WHEN 'soon'      THEN 0.20
+					ELSE 0.0
+				END
+				+ CASE
+					WHEN (SELECT band FROM viewer_band) IS NULL OR c.cand_band IS NULL THEN 0.0
+					WHEN (SELECT band FROM viewer_band) = c.cand_band                  THEN 0.35
+					WHEN ABS((SELECT band FROM viewer_band) - c.cand_band) = 1         THEN 0.175
+					ELSE 0.0
+				  END
+				+ 0.25 * EXP(-EXTRACT(EPOCH FROM (NOW() - c.created_at)) / 86400.0)
+				+ CASE
+					WHEN (SELECT support_mode FROM viewer_data) = 'nearby'
+					     AND (SELECT lat FROM viewer_data) IS NOT NULL
+					     AND (SELECT lng FROM viewer_data) IS NOT NULL
+					     AND c.req_lat IS NOT NULL
+					     AND c.req_lng IS NOT NULL
+					THEN 0.30 * EXP(-(
+						2.0 * 6371.0 * ASIN(SQRT(
+							POWER(SIN(RADIANS((c.req_lat - (SELECT lat FROM viewer_data)) / 2.0)), 2)
+							+ COS(RADIANS((SELECT lat FROM viewer_data))) * COS(RADIANS(c.req_lat))
+							* POWER(SIN(RADIANS((c.req_lng - (SELECT lng FROM viewer_data)) / 2.0)), 2)
+						))
+					) / 300.0)
+					ELSE 0.0
+				  END
+			) AS score,
 			CASE
-				WHEN sr.priority_visibility = true AND sr.priority_expires_at IS NOT NULL AND sr.priority_expires_at > NOW()
-					THEN sr.priority_expires_at
-				ELSE sr.created_at
-			END AS sort_at
-		FROM support_requests sr
-		JOIN users u ON u.id = sr.requester_id
-		WHERE sr.status = 'open'
-			AND sr.expires_at > NOW()
-			AND sr.requester_id != $1
-			AND (
-				$2::timestamptz IS NULL
-				OR (
-					CASE
-						WHEN sr.priority_visibility = true AND sr.priority_expires_at IS NOT NULL AND sr.priority_expires_at > NOW()
-							THEN sr.priority_expires_at
-						ELSE sr.created_at
-					END
-				) < $2
-			)
-			AND (
-				sr.audience = 'community'
-				OR (sr.audience = 'city' AND u.city IS NOT NULL AND u.city = (SELECT city FROM users WHERE id = $1))
-				OR (
-					sr.audience = 'friends'
-					AND EXISTS(
-						SELECT 1 FROM friendships f
-						WHERE (f.user_a_id = $1 OR f.user_b_id = $1)
-							AND (f.user_a_id = sr.requester_id OR f.user_b_id = sr.requester_id)
-							AND f.status = 'accepted'
-					)
-				)
-			)
-		ORDER BY
-			sort_at DESC,
-			sr.created_at DESC
+				WHEN c.priority_visibility = true
+				     AND c.priority_expires_at IS NOT NULL
+				     AND c.priority_expires_at > NOW()
+				THEN true
+				ELSE false
+			END AS is_priority
+		FROM candidates c
+		CROSS JOIN viewer_band
+		ORDER BY is_priority DESC, score DESC, c.id
 		LIMIT $3`,
 		userID, before, limit,
 	)
@@ -254,31 +316,32 @@ func (s *pgStore) ListVisibleSupportRequests(ctx context.Context, userID uuid.UU
 		return nil, err
 	}
 	defer rows.Close()
-	return scanSupportRequests(rows)
+
+	var requests []SupportRequest
+	for rows.Next() {
+		var req SupportRequest
+		var score float64
+		var isPriority bool
+		if err := rows.Scan(
+			&req.ID, &req.RequesterID, &req.Username, &req.AvatarURL, &req.City,
+			&req.Type, &req.Message, &req.Urgency, &req.Status, &req.ResponseCount,
+			&req.CreatedAt, &req.PriorityVisibility, &req.PriorityExpiresAt, &req.HasResponded, &req.IsOwnRequest, &req.SortAt,
+			&score, &isPriority,
+		); err != nil {
+			return nil, err
+		}
+		requests = append(requests, req)
+	}
+	return requests, rows.Err()
 }
 
 func (s *pgStore) FetchSupportSummary(ctx context.Context, viewerID uuid.UUID) (int, int, error) {
 	var openCount int
 	err := s.pool.QueryRow(ctx,
 		`SELECT COUNT(*)
-		FROM support_requests sr
-		JOIN users u ON u.id = sr.requester_id
-		WHERE sr.status = 'open'
-			AND sr.expires_at > NOW()
-			AND sr.requester_id != $1
-			AND (
-				sr.audience = 'community'
-				OR (sr.audience = 'city' AND u.city IS NOT NULL AND u.city = (SELECT city FROM users WHERE id = $1))
-				OR (
-					sr.audience = 'friends'
-					AND EXISTS(
-						SELECT 1 FROM friendships f
-						WHERE (f.user_a_id = $1 OR f.user_b_id = $1)
-							AND (f.user_a_id = sr.requester_id OR f.user_b_id = sr.requester_id)
-							AND f.status = 'accepted'
-					)
-				)
-			)`,
+		FROM support_requests
+		WHERE status = 'open'
+		  AND requester_id != $1`,
 		viewerID,
 	).Scan(&openCount)
 	if err != nil {
@@ -297,18 +360,17 @@ func (s *pgStore) FetchSupportSummary(ctx context.Context, viewerID uuid.UUID) (
 	return openCount, availableCount, nil
 }
 
-func (s *pgStore) GetSupportRequestState(ctx context.Context, requestID uuid.UUID) (uuid.UUID, string, time.Time, error) {
+func (s *pgStore) GetSupportRequestState(ctx context.Context, requestID uuid.UUID) (uuid.UUID, string, error) {
 	var requesterID uuid.UUID
 	var status string
-	var expiresAt time.Time
 	err := s.pool.QueryRow(ctx,
-		`SELECT requester_id, status, expires_at FROM support_requests WHERE id = $1`,
+		`SELECT requester_id, status FROM support_requests WHERE id = $1`,
 		requestID,
-	).Scan(&requesterID, &status, &expiresAt)
+	).Scan(&requesterID, &status)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return uuid.Nil, "", time.Time{}, ErrNotFound
+		return uuid.Nil, "", ErrNotFound
 	}
-	return requesterID, status, expiresAt, err
+	return requesterID, status, err
 }
 
 func (s *pgStore) CreateSupportResponse(ctx context.Context, requestID, userID uuid.UUID, responseType string, message *string, scheduledFor *time.Time) (*CreateSupportResponseResult, error) {
@@ -517,8 +579,8 @@ func scanSupportRequests(rows interface {
 		var req SupportRequest
 		if err := rows.Scan(
 			&req.ID, &req.RequesterID, &req.Username, &req.AvatarURL, &req.City,
-			&req.Type, &req.Message, &req.Audience, &req.Status, &req.ResponseCount,
-			&req.ExpiresAt, &req.CreatedAt, &req.PriorityVisibility, &req.PriorityExpiresAt, &req.HasResponded, &req.IsOwnRequest, &req.SortAt,
+			&req.Type, &req.Message, &req.Urgency, &req.Status, &req.ResponseCount,
+			&req.CreatedAt, &req.PriorityVisibility, &req.PriorityExpiresAt, &req.HasResponded, &req.IsOwnRequest, &req.SortAt,
 		); err != nil {
 			return nil, err
 		}

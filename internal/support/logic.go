@@ -9,8 +9,7 @@ import (
 type createSupportRequestInput struct {
 	Type               string  `json:"type"`
 	Message            *string `json:"message"`
-	Audience           string  `json:"audience"`
-	ExpiresAt          string  `json:"expires_at"`
+	Urgency            string  `json:"urgency"`
 	PriorityVisibility bool    `json:"priority_visibility"`
 }
 
@@ -22,7 +21,10 @@ type createSupportResponseInput struct {
 
 func normalizeCreateSupportRequestInput(input createSupportRequestInput) createSupportRequestInput {
 	input.Type = strings.TrimSpace(input.Type)
-	input.Audience = strings.TrimSpace(input.Audience)
+	input.Urgency = strings.TrimSpace(input.Urgency)
+	if input.Urgency == "" {
+		input.Urgency = "when_you_can"
+	}
 	if input.Message != nil {
 		msg := strings.TrimSpace(*input.Message)
 		input.Message = &msg
@@ -37,26 +39,10 @@ func validateCreateSupportRequestInput(input createSupportRequestInput) map[stri
 	} else if !validSupportTypes[input.Type] {
 		errs["type"] = "invalid"
 	}
-	if input.Audience == "" {
-		errs["audience"] = "required"
-	} else if !validSupportAudiences[input.Audience] {
-		errs["audience"] = "invalid"
-	}
-	if input.ExpiresAt == "" {
-		errs["expires_at"] = "required"
+	if !validSupportUrgencies[input.Urgency] {
+		errs["urgency"] = "invalid"
 	}
 	return errs
-}
-
-func parseSupportRequestExpiry(raw string, now time.Time) (time.Time, error) {
-	expiresAt, err := time.Parse(time.RFC3339, raw)
-	if err != nil {
-		return time.Time{}, err
-	}
-	if !expiresAt.After(now) {
-		return time.Time{}, errExpiryNotFuture
-	}
-	return expiresAt, nil
 }
 
 func normalizeCreateSupportResponseInput(input createSupportResponseInput) createSupportResponseInput {
@@ -120,40 +106,6 @@ func formatSupportResponseMessage(responseType string, message *string, schedule
 	default:
 		return "I responded to your support request."
 	}
-}
-
-func defaultSupportModes() []string {
-	return []string{"can_chat", "check_in_later", "nearby"}
-}
-
-func normalizeSupportModes(modes []string) []string {
-	if len(modes) == 0 {
-		return defaultSupportModes()
-	}
-
-	normalized := make([]string, 0, len(modes))
-	seen := make(map[string]bool, len(modes))
-	for _, mode := range modes {
-		trimmed := strings.TrimSpace(mode)
-		if trimmed == "" || seen[trimmed] || !validSupportResponseTypes[trimmed] {
-			continue
-		}
-		seen[trimmed] = true
-		normalized = append(normalized, trimmed)
-	}
-	if len(normalized) == 0 {
-		return defaultSupportModes()
-	}
-	return normalized
-}
-
-func supportModeEnabled(modes []string, responseType string) bool {
-	for _, mode := range normalizeSupportModes(modes) {
-		if mode == responseType {
-			return true
-		}
-	}
-	return false
 }
 
 func isSupportedRequestStatusUpdate(status string) bool {

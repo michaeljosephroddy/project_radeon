@@ -17,15 +17,15 @@ import (
 // Querier is the database interface required by the support handler.
 type Querier interface {
 	GetSupportProfile(ctx context.Context, userID uuid.UUID) (*SupportProfile, error)
-	UpdateSupportProfile(ctx context.Context, userID uuid.UUID, available bool, modes []string) (*SupportProfile, error)
+	UpdateSupportProfile(ctx context.Context, userID uuid.UUID, available bool, mode string) (*SupportProfile, error)
 	CountOpenSupportRequests(ctx context.Context, userID uuid.UUID) (int, error)
-	CreateSupportRequest(ctx context.Context, userID uuid.UUID, reqType string, message *string, audience string, expiresAt time.Time, priorityVisibility bool, priorityExpiresAt *time.Time) (*SupportRequest, error)
+	CreateSupportRequest(ctx context.Context, userID uuid.UUID, reqType string, message *string, urgency string, priorityVisibility bool, priorityExpiresAt *time.Time) (*SupportRequest, error)
 	GetSupportRequest(ctx context.Context, viewerID, requestID uuid.UUID) (*SupportRequest, error)
 	CloseSupportRequest(ctx context.Context, requestID, userID uuid.UUID) error
 	ListMySupportRequests(ctx context.Context, userID uuid.UUID, before *time.Time, limit int) ([]SupportRequest, error)
 	ListVisibleSupportRequests(ctx context.Context, userID uuid.UUID, before *time.Time, limit int) ([]SupportRequest, error)
 	FetchSupportSummary(ctx context.Context, viewerID uuid.UUID) (openCount, availableCount int, err error)
-	GetSupportRequestState(ctx context.Context, requestID uuid.UUID) (requesterID uuid.UUID, status string, expiresAt time.Time, err error)
+	GetSupportRequestState(ctx context.Context, requestID uuid.UUID) (requesterID uuid.UUID, status string, err error)
 	CreateSupportResponse(ctx context.Context, requestID, userID uuid.UUID, responseType string, message *string, scheduledFor *time.Time) (*CreateSupportResponseResult, error)
 	GetSupportRequestOwner(ctx context.Context, requestID uuid.UUID) (uuid.UUID, error)
 	ListSupportResponses(ctx context.Context, requestID uuid.UUID, limit, offset int) ([]SupportResponse, error)
@@ -42,10 +42,10 @@ var validSupportTypes = map[string]bool{
 	"need_company":       true,
 }
 
-var validSupportAudiences = map[string]bool{
-	"friends":   true,
-	"city":      true,
-	"community": true,
+var validSupportUrgencies = map[string]bool{
+	"when_you_can": true,
+	"soon":         true,
+	"right_now":    true,
 }
 
 var validSupportResponseTypes = map[string]bool{
@@ -61,28 +61,27 @@ func NewHandler(db Querier) *Handler {
 
 type SupportProfile struct {
 	IsAvailableToSupport bool       `json:"is_available_to_support"`
-	SupportModes         []string   `json:"support_modes"`
+	SupportMode          string     `json:"support_mode"`
 	SupportUpdatedAt     *time.Time `json:"support_updated_at,omitempty"`
 }
 
 type SupportRequest struct {
-	ID            uuid.UUID `json:"id"`
-	RequesterID   uuid.UUID `json:"requester_id"`
-	Username      string    `json:"username"`
-	AvatarURL     *string   `json:"avatar_url"`
-	City          *string   `json:"city"`
-	Type          string    `json:"type"`
-	Message       *string   `json:"message"`
-	Audience      string    `json:"audience"`
-	Status        string    `json:"status"`
-	ResponseCount int       `json:"response_count"`
-	ExpiresAt     time.Time `json:"expires_at"`
-	CreatedAt     time.Time `json:"created_at"`
+	ID                 uuid.UUID  `json:"id"`
+	RequesterID        uuid.UUID  `json:"requester_id"`
+	Username           string     `json:"username"`
+	AvatarURL          *string    `json:"avatar_url"`
+	City               *string    `json:"city"`
+	Type               string     `json:"type"`
+	Message            *string    `json:"message"`
+	Urgency            string     `json:"urgency"`
+	Status             string     `json:"status"`
+	ResponseCount      int        `json:"response_count"`
+	CreatedAt          time.Time  `json:"created_at"`
 	PriorityVisibility bool       `json:"priority_visibility"`
 	PriorityExpiresAt  *time.Time `json:"priority_expires_at,omitempty"`
-	HasResponded  bool      `json:"has_responded"`
-	IsOwnRequest  bool      `json:"is_own_request"`
-	SortAt        time.Time `json:"-"`
+	HasResponded       bool       `json:"has_responded"`
+	IsOwnRequest       bool       `json:"is_own_request"`
+	SortAt             time.Time  `json:"-"`
 }
 
 type SupportResponse struct {
@@ -155,22 +154,20 @@ func (h *Handler) UpdateMySupportProfile(w http.ResponseWriter, r *http.Request)
 	userID := middleware.CurrentUserID(r)
 
 	var input struct {
-		IsAvailableToSupport bool     `json:"is_available_to_support"`
-		SupportModes         []string `json:"support_modes"`
+		IsAvailableToSupport bool   `json:"is_available_to_support"`
+		SupportMode          string `json:"support_mode"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 		response.Error(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 
-	modes := input.SupportModes
-	if input.IsAvailableToSupport {
-		modes = normalizeSupportModes(modes)
-	} else if modes == nil {
-		modes = []string{}
+	mode := input.SupportMode
+	if input.IsAvailableToSupport && mode == "" {
+		mode = "can_chat"
 	}
 
-	profile, err := h.db.UpdateSupportProfile(r.Context(), userID, input.IsAvailableToSupport, modes)
+	profile, err := h.db.UpdateSupportProfile(r.Context(), userID, input.IsAvailableToSupport, mode)
 	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "could not update support profile")
 		return
@@ -179,15 +176,14 @@ func (h *Handler) UpdateMySupportProfile(w http.ResponseWriter, r *http.Request)
 	response.Success(w, http.StatusOK, profile)
 }
 
-// CreateSupportRequest creates a time-bound support request for the authenticated user.
+// CreateSupportRequest creates a support request for the authenticated user.
 func (h *Handler) CreateSupportRequest(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.CurrentUserID(r)
 
 	var input struct {
 		Type               string  `json:"type"`
 		Message            *string `json:"message"`
-		Audience           string  `json:"audience"`
-		ExpiresAt          string  `json:"expires_at"`
+		Urgency            string  `json:"urgency"`
 		PriorityVisibility bool    `json:"priority_visibility"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
@@ -199,12 +195,6 @@ func (h *Handler) CreateSupportRequest(w http.ResponseWriter, r *http.Request) {
 	errs := validateCreateSupportRequestInput(normalized)
 	if len(errs) > 0 {
 		response.ValidationError(w, errs)
-		return
-	}
-
-	expiresAt, err := parseSupportRequestExpiry(normalized.ExpiresAt, time.Now())
-	if err != nil {
-		response.Error(w, http.StatusBadRequest, "expires_at must be a future RFC3339 timestamp")
 		return
 	}
 
@@ -229,8 +219,7 @@ func (h *Handler) CreateSupportRequest(w http.ResponseWriter, r *http.Request) {
 		userID,
 		normalized.Type,
 		normalized.Message,
-		normalized.Audience,
-		expiresAt,
+		normalized.Urgency,
 		input.PriorityVisibility,
 		priorityExpiresAt,
 	)
@@ -373,7 +362,7 @@ func (h *Handler) CreateSupportResponse(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	requesterID, status, expiresAt, err := h.db.GetSupportRequestState(r.Context(), requestID)
+	requesterID, status, err := h.db.GetSupportRequestState(r.Context(), requestID)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
 			response.Error(w, http.StatusNotFound, "support request not found")
@@ -386,7 +375,7 @@ func (h *Handler) CreateSupportResponse(w http.ResponseWriter, r *http.Request) 
 		response.Error(w, http.StatusBadRequest, "cannot respond to your own request")
 		return
 	}
-	if status != "open" || !expiresAt.After(time.Now()) {
+	if status != "open" {
 		response.Error(w, http.StatusConflict, "support request is no longer open")
 		return
 	}
@@ -400,7 +389,7 @@ func (h *Handler) CreateSupportResponse(w http.ResponseWriter, r *http.Request) 
 		response.Error(w, http.StatusForbidden, "turn on support availability to respond")
 		return
 	}
-	if !supportModeEnabled(profile.SupportModes, input.ResponseType) {
+	if profile.SupportMode != "" && profile.SupportMode != input.ResponseType {
 		response.Error(w, http.StatusForbidden, "support mode is not enabled for this response")
 		return
 	}

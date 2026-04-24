@@ -18,9 +18,9 @@ import (
 type mockQuerier struct {
 	getUser                 func(ctx context.Context, viewerID, userID uuid.UUID) (*User, error)
 	usernameExistsForOthers func(ctx context.Context, username string, userID uuid.UUID) (bool, error)
-	updateUser              func(ctx context.Context, userID uuid.UUID, username, city, country, bio *string, soberSince *time.Time, replaceSoberSince bool, interests []string, replaceInterests bool) error
+	updateUser              func(ctx context.Context, userID uuid.UUID, username, city, country, bio *string, soberSince *time.Time, replaceSoberSince bool, interests []string, replaceInterests bool, lat, lng *float64) error
 	updateAvatarURL         func(ctx context.Context, userID uuid.UUID, avatarURL string) error
-	discoverUsers           func(ctx context.Context, currentUserID uuid.UUID, city, query string, limit, offset int) ([]User, error)
+	discoverUsers           func(ctx context.Context, currentUserID uuid.UUID, city, query string, lat, lng *float64, limit, offset int) ([]User, error)
 	listInterests           func(ctx context.Context) ([]string, error)
 }
 
@@ -36,9 +36,9 @@ func (m *mockQuerier) UsernameExistsForOthers(ctx context.Context, uname string,
 	}
 	return false, nil
 }
-func (m *mockQuerier) UpdateUser(ctx context.Context, userID uuid.UUID, username, city, country, bio *string, soberSince *time.Time, replaceSoberSince bool, interests []string, replaceInterests bool) error {
+func (m *mockQuerier) UpdateUser(ctx context.Context, userID uuid.UUID, username, city, country, bio *string, soberSince *time.Time, replaceSoberSince bool, interests []string, replaceInterests bool, lat, lng *float64) error {
 	if m.updateUser != nil {
-		return m.updateUser(ctx, userID, username, city, country, bio, soberSince, replaceSoberSince, interests, replaceInterests)
+		return m.updateUser(ctx, userID, username, city, country, bio, soberSince, replaceSoberSince, interests, replaceInterests, lat, lng)
 	}
 	return nil
 }
@@ -48,9 +48,9 @@ func (m *mockQuerier) UpdateAvatarURL(ctx context.Context, userID uuid.UUID, ava
 	}
 	return nil
 }
-func (m *mockQuerier) DiscoverUsers(ctx context.Context, currentUserID uuid.UUID, city, query string, limit, offset int) ([]User, error) {
+func (m *mockQuerier) DiscoverUsers(ctx context.Context, currentUserID uuid.UUID, city, query string, lat, lng *float64, limit, offset int) ([]User, error) {
 	if m.discoverUsers != nil {
-		return m.discoverUsers(ctx, currentUserID, city, query, limit, offset)
+		return m.discoverUsers(ctx, currentUserID, city, query, lat, lng, limit, offset)
 	}
 	return nil, nil
 }
@@ -217,7 +217,7 @@ func TestUpdateMeSuccess(t *testing.T) {
 
 func TestUpdateMeDBError(t *testing.T) {
 	h := NewHandler(&mockQuerier{
-		updateUser: func(_ context.Context, _ uuid.UUID, _, _, _, _ *string, _ *time.Time, _ bool, _ []string, _ bool) error {
+		updateUser: func(_ context.Context, _ uuid.UUID, _, _, _, _ *string, _ *time.Time, _ bool, _ []string, _ bool, _, _ *float64) error {
 			return errors.New("db error")
 		},
 	}, &mockUploader{})
@@ -235,7 +235,7 @@ func TestUpdateMePersistsSoberSince(t *testing.T) {
 	var gotSoberSince *time.Time
 	var gotReplace bool
 	h := NewHandler(&mockQuerier{
-		updateUser: func(_ context.Context, _ uuid.UUID, _, _, _, _ *string, soberSince *time.Time, replaceSoberSince bool, _ []string, _ bool) error {
+		updateUser: func(_ context.Context, _ uuid.UUID, _, _, _, _ *string, soberSince *time.Time, replaceSoberSince bool, _ []string, _ bool, _, _ *float64) error {
 			gotSoberSince = soberSince
 			gotReplace = replaceSoberSince
 			return nil
@@ -321,7 +321,7 @@ func TestDiscoverSuccess(t *testing.T) {
 
 func TestDiscoverDBError(t *testing.T) {
 	h := NewHandler(&mockQuerier{
-		discoverUsers: func(_ context.Context, _ uuid.UUID, _, _ string, _, _ int) ([]User, error) {
+		discoverUsers: func(_ context.Context, _ uuid.UUID, _, _ string, _, _ *float64, _, _ int) ([]User, error) {
 			return nil, errors.New("db error")
 		},
 	}, &mockUploader{})

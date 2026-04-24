@@ -4,12 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -31,9 +31,9 @@ type Uploader interface {
 type Querier interface {
 	GetUser(ctx context.Context, viewerID, userID uuid.UUID) (*User, error)
 	UsernameExistsForOthers(ctx context.Context, username string, userID uuid.UUID) (bool, error)
-	UpdateUser(ctx context.Context, userID uuid.UUID, username, city, country, bio *string, soberSince *time.Time, replaceSoberSince bool, interests []string, replaceInterests bool) error
+	UpdateUser(ctx context.Context, userID uuid.UUID, username, city, country, bio *string, soberSince *time.Time, replaceSoberSince bool, interests []string, replaceInterests bool, lat, lng *float64) error
 	UpdateAvatarURL(ctx context.Context, userID uuid.UUID, avatarURL string) error
-	DiscoverUsers(ctx context.Context, currentUserID uuid.UUID, city, query string, limit, offset int) ([]User, error)
+	DiscoverUsers(ctx context.Context, currentUserID uuid.UUID, city, query string, lat, lng *float64, limit, offset int) ([]User, error)
 	ListInterests(ctx context.Context) ([]string, error)
 }
 
@@ -101,6 +101,8 @@ func (h *Handler) UpdateMe(w http.ResponseWriter, r *http.Request) {
 		Bio        *string   `json:"bio"`
 		SoberSince *string   `json:"sober_since"`
 		Interests  *[]string `json:"interests"`
+		Lat        *float64  `json:"lat"`
+		Lng        *float64  `json:"lng"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
@@ -208,6 +210,8 @@ func (h *Handler) UpdateMe(w http.ResponseWriter, r *http.Request) {
 		input.SoberSince != nil,
 		normalizedInterests,
 		input.Interests != nil,
+		input.Lat,
+		input.Lng,
 	); err != nil {
 		log.Printf("update profile failed for user %s: %v", userID, err)
 		response.Error(w, http.StatusInternalServerError, "could not update profile")
@@ -292,7 +296,7 @@ func (h *Handler) UploadAvatar(w http.ResponseWriter, r *http.Request) {
 	response.Success(w, http.StatusOK, map[string]string{"avatar_url": avatarURL})
 }
 
-// Discover returns one page of ranked user search results plus the caller's
+// Discover returns one page of ranked user results plus the caller's
 // friendship state for each row so the app does not need global friend sets.
 func (h *Handler) Discover(w http.ResponseWriter, r *http.Request) {
 	currentUserID := middleware.CurrentUserID(r)
@@ -300,14 +304,21 @@ func (h *Handler) Discover(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query().Get("q")
 	params := pagination.Parse(r, 20, 50)
 
-	users, err := h.db.DiscoverUsers(r.Context(), currentUserID, city, username.Normalize(query), params.Limit+1, params.Offset)
-	if err != nil {
-		response.Error(w, http.StatusInternalServerError, "could not fetch users")
-		return
+	var lat, lng *float64
+	if s := r.URL.Query().Get("lat"); s != "" {
+		if v, err := strconv.ParseFloat(s, 64); err == nil {
+			lat = &v
+		}
+	}
+	if s := r.URL.Query().Get("lng"); s != "" {
+		if v, err := strconv.ParseFloat(s, 64); err == nil {
+			lng = &v
+		}
 	}
 
-	if errors.Is(err, ErrNotFound) {
-		response.Error(w, http.StatusNotFound, "could not fetch users")
+	users, err := h.db.DiscoverUsers(r.Context(), currentUserID, city, username.Normalize(query), lat, lng, params.Limit+1, params.Offset)
+	if err != nil {
+		response.Error(w, http.StatusInternalServerError, "could not fetch users")
 		return
 	}
 

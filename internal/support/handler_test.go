@@ -16,15 +16,15 @@ import (
 
 type mockQuerier struct {
 	getSupportProfile          func(ctx context.Context, userID uuid.UUID) (*SupportProfile, error)
-	updateSupportProfile       func(ctx context.Context, userID uuid.UUID, available bool, modes []string) (*SupportProfile, error)
+	updateSupportProfile       func(ctx context.Context, userID uuid.UUID, available bool, mode string) (*SupportProfile, error)
 	countOpenSupportRequests   func(ctx context.Context, userID uuid.UUID) (int, error)
-	createSupportRequest       func(ctx context.Context, userID uuid.UUID, reqType string, message *string, audience string, expiresAt time.Time, priorityVisibility bool, priorityExpiresAt *time.Time) (*SupportRequest, error)
+	createSupportRequest       func(ctx context.Context, userID uuid.UUID, reqType string, message *string, urgency string, priorityVisibility bool, priorityExpiresAt *time.Time) (*SupportRequest, error)
 	getSupportRequest          func(ctx context.Context, viewerID, requestID uuid.UUID) (*SupportRequest, error)
 	closeSupportRequest        func(ctx context.Context, requestID, userID uuid.UUID) error
 	listMySupportRequests      func(ctx context.Context, userID uuid.UUID, before *time.Time, limit int) ([]SupportRequest, error)
 	listVisibleSupportRequests func(ctx context.Context, userID uuid.UUID, before *time.Time, limit int) ([]SupportRequest, error)
 	fetchSupportSummary        func(ctx context.Context, viewerID uuid.UUID) (int, int, error)
-	getSupportRequestState     func(ctx context.Context, requestID uuid.UUID) (uuid.UUID, string, time.Time, error)
+	getSupportRequestState     func(ctx context.Context, requestID uuid.UUID) (uuid.UUID, string, error)
 	createSupportResponse      func(ctx context.Context, requestID, userID uuid.UUID, responseType string, message *string, scheduledFor *time.Time) (*CreateSupportResponseResult, error)
 	getSupportRequestOwner     func(ctx context.Context, requestID uuid.UUID) (uuid.UUID, error)
 	listSupportResponses       func(ctx context.Context, requestID uuid.UUID, limit, offset int) ([]SupportResponse, error)
@@ -34,13 +34,13 @@ func (m *mockQuerier) GetSupportProfile(ctx context.Context, userID uuid.UUID) (
 	if m.getSupportProfile != nil {
 		return m.getSupportProfile(ctx, userID)
 	}
-	return &SupportProfile{IsAvailableToSupport: true, SupportModes: []string{}}, nil
+	return &SupportProfile{IsAvailableToSupport: true, SupportMode: ""}, nil
 }
-func (m *mockQuerier) UpdateSupportProfile(ctx context.Context, userID uuid.UUID, available bool, modes []string) (*SupportProfile, error) {
+func (m *mockQuerier) UpdateSupportProfile(ctx context.Context, userID uuid.UUID, available bool, mode string) (*SupportProfile, error) {
 	if m.updateSupportProfile != nil {
-		return m.updateSupportProfile(ctx, userID, available, modes)
+		return m.updateSupportProfile(ctx, userID, available, mode)
 	}
-	return &SupportProfile{IsAvailableToSupport: available, SupportModes: modes}, nil
+	return &SupportProfile{IsAvailableToSupport: available, SupportMode: mode}, nil
 }
 func (m *mockQuerier) CountOpenSupportRequests(ctx context.Context, userID uuid.UUID) (int, error) {
 	if m.countOpenSupportRequests != nil {
@@ -48,9 +48,9 @@ func (m *mockQuerier) CountOpenSupportRequests(ctx context.Context, userID uuid.
 	}
 	return 0, nil
 }
-func (m *mockQuerier) CreateSupportRequest(ctx context.Context, userID uuid.UUID, reqType string, message *string, audience string, expiresAt time.Time, priorityVisibility bool, priorityExpiresAt *time.Time) (*SupportRequest, error) {
+func (m *mockQuerier) CreateSupportRequest(ctx context.Context, userID uuid.UUID, reqType string, message *string, urgency string, priorityVisibility bool, priorityExpiresAt *time.Time) (*SupportRequest, error) {
 	if m.createSupportRequest != nil {
-		return m.createSupportRequest(ctx, userID, reqType, message, audience, expiresAt, priorityVisibility, priorityExpiresAt)
+		return m.createSupportRequest(ctx, userID, reqType, message, urgency, priorityVisibility, priorityExpiresAt)
 	}
 	return &SupportRequest{ID: uuid.New(), RequesterID: userID}, nil
 }
@@ -84,11 +84,11 @@ func (m *mockQuerier) FetchSupportSummary(ctx context.Context, viewerID uuid.UUI
 	}
 	return 0, 0, nil
 }
-func (m *mockQuerier) GetSupportRequestState(ctx context.Context, requestID uuid.UUID) (uuid.UUID, string, time.Time, error) {
+func (m *mockQuerier) GetSupportRequestState(ctx context.Context, requestID uuid.UUID) (uuid.UUID, string, error) {
 	if m.getSupportRequestState != nil {
 		return m.getSupportRequestState(ctx, requestID)
 	}
-	return uuid.Nil, "", time.Time{}, ErrNotFound
+	return uuid.Nil, "", ErrNotFound
 }
 func (m *mockQuerier) CreateSupportResponse(ctx context.Context, requestID, userID uuid.UUID, responseType string, message *string, scheduledFor *time.Time) (*CreateSupportResponseResult, error) {
 	if m.createSupportResponse != nil {
@@ -173,7 +173,7 @@ func TestUpdateMySupportProfileInvalidBody(t *testing.T) {
 func TestUpdateMySupportProfileSuccess(t *testing.T) {
 	h := NewHandler(&mockQuerier{})
 	rec := httptest.NewRecorder()
-	h.UpdateMySupportProfile(rec, authedRequest(http.MethodPatch, `{"is_available_to_support":true,"support_modes":["can_chat"]}`))
+	h.UpdateMySupportProfile(rec, authedRequest(http.MethodPatch, `{"is_available_to_support":true,"support_mode":"can_chat"}`))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
 	}
@@ -184,18 +184,9 @@ func TestUpdateMySupportProfileSuccess(t *testing.T) {
 func TestCreateSupportRequestValidationFlow(t *testing.T) {
 	h := NewHandler(&mockQuerier{})
 	rec := httptest.NewRecorder()
-	h.CreateSupportRequest(rec, authedRequest(http.MethodPost, `{"type":"","audience":"","expires_at":""}`))
+	h.CreateSupportRequest(rec, authedRequest(http.MethodPost, `{"type":""}`))
 	if rec.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnprocessableEntity)
-	}
-}
-
-func TestCreateSupportRequestRejectsPastExpiry(t *testing.T) {
-	h := NewHandler(&mockQuerier{})
-	rec := httptest.NewRecorder()
-	h.CreateSupportRequest(rec, authedRequest(http.MethodPost, `{"type":"need_to_talk","audience":"community","expires_at":"2020-01-01T00:00:00Z"}`))
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
 	}
 }
 
@@ -204,7 +195,7 @@ func TestCreateSupportRequestConflictOnExisting(t *testing.T) {
 		countOpenSupportRequests: func(_ context.Context, _ uuid.UUID) (int, error) { return 1, nil },
 	})
 	rec := httptest.NewRecorder()
-	h.CreateSupportRequest(rec, authedRequest(http.MethodPost, `{"type":"need_to_talk","audience":"community","expires_at":"2030-01-01T00:00:00Z"}`))
+	h.CreateSupportRequest(rec, authedRequest(http.MethodPost, `{"type":"need_to_talk","urgency":"soon"}`))
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusConflict)
 	}
@@ -213,7 +204,16 @@ func TestCreateSupportRequestConflictOnExisting(t *testing.T) {
 func TestCreateSupportRequestSuccess(t *testing.T) {
 	h := NewHandler(&mockQuerier{})
 	rec := httptest.NewRecorder()
-	h.CreateSupportRequest(rec, authedRequest(http.MethodPost, `{"type":"need_to_talk","audience":"community","expires_at":"2030-01-01T00:00:00Z"}`))
+	h.CreateSupportRequest(rec, authedRequest(http.MethodPost, `{"type":"need_to_talk","urgency":"soon"}`))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusCreated)
+	}
+}
+
+func TestCreateSupportRequestDefaultsUrgency(t *testing.T) {
+	h := NewHandler(&mockQuerier{})
+	rec := httptest.NewRecorder()
+	h.CreateSupportRequest(rec, authedRequest(http.MethodPost, `{"type":"need_to_talk"}`))
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusCreated)
 	}
@@ -304,8 +304,8 @@ func TestCreateSupportResponseValidationFlow(t *testing.T) {
 
 func TestCreateSupportResponseRequestNotFound(t *testing.T) {
 	h := NewHandler(&mockQuerier{
-		getSupportRequestState: func(_ context.Context, _ uuid.UUID) (uuid.UUID, string, time.Time, error) {
-			return uuid.Nil, "", time.Time{}, ErrNotFound
+		getSupportRequestState: func(_ context.Context, _ uuid.UUID) (uuid.UUID, string, error) {
+			return uuid.Nil, "", ErrNotFound
 		},
 	})
 	rec := httptest.NewRecorder()
@@ -317,8 +317,8 @@ func TestCreateSupportResponseRequestNotFound(t *testing.T) {
 
 func TestCreateSupportResponseCannotRespondToOwnRequest(t *testing.T) {
 	h := NewHandler(&mockQuerier{
-		getSupportRequestState: func(_ context.Context, _ uuid.UUID) (uuid.UUID, string, time.Time, error) {
-			return fixedUser, "open", time.Now().Add(time.Hour), nil
+		getSupportRequestState: func(_ context.Context, _ uuid.UUID) (uuid.UUID, string, error) {
+			return fixedUser, "open", nil
 		},
 	})
 	rec := httptest.NewRecorder()
@@ -330,8 +330,8 @@ func TestCreateSupportResponseCannotRespondToOwnRequest(t *testing.T) {
 
 func TestCreateSupportResponseRequestNoLongerOpen(t *testing.T) {
 	h := NewHandler(&mockQuerier{
-		getSupportRequestState: func(_ context.Context, _ uuid.UUID) (uuid.UUID, string, time.Time, error) {
-			return fixedOther, "closed", time.Now().Add(time.Hour), nil
+		getSupportRequestState: func(_ context.Context, _ uuid.UUID) (uuid.UUID, string, error) {
+			return fixedOther, "closed", nil
 		},
 	})
 	rec := httptest.NewRecorder()
@@ -343,8 +343,8 @@ func TestCreateSupportResponseRequestNoLongerOpen(t *testing.T) {
 
 func TestCreateSupportResponseRequiresAvailability(t *testing.T) {
 	h := NewHandler(&mockQuerier{
-		getSupportRequestState: func(_ context.Context, _ uuid.UUID) (uuid.UUID, string, time.Time, error) {
-			return fixedOther, "open", time.Now().Add(time.Hour), nil
+		getSupportRequestState: func(_ context.Context, _ uuid.UUID) (uuid.UUID, string, error) {
+			return fixedOther, "open", nil
 		},
 		getSupportProfile: func(_ context.Context, _ uuid.UUID) (*SupportProfile, error) {
 			return &SupportProfile{IsAvailableToSupport: false}, nil
@@ -359,11 +359,11 @@ func TestCreateSupportResponseRequiresAvailability(t *testing.T) {
 
 func TestCreateSupportResponseRequiresEnabledMode(t *testing.T) {
 	h := NewHandler(&mockQuerier{
-		getSupportRequestState: func(_ context.Context, _ uuid.UUID) (uuid.UUID, string, time.Time, error) {
-			return fixedOther, "open", time.Now().Add(time.Hour), nil
+		getSupportRequestState: func(_ context.Context, _ uuid.UUID) (uuid.UUID, string, error) {
+			return fixedOther, "open", nil
 		},
 		getSupportProfile: func(_ context.Context, _ uuid.UUID) (*SupportProfile, error) {
-			return &SupportProfile{IsAvailableToSupport: true, SupportModes: []string{"can_chat"}}, nil
+			return &SupportProfile{IsAvailableToSupport: true, SupportMode: "can_chat"}, nil
 		},
 	})
 	rec := httptest.NewRecorder()
@@ -375,8 +375,8 @@ func TestCreateSupportResponseRequiresEnabledMode(t *testing.T) {
 
 func TestCreateSupportResponseSuccess(t *testing.T) {
 	h := NewHandler(&mockQuerier{
-		getSupportRequestState: func(_ context.Context, _ uuid.UUID) (uuid.UUID, string, time.Time, error) {
-			return fixedOther, "open", time.Now().Add(time.Hour), nil
+		getSupportRequestState: func(_ context.Context, _ uuid.UUID) (uuid.UUID, string, error) {
+			return fixedOther, "open", nil
 		},
 	})
 	rec := httptest.NewRecorder()
@@ -413,7 +413,7 @@ func TestListSupportResponsesRequestNotFound(t *testing.T) {
 func TestListSupportResponsesForbiddenForNonOwner(t *testing.T) {
 	h := NewHandler(&mockQuerier{
 		getSupportRequestOwner: func(_ context.Context, _ uuid.UUID) (uuid.UUID, error) {
-			return fixedOther, nil // owner is not the caller
+			return fixedOther, nil
 		},
 	})
 	rec := httptest.NewRecorder()
@@ -426,7 +426,7 @@ func TestListSupportResponsesForbiddenForNonOwner(t *testing.T) {
 func TestListSupportResponsesSuccess(t *testing.T) {
 	h := NewHandler(&mockQuerier{
 		getSupportRequestOwner: func(_ context.Context, _ uuid.UUID) (uuid.UUID, error) {
-			return fixedUser, nil // caller is the owner
+			return fixedUser, nil
 		},
 	})
 	rec := httptest.NewRecorder()
