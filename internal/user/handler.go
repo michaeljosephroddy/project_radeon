@@ -33,6 +33,7 @@ type Querier interface {
 	UsernameExistsForOthers(ctx context.Context, username string, userID uuid.UUID) (bool, error)
 	UpdateUser(ctx context.Context, userID uuid.UUID, username, city, country, bio *string, soberSince *time.Time, replaceSoberSince bool, interests []string, replaceInterests bool, lat, lng *float64) error
 	UpdateAvatarURL(ctx context.Context, userID uuid.UUID, avatarURL string) error
+	UpdateBannerURL(ctx context.Context, userID uuid.UUID, bannerURL string) error
 	UpdateCurrentLocation(ctx context.Context, userID uuid.UUID, lat, lng float64, city string) error
 	DiscoverUsers(ctx context.Context, currentUserID uuid.UUID, city, query string, lat, lng *float64, limit, offset int) ([]User, error)
 	ListInterests(ctx context.Context) ([]string, error)
@@ -52,6 +53,7 @@ type User struct {
 	ID                      uuid.UUID  `json:"id"`
 	Username                string     `json:"username"`
 	AvatarURL               *string    `json:"avatar_url"`
+	BannerURL               *string    `json:"banner_url"`
 	City                    *string    `json:"city"`
 	Country                 *string    `json:"country"`
 	Bio                     *string    `json:"bio"`
@@ -319,6 +321,58 @@ func (h *Handler) UploadAvatar(w http.ResponseWriter, r *http.Request) {
 	}
 
 	response.Success(w, http.StatusOK, map[string]string{"avatar_url": avatarURL})
+}
+
+// UploadBanner validates, resizes, uploads, and saves the caller's banner image.
+func (h *Handler) UploadBanner(w http.ResponseWriter, r *http.Request) {
+	userID := middleware.CurrentUserID(r)
+
+	if err := r.ParseMultipartForm(10 << 20); err != nil {
+		response.Error(w, http.StatusBadRequest, "file too large or invalid form data")
+		return
+	}
+
+	file, header, err := r.FormFile("banner")
+	if err != nil {
+		response.Error(w, http.StatusBadRequest, "banner field is required")
+		return
+	}
+	defer file.Close()
+
+	contentType := header.Header.Get("Content-Type")
+	if contentType != "image/jpeg" && contentType != "image/png" {
+		response.Error(w, http.StatusBadRequest, "banner must be a JPEG or PNG image")
+		return
+	}
+
+	img, err := imaging.Decode(file)
+	if err != nil {
+		response.Error(w, http.StatusBadRequest, "could not decode image")
+		return
+	}
+
+	img = imaging.Fit(img, 2048, 683, imaging.Lanczos)
+
+	var buf bytes.Buffer
+	if err := imaging.Encode(&buf, img, imaging.JPEG); err != nil {
+		response.Error(w, http.StatusInternalServerError, "could not encode image")
+		return
+	}
+
+	key := fmt.Sprintf("banners/%s/original.jpg", userID)
+	bannerURL, err := h.uploader.Upload(r.Context(), key, "image/jpeg", &buf)
+	if err != nil {
+		log.Printf("banner upload failed for user %s: %v", userID, err)
+		response.Error(w, http.StatusInternalServerError, "could not upload image")
+		return
+	}
+
+	if err := h.db.UpdateBannerURL(r.Context(), userID, bannerURL); err != nil {
+		response.Error(w, http.StatusInternalServerError, "could not save banner")
+		return
+	}
+
+	response.Success(w, http.StatusOK, map[string]string{"banner_url": bannerURL})
 }
 
 // Discover returns one page of ranked user results plus the caller's

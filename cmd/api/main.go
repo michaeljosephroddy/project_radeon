@@ -124,6 +124,7 @@ func main() {
 		r.Patch("/users/me", userHandler.UpdateMe)
 		r.Patch("/users/me/location", userHandler.UpdateMyCurrentLocation)
 		r.Post("/users/me/avatar", userHandler.UploadAvatar)
+		r.Post("/users/me/banner", userHandler.UploadBanner)
 		r.Get("/users/me/meetups", meetupsHandler.ListMyMeetups)
 		r.Get("/users/me/friends", friendsHandler.ListFriends)
 		r.Get("/users/me/friend-requests/incoming", friendsHandler.ListIncomingRequests)

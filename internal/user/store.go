@@ -30,6 +30,7 @@ func (s *pgStore) GetUser(ctx context.Context, viewerID, userID uuid.UUID) (*Use
 			u.id,
 			u.username,
 			u.avatar_url,
+			u.banner_url,
 			u.city,
 			u.country,
 			u.bio,
@@ -79,7 +80,7 @@ func (s *pgStore) GetUser(ctx context.Context, viewerID, userID uuid.UUID) (*Use
 		WHERE u.id = $2`,
 		viewerID, userID,
 	).Scan(
-		&u.ID, &u.Username, &u.AvatarURL, &u.City, &u.Country, &u.Bio, &u.Interests, &u.SoberSince, &u.CreatedAt,
+		&u.ID, &u.Username, &u.AvatarURL, &u.BannerURL, &u.City, &u.Country, &u.Bio, &u.Interests, &u.SoberSince, &u.CreatedAt,
 		&u.FriendshipStatus, &u.FriendCount, &u.IncomingFriendRequestCt, &u.OutgoingFriendRequestCt,
 		&u.CurrentCity, &u.LocationUpdatedAt,
 	)
@@ -166,6 +167,14 @@ func (s *pgStore) UpdateAvatarURL(ctx context.Context, userID uuid.UUID, avatarU
 	_, err := s.pool.Exec(ctx,
 		`UPDATE users SET avatar_url = $1 WHERE id = $2`,
 		avatarURL, userID,
+	)
+	return err
+}
+
+func (s *pgStore) UpdateBannerURL(ctx context.Context, userID uuid.UUID, bannerURL string) error {
+	_, err := s.pool.Exec(ctx,
+		`UPDATE users SET banner_url = $1 WHERE id = $2`,
+		bannerURL, userID,
 	)
 	return err
 }
