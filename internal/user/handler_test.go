@@ -62,6 +62,10 @@ func (m *mockQuerier) ListInterests(ctx context.Context) ([]string, error) {
 	return []string{"Coffee", "Hiking", "Meditation"}, nil
 }
 
+func (m *mockQuerier) UpdateCurrentLocation(ctx context.Context, userID uuid.UUID, lat, lng float64, city string) error {
+	return nil
+}
+
 type mockUploader struct {
 	upload func(ctx context.Context, key, contentType string, body io.Reader) (string, error)
 }
