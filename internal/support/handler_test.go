@@ -16,7 +16,7 @@ import (
 
 type mockQuerier struct {
 	getSupportProfile          func(ctx context.Context, userID uuid.UUID) (*SupportProfile, error)
-	updateSupportProfile       func(ctx context.Context, userID uuid.UUID, available bool, mode string) (*SupportProfile, error)
+	updateSupportProfile       func(ctx context.Context, userID uuid.UUID, available bool) (*SupportProfile, error)
 	countOpenSupportRequests   func(ctx context.Context, userID uuid.UUID) (int, error)
 	createSupportRequest       func(ctx context.Context, userID uuid.UUID, reqType string, message *string, urgency string, priorityVisibility bool, priorityExpiresAt *time.Time) (*SupportRequest, error)
 	getSupportRequest          func(ctx context.Context, viewerID, requestID uuid.UUID) (*SupportRequest, error)
@@ -34,13 +34,13 @@ func (m *mockQuerier) GetSupportProfile(ctx context.Context, userID uuid.UUID) (
 	if m.getSupportProfile != nil {
 		return m.getSupportProfile(ctx, userID)
 	}
-	return &SupportProfile{IsAvailableToSupport: true, SupportMode: ""}, nil
+	return &SupportProfile{IsAvailableToSupport: true}, nil
 }
-func (m *mockQuerier) UpdateSupportProfile(ctx context.Context, userID uuid.UUID, available bool, mode string) (*SupportProfile, error) {
+func (m *mockQuerier) UpdateSupportProfile(ctx context.Context, userID uuid.UUID, available bool) (*SupportProfile, error) {
 	if m.updateSupportProfile != nil {
-		return m.updateSupportProfile(ctx, userID, available, mode)
+		return m.updateSupportProfile(ctx, userID, available)
 	}
-	return &SupportProfile{IsAvailableToSupport: available, SupportMode: mode}, nil
+	return &SupportProfile{IsAvailableToSupport: available}, nil
 }
 func (m *mockQuerier) CountOpenSupportRequests(ctx context.Context, userID uuid.UUID) (int, error) {
 	if m.countOpenSupportRequests != nil {
@@ -173,7 +173,7 @@ func TestUpdateMySupportProfileInvalidBody(t *testing.T) {
 func TestUpdateMySupportProfileSuccess(t *testing.T) {
 	h := NewHandler(&mockQuerier{})
 	rec := httptest.NewRecorder()
-	h.UpdateMySupportProfile(rec, authedRequest(http.MethodPatch, `{"is_available_to_support":true,"support_mode":"can_chat"}`))
+	h.UpdateMySupportProfile(rec, authedRequest(http.MethodPatch, `{"is_available_to_support":true}`))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
 	}
@@ -357,21 +357,6 @@ func TestCreateSupportResponseRequiresAvailability(t *testing.T) {
 	}
 }
 
-func TestCreateSupportResponseRequiresEnabledMode(t *testing.T) {
-	h := NewHandler(&mockQuerier{
-		getSupportRequestState: func(_ context.Context, _ uuid.UUID) (uuid.UUID, string, error) {
-			return fixedOther, "open", nil
-		},
-		getSupportProfile: func(_ context.Context, _ uuid.UUID) (*SupportProfile, error) {
-			return &SupportProfile{IsAvailableToSupport: true, SupportMode: "can_chat"}, nil
-		},
-	})
-	rec := httptest.NewRecorder()
-	h.CreateSupportResponse(rec, authedRequestWithID(http.MethodPost, `{"response_type":"nearby"}`, fixedRequest.String()))
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusForbidden)
-	}
-}
 
 func TestCreateSupportResponseSuccess(t *testing.T) {
 	h := NewHandler(&mockQuerier{

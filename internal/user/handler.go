@@ -33,6 +33,7 @@ type Querier interface {
 	UsernameExistsForOthers(ctx context.Context, username string, userID uuid.UUID) (bool, error)
 	UpdateUser(ctx context.Context, userID uuid.UUID, username, city, country, bio *string, soberSince *time.Time, replaceSoberSince bool, interests []string, replaceInterests bool, lat, lng *float64) error
 	UpdateAvatarURL(ctx context.Context, userID uuid.UUID, avatarURL string) error
+	UpdateCurrentLocation(ctx context.Context, userID uuid.UUID, lat, lng float64, city string) error
 	DiscoverUsers(ctx context.Context, currentUserID uuid.UUID, city, query string, lat, lng *float64, limit, offset int) ([]User, error)
 	ListInterests(ctx context.Context) ([]string, error)
 }
@@ -61,6 +62,8 @@ type User struct {
 	FriendCount             int        `json:"friend_count"`
 	IncomingFriendRequestCt int        `json:"incoming_friend_request_count"`
 	OutgoingFriendRequestCt int        `json:"outgoing_friend_request_count"`
+	CurrentCity             *string    `json:"current_city,omitempty"`
+	LocationUpdatedAt       *time.Time `json:"location_updated_at,omitempty"`
 }
 
 // GetMe returns the authenticated user's profile record.
@@ -231,6 +234,28 @@ func (h *Handler) ListInterests(w http.ResponseWriter, r *http.Request) {
 	}
 
 	response.Success(w, http.StatusOK, map[string][]string{"items": interests})
+}
+
+// UpdateMyCurrentLocation silently records the caller's live GPS position and reverse-geocoded city.
+func (h *Handler) UpdateMyCurrentLocation(w http.ResponseWriter, r *http.Request) {
+	userID := middleware.CurrentUserID(r)
+
+	var input struct {
+		Lat  float64 `json:"lat"`
+		Lng  float64 `json:"lng"`
+		City string  `json:"city"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		response.Error(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	if err := h.db.UpdateCurrentLocation(r.Context(), userID, input.Lat, input.Lng, input.City); err != nil {
+		response.Error(w, http.StatusInternalServerError, "could not update location")
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func parseSoberSince(raw string) (*time.Time, error) {

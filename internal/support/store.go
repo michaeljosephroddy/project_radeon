@@ -24,28 +24,27 @@ func NewPgStore(pool *pgxpool.Pool) Querier {
 func (s *pgStore) GetSupportProfile(ctx context.Context, userID uuid.UUID) (*SupportProfile, error) {
 	var p SupportProfile
 	err := s.pool.QueryRow(ctx,
-		`SELECT is_available_to_support, COALESCE(support_mode, ''), support_updated_at
+		`SELECT is_available_to_support, support_updated_at
 		FROM users WHERE id = $1`,
 		userID,
-	).Scan(&p.IsAvailableToSupport, &p.SupportMode, &p.SupportUpdatedAt)
+	).Scan(&p.IsAvailableToSupport, &p.SupportUpdatedAt)
 	if err != nil {
 		return nil, err
 	}
 	return &p, nil
 }
 
-func (s *pgStore) UpdateSupportProfile(ctx context.Context, userID uuid.UUID, available bool, mode string) (*SupportProfile, error) {
+func (s *pgStore) UpdateSupportProfile(ctx context.Context, userID uuid.UUID, available bool) (*SupportProfile, error) {
 	var p SupportProfile
 	err := s.pool.QueryRow(ctx,
 		`UPDATE users
 		SET
 			is_available_to_support = $2,
-			support_mode = $3,
 			support_updated_at = NOW()
 		WHERE id = $1
-		RETURNING is_available_to_support, COALESCE(support_mode, ''), support_updated_at`,
-		userID, available, mode,
-	).Scan(&p.IsAvailableToSupport, &p.SupportMode, &p.SupportUpdatedAt)
+		RETURNING is_available_to_support, support_updated_at`,
+		userID, available,
+	).Scan(&p.IsAvailableToSupport, &p.SupportUpdatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -196,9 +195,8 @@ func (s *pgStore) ListVisibleSupportRequests(ctx context.Context, userID uuid.UU
 	rows, err := s.pool.Query(ctx,
 		`WITH viewer_data AS (
 			SELECT
-				u.support_mode,
-				u.lat,
-				u.lng,
+				COALESCE(u.current_lat, u.lat) AS lat,
+				COALESCE(u.current_lng, u.lng) AS lng,
 				CASE WHEN u.sober_since IS NOT NULL
 					THEN EXTRACT(EPOCH FROM (NOW() - u.sober_since::timestamptz)) / 86400.0
 					ELSE NULL
@@ -278,14 +276,13 @@ func (s *pgStore) ListVisibleSupportRequests(ctx context.Context, userID uuid.UU
 				END
 				+ CASE
 					WHEN (SELECT band FROM viewer_band) IS NULL OR c.cand_band IS NULL THEN 0.0
-					WHEN (SELECT band FROM viewer_band) = c.cand_band                  THEN 0.35
-					WHEN ABS((SELECT band FROM viewer_band) - c.cand_band) = 1         THEN 0.175
+					WHEN (SELECT band FROM viewer_band) = c.cand_band                  THEN 0.25
+					WHEN ABS((SELECT band FROM viewer_band) - c.cand_band) = 1         THEN 0.125
 					ELSE 0.0
 				  END
-				+ 0.25 * EXP(-EXTRACT(EPOCH FROM (NOW() - c.created_at)) / 86400.0)
+				+ 0.20 * EXP(-EXTRACT(EPOCH FROM (NOW() - c.created_at)) / 86400.0)
 				+ CASE
-					WHEN (SELECT support_mode FROM viewer_data) = 'nearby'
-					     AND (SELECT lat FROM viewer_data) IS NOT NULL
+					WHEN (SELECT lat FROM viewer_data) IS NOT NULL
 					     AND (SELECT lng FROM viewer_data) IS NOT NULL
 					     AND c.req_lat IS NOT NULL
 					     AND c.req_lng IS NOT NULL

@@ -45,7 +45,9 @@ func (s *pgStore) GetUser(ctx context.Context, viewerID, userID uuid.UUID) (*Use
 			END AS friendship_status,
 			u.friend_count,
 			ic.cnt AS incoming_friend_request_count,
-			oc.cnt AS outgoing_friend_request_count
+			oc.cnt AS outgoing_friend_request_count,
+			u.current_city,
+			u.location_updated_at
 		FROM users u
 		LEFT JOIN friendships f
 			ON (
@@ -79,6 +81,7 @@ func (s *pgStore) GetUser(ctx context.Context, viewerID, userID uuid.UUID) (*Use
 	).Scan(
 		&u.ID, &u.Username, &u.AvatarURL, &u.City, &u.Country, &u.Bio, &u.Interests, &u.SoberSince, &u.CreatedAt,
 		&u.FriendshipStatus, &u.FriendCount, &u.IncomingFriendRequestCt, &u.OutgoingFriendRequestCt,
+		&u.CurrentCity, &u.LocationUpdatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
@@ -147,6 +150,16 @@ func (s *pgStore) UpdateUser(ctx context.Context, userID uuid.UUID, username, ci
 	}
 
 	return tx.Commit(ctx)
+}
+
+func (s *pgStore) UpdateCurrentLocation(ctx context.Context, userID uuid.UUID, lat, lng float64, city string) error {
+	_, err := s.pool.Exec(ctx,
+		`UPDATE users
+		SET current_lat = $2, current_lng = $3, current_city = $4, location_updated_at = NOW()
+		WHERE id = $1`,
+		userID, lat, lng, city,
+	)
+	return err
 }
 
 func (s *pgStore) UpdateAvatarURL(ctx context.Context, userID uuid.UUID, avatarURL string) error {

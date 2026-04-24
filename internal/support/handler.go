@@ -17,7 +17,7 @@ import (
 // Querier is the database interface required by the support handler.
 type Querier interface {
 	GetSupportProfile(ctx context.Context, userID uuid.UUID) (*SupportProfile, error)
-	UpdateSupportProfile(ctx context.Context, userID uuid.UUID, available bool, mode string) (*SupportProfile, error)
+	UpdateSupportProfile(ctx context.Context, userID uuid.UUID, available bool) (*SupportProfile, error)
 	CountOpenSupportRequests(ctx context.Context, userID uuid.UUID) (int, error)
 	CreateSupportRequest(ctx context.Context, userID uuid.UUID, reqType string, message *string, urgency string, priorityVisibility bool, priorityExpiresAt *time.Time) (*SupportRequest, error)
 	GetSupportRequest(ctx context.Context, viewerID, requestID uuid.UUID) (*SupportRequest, error)
@@ -36,10 +36,10 @@ type Handler struct {
 }
 
 var validSupportTypes = map[string]bool{
-	"need_to_talk":       true,
-	"need_distraction":   true,
-	"need_encouragement": true,
-	"need_company":       true,
+	"need_to_talk":         true,
+	"need_distraction":     true,
+	"need_encouragement":   true,
+	"need_in_person_help":  true,
 }
 
 var validSupportUrgencies = map[string]bool{
@@ -51,7 +51,7 @@ var validSupportUrgencies = map[string]bool{
 var validSupportResponseTypes = map[string]bool{
 	"can_chat":       true,
 	"check_in_later": true,
-	"nearby":         true,
+	"can_meet":       true,
 }
 
 // NewHandler builds a support handler. Pass support.NewPgStore(pool) for production.
@@ -61,7 +61,6 @@ func NewHandler(db Querier) *Handler {
 
 type SupportProfile struct {
 	IsAvailableToSupport bool       `json:"is_available_to_support"`
-	SupportMode          string     `json:"support_mode"`
 	SupportUpdatedAt     *time.Time `json:"support_updated_at,omitempty"`
 }
 
@@ -154,20 +153,14 @@ func (h *Handler) UpdateMySupportProfile(w http.ResponseWriter, r *http.Request)
 	userID := middleware.CurrentUserID(r)
 
 	var input struct {
-		IsAvailableToSupport bool   `json:"is_available_to_support"`
-		SupportMode          string `json:"support_mode"`
+		IsAvailableToSupport bool `json:"is_available_to_support"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 		response.Error(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 
-	mode := input.SupportMode
-	if input.IsAvailableToSupport && mode == "" {
-		mode = "can_chat"
-	}
-
-	profile, err := h.db.UpdateSupportProfile(r.Context(), userID, input.IsAvailableToSupport, mode)
+	profile, err := h.db.UpdateSupportProfile(r.Context(), userID, input.IsAvailableToSupport)
 	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "could not update support profile")
 		return
@@ -387,10 +380,6 @@ func (h *Handler) CreateSupportResponse(w http.ResponseWriter, r *http.Request) 
 	}
 	if !profile.IsAvailableToSupport {
 		response.Error(w, http.StatusForbidden, "turn on support availability to respond")
-		return
-	}
-	if profile.SupportMode != "" && profile.SupportMode != input.ResponseType {
-		response.Error(w, http.StatusForbidden, "support mode is not enabled for this response")
 		return
 	}
 

@@ -95,16 +95,16 @@ func formatSupportResponseMessage(responseType string, message *string, schedule
 
 	switch responseType {
 	case "can_chat":
-		return "I can chat now about your support request."
-	case "nearby":
-		return "I'm nearby if company would help."
+		return "Hey, I saw your support request — I'm here and happy to chat right now if you'd like to talk."
+	case "can_meet":
+		return "Hey, I saw your support request. I'm close by and happy to meet up in person if that would help."
 	case "check_in_later":
 		if scheduledFor != nil {
-			return fmt.Sprintf("Busy at the moment but I can check in at %s.", scheduledFor.Format(time.RFC3339))
+			return fmt.Sprintf("Hey, I saw your support request. I can't chat right now but I'd love to check in with you on %s.", scheduledFor.Format("Mon, Jan 2 at 3:04 PM"))
 		}
-		return "Busy at the moment but I can check in later."
+		return "Hey, I saw your support request. I can't chat right now but I'd love to check in with you a bit later."
 	default:
-		return "I responded to your support request."
+		return "Hey, I saw your support request and I'd like to help."
 	}
 }
 
