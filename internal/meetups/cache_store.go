@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -11,20 +12,16 @@ import (
 )
 
 const (
-	meetupsListTTL   = 60 * time.Second
-	meetupDetailTTL  = 5 * time.Minute
-	myMeetupsTTL     = 60 * time.Second
-	attendeesTTL     = 60 * time.Second
-	attendeePreviews = 3
+	meetupsListTTL  = 60 * time.Second
+	meetupDetailTTL = 5 * time.Minute
+	myMeetupsTTL    = 60 * time.Second
+	attendeesTTL    = 60 * time.Second
+	categoriesTTL   = 30 * time.Minute
 )
 
 type cachedStore struct {
 	inner Querier
 	cache appcache.Store
-}
-
-type meetupOrganizerLookup interface {
-	GetMeetupOrganizerID(ctx context.Context, meetupID uuid.UUID) (uuid.UUID, error)
 }
 
 func NewCachedStore(inner Querier, store appcache.Store) Querier {
@@ -34,76 +31,89 @@ func NewCachedStore(inner Querier, store appcache.Store) Querier {
 	return &cachedStore{inner: inner, cache: store}
 }
 
-func (s *cachedStore) ListMeetups(ctx context.Context, userID uuid.UUID, cityFilter, queryFilter string, limit, offset int) ([]Meetup, error) {
-	globalVersion, err := s.cache.GetVersion(ctx, s.meetupsVersionKey())
+func (s *cachedStore) ListCategories(ctx context.Context) ([]MeetupCategory, error) {
+	version, err := s.cache.GetVersion(ctx, s.categoriesVersionKey())
 	if err != nil {
-		return s.inner.ListMeetups(ctx, userID, cityFilter, queryFilter, limit, offset)
+		return s.inner.ListCategories(ctx)
 	}
-
-	key := s.cache.Key(
-		"meetups",
-		"list",
-		"v", strconv.FormatInt(globalVersion, 10),
-		"viewer", userID.String(),
-		"city", encodeMeetupPart(cityFilter),
-		"query", encodeMeetupPart(queryFilter),
-		"limit", strconv.Itoa(limit),
-		"offset", strconv.Itoa(offset),
-	)
-
-	var meetups []Meetup
-	if err := s.cache.ReadThrough(ctx, key, meetupsListTTL, &meetups, func(ctx context.Context, dest any) error {
-		loaded, err := s.inner.ListMeetups(ctx, userID, cityFilter, queryFilter, limit, offset)
+	key := s.cache.Key("meetups", "categories", "v", strconv.FormatInt(version, 10))
+	var categories []MeetupCategory
+	if err := s.cache.ReadThrough(ctx, key, categoriesTTL, &categories, func(ctx context.Context, dest any) error {
+		loaded, err := s.inner.ListCategories(ctx)
 		if err != nil {
 			return err
 		}
-		if err := s.inner.AttachAttendeePreviews(ctx, loaded, attendeePreviews); err != nil {
-			return err
-		}
-		*dest.(*[]Meetup) = loaded
+		*dest.(*[]MeetupCategory) = loaded
 		return nil
 	}); err != nil {
 		return nil, err
 	}
-
-	return meetups, nil
+	return categories, nil
 }
 
-func (s *cachedStore) ListMyMeetups(ctx context.Context, userID uuid.UUID, limit, offset int) ([]Meetup, error) {
+func (s *cachedStore) DiscoverMeetups(ctx context.Context, userID uuid.UUID, params DiscoverMeetupsParams) (*CursorPage[Meetup], error) {
+	version, err := s.cache.GetVersion(ctx, s.meetupsVersionKey())
+	if err != nil {
+		return s.inner.DiscoverMeetups(ctx, userID, params)
+	}
+	key := s.cache.Key(
+		"meetups", "discover",
+		"v", strconv.FormatInt(version, 10),
+		"viewer", userID.String(),
+		"q", encodeMeetupPart(params.Query),
+		"category", encodeMeetupPart(params.CategorySlug),
+		"city", encodeMeetupPart(params.City),
+		"distance", encodeOptionalInt(params.DistanceKM),
+		"type", encodeMeetupPart(params.EventType),
+		"date_preset", encodeMeetupPart(params.DatePreset),
+		"date_from", encodeOptionalTime(params.DateFrom),
+		"date_to", encodeOptionalTime(params.DateTo),
+		"day", encodeIntSlice(params.DayOfWeek),
+		"time", encodeStringSlice(params.TimeOfDay),
+		"open", strconv.FormatBool(params.OpenSpotsOnly),
+		"sort", encodeMeetupPart(params.Sort),
+		"cursor", encodeMeetupPart(params.Cursor),
+		"limit", strconv.Itoa(params.Limit),
+	)
+	var page CursorPage[Meetup]
+	if err := s.cache.ReadThrough(ctx, key, meetupsListTTL, &page, func(ctx context.Context, dest any) error {
+		loaded, err := s.inner.DiscoverMeetups(ctx, userID, params)
+		if err != nil {
+			return err
+		}
+		*dest.(*CursorPage[Meetup]) = *loaded
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	return &page, nil
+}
+
+func (s *cachedStore) ListMyMeetups(ctx context.Context, userID uuid.UUID, params MyMeetupsParams) (*CursorPage[Meetup], error) {
 	version, err := s.cache.GetVersion(ctx, s.myMeetupsVersionKey(userID))
 	if err != nil {
-		return s.inner.ListMyMeetups(ctx, userID, limit, offset)
+		return s.inner.ListMyMeetups(ctx, userID, params)
 	}
-
 	key := s.cache.Key(
-		"meetups",
-		"mine",
+		"meetups", "mine",
 		"user", userID.String(),
 		"v", strconv.FormatInt(version, 10),
-		"limit", strconv.Itoa(limit),
-		"offset", strconv.Itoa(offset),
+		"scope", encodeMeetupPart(params.Scope),
+		"cursor", encodeMeetupPart(params.Cursor),
+		"limit", strconv.Itoa(params.Limit),
 	)
-
-	var meetups []Meetup
-	if err := s.cache.ReadThrough(ctx, key, myMeetupsTTL, &meetups, func(ctx context.Context, dest any) error {
-		loaded, err := s.inner.ListMyMeetups(ctx, userID, limit, offset)
+	var page CursorPage[Meetup]
+	if err := s.cache.ReadThrough(ctx, key, myMeetupsTTL, &page, func(ctx context.Context, dest any) error {
+		loaded, err := s.inner.ListMyMeetups(ctx, userID, params)
 		if err != nil {
 			return err
 		}
-		if err := s.inner.AttachAttendeePreviews(ctx, loaded, attendeePreviews); err != nil {
-			return err
-		}
-		*dest.(*[]Meetup) = loaded
+		*dest.(*CursorPage[Meetup]) = *loaded
 		return nil
 	}); err != nil {
 		return nil, err
 	}
-
-	return meetups, nil
-}
-
-func (s *cachedStore) AttachAttendeePreviews(ctx context.Context, meetups []Meetup, previewLimit int) error {
-	return s.inner.AttachAttendeePreviews(ctx, meetups, previewLimit)
+	return &page, nil
 }
 
 func (s *cachedStore) GetMeetup(ctx context.Context, meetupID, userID uuid.UUID) (*Meetup, error) {
@@ -111,14 +121,12 @@ func (s *cachedStore) GetMeetup(ctx context.Context, meetupID, userID uuid.UUID)
 	if err != nil {
 		return s.inner.GetMeetup(ctx, meetupID, userID)
 	}
-
 	key := s.cache.Key(
-		"meetup",
+		"meetups", "detail",
 		"id", meetupID.String(),
 		"viewer", userID.String(),
 		"v", strconv.FormatInt(version, 10),
 	)
-
 	var meetup Meetup
 	if err := s.cache.ReadThrough(ctx, key, meetupDetailTTL, &meetup, func(ctx context.Context, dest any) error {
 		loaded, err := s.inner.GetMeetup(ctx, meetupID, userID)
@@ -130,21 +138,42 @@ func (s *cachedStore) GetMeetup(ctx context.Context, meetupID, userID uuid.UUID)
 	}); err != nil {
 		return nil, err
 	}
-
 	return &meetup, nil
 }
 
-func (s *cachedStore) CreateMeetup(ctx context.Context, userID uuid.UUID, title string, description *string, city string, startsAt time.Time, capacity *int) (*Meetup, error) {
-	meetup, err := s.inner.CreateMeetup(ctx, userID, title, description, city, startsAt, capacity)
+func (s *cachedStore) CreateMeetup(ctx context.Context, userID uuid.UUID, input CreateMeetupInput) (*Meetup, error) {
+	meetup, err := s.inner.CreateMeetup(ctx, userID, input)
 	if err != nil {
 		return nil, err
 	}
+	s.bumpMeetupVersions(ctx, meetup.ID, userID)
+	return meetup, nil
+}
 
-	_ = s.cache.BumpVersions(ctx,
-		s.meetupsVersionKey(),
-		s.meetupVersionKey(meetup.ID),
-		s.myMeetupsVersionKey(userID),
-	)
+func (s *cachedStore) UpdateMeetup(ctx context.Context, meetupID, userID uuid.UUID, input UpdateMeetupInput) (*Meetup, error) {
+	meetup, err := s.inner.UpdateMeetup(ctx, meetupID, userID, input)
+	if err != nil {
+		return nil, err
+	}
+	s.bumpMeetupVersions(ctx, meetup.ID, userID)
+	return meetup, nil
+}
+
+func (s *cachedStore) PublishMeetup(ctx context.Context, meetupID, userID uuid.UUID) (*Meetup, error) {
+	meetup, err := s.inner.PublishMeetup(ctx, meetupID, userID)
+	if err != nil {
+		return nil, err
+	}
+	s.bumpMeetupVersions(ctx, meetup.ID, userID)
+	return meetup, nil
+}
+
+func (s *cachedStore) CancelMeetup(ctx context.Context, meetupID, userID uuid.UUID) (*Meetup, error) {
+	meetup, err := s.inner.CancelMeetup(ctx, meetupID, userID)
+	if err != nil {
+		return nil, err
+	}
+	s.bumpMeetupVersions(ctx, meetup.ID, userID)
 	return meetup, nil
 }
 
@@ -153,16 +182,13 @@ func (s *cachedStore) GetAttendees(ctx context.Context, meetupID uuid.UUID, limi
 	if err != nil {
 		return s.inner.GetAttendees(ctx, meetupID, limit, offset)
 	}
-
 	key := s.cache.Key(
-		"meetup",
-		"attendees",
+		"meetups", "attendees",
 		"id", meetupID.String(),
 		"v", strconv.FormatInt(version, 10),
 		"limit", strconv.Itoa(limit),
 		"offset", strconv.Itoa(offset),
 	)
-
 	var attendees []Attendee
 	if err := s.cache.ReadThrough(ctx, key, attendeesTTL, &attendees, func(ctx context.Context, dest any) error {
 		loaded, err := s.inner.GetAttendees(ctx, meetupID, limit, offset)
@@ -174,62 +200,59 @@ func (s *cachedStore) GetAttendees(ctx context.Context, meetupID uuid.UUID, limi
 	}); err != nil {
 		return nil, err
 	}
-
 	return attendees, nil
 }
 
-func (s *cachedStore) GetMeetupCapacity(ctx context.Context, meetupID uuid.UUID) (*int, int, error) {
-	return s.inner.GetMeetupCapacity(ctx, meetupID)
-}
-
-func (s *cachedStore) IsRSVPd(ctx context.Context, meetupID, userID uuid.UUID) (bool, error) {
-	return s.inner.IsRSVPd(ctx, meetupID, userID)
-}
-
-func (s *cachedStore) AddRSVP(ctx context.Context, meetupID, userID uuid.UUID) error {
-	if err := s.inner.AddRSVP(ctx, meetupID, userID); err != nil {
-		return err
+func (s *cachedStore) GetWaitlist(ctx context.Context, meetupID, userID uuid.UUID, limit, offset int) ([]Attendee, error) {
+	version, err := s.cache.GetVersion(ctx, s.meetupVersionKey(meetupID))
+	if err != nil {
+		return s.inner.GetWaitlist(ctx, meetupID, userID, limit, offset)
 	}
-
-	s.bumpMeetupVersions(ctx, meetupID)
-	return nil
-}
-
-func (s *cachedStore) RemoveRSVP(ctx context.Context, meetupID, userID uuid.UUID) error {
-	if err := s.inner.RemoveRSVP(ctx, meetupID, userID); err != nil {
-		return err
+	key := s.cache.Key(
+		"meetups", "waitlist",
+		"id", meetupID.String(),
+		"viewer", userID.String(),
+		"v", strconv.FormatInt(version, 10),
+		"limit", strconv.Itoa(limit),
+		"offset", strconv.Itoa(offset),
+	)
+	var attendees []Attendee
+	if err := s.cache.ReadThrough(ctx, key, attendeesTTL, &attendees, func(ctx context.Context, dest any) error {
+		loaded, err := s.inner.GetWaitlist(ctx, meetupID, userID, limit, offset)
+		if err != nil {
+			return err
+		}
+		*dest.(*[]Attendee) = loaded
+		return nil
+	}); err != nil {
+		return nil, err
 	}
-
-	s.bumpMeetupVersions(ctx, meetupID)
-	return nil
+	return attendees, nil
 }
 
-func (s *cachedStore) bumpMeetupVersions(ctx context.Context, meetupID uuid.UUID) {
-	keys := []string{
+func (s *cachedStore) ToggleRSVP(ctx context.Context, meetupID, userID uuid.UUID) (*RSVPResult, error) {
+	result, err := s.inner.ToggleRSVP(ctx, meetupID, userID)
+	if err != nil {
+		return nil, err
+	}
+	s.bumpMeetupVersions(ctx, meetupID, userID)
+	return result, nil
+}
+
+func (s *cachedStore) bumpMeetupVersions(ctx context.Context, meetupID, userID uuid.UUID) {
+	_ = s.cache.BumpVersions(ctx,
 		s.meetupsVersionKey(),
 		s.meetupVersionKey(meetupID),
-	}
-	if organizerID, ok := s.lookupOrganizerID(ctx, meetupID); ok {
-		keys = append(keys, s.myMeetupsVersionKey(organizerID))
-	}
-	_ = s.cache.BumpVersions(ctx, keys...)
-}
-
-func (s *cachedStore) lookupOrganizerID(ctx context.Context, meetupID uuid.UUID) (uuid.UUID, bool) {
-	lookup, ok := s.inner.(meetupOrganizerLookup)
-	if !ok {
-		return uuid.Nil, false
-	}
-
-	organizerID, err := lookup.GetMeetupOrganizerID(ctx, meetupID)
-	if err != nil {
-		return uuid.Nil, false
-	}
-	return organizerID, true
+		s.myMeetupsVersionKey(userID),
+	)
 }
 
 func (s *cachedStore) meetupsVersionKey() string {
 	return s.cache.Key("ver", "meetups")
+}
+
+func (s *cachedStore) categoriesVersionKey() string {
+	return s.cache.Key("ver", "meetups", "categories")
 }
 
 func (s *cachedStore) meetupVersionKey(meetupID uuid.UUID) string {
@@ -245,4 +268,36 @@ func encodeMeetupPart(value string) string {
 		return "none"
 	}
 	return url.QueryEscape(value)
+}
+
+func encodeOptionalTime(value *time.Time) string {
+	if value == nil {
+		return "none"
+	}
+	return value.UTC().Format(time.RFC3339)
+}
+
+func encodeOptionalInt(value *int) string {
+	if value == nil {
+		return "none"
+	}
+	return strconv.Itoa(*value)
+}
+
+func encodeIntSlice(values []int) string {
+	if len(values) == 0 {
+		return "none"
+	}
+	encoded := make([]string, 0, len(values))
+	for _, value := range values {
+		encoded = append(encoded, strconv.Itoa(value))
+	}
+	return url.QueryEscape(strings.Join(encoded, ","))
+}
+
+func encodeStringSlice(values []string) string {
+	if len(values) == 0 {
+		return "none"
+	}
+	return url.QueryEscape(strings.Join(values, ","))
 }

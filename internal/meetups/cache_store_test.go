@@ -15,30 +15,48 @@ type stubQuerier struct {
 
 var organizerID = uuid.New()
 
-func (s *stubQuerier) ListMeetups(context.Context, uuid.UUID, string, string, int, int) ([]Meetup, error) {
-	return nil, nil
+func (s *stubQuerier) ListCategories(context.Context) ([]MeetupCategory, error) {
+	return []MeetupCategory{{Slug: "coffee", Label: "Coffee", SortOrder: 1}}, nil
 }
 
-func (s *stubQuerier) ListMyMeetups(context.Context, uuid.UUID, int, int) ([]Meetup, error) {
-	return nil, nil
+func (s *stubQuerier) DiscoverMeetups(context.Context, uuid.UUID, DiscoverMeetupsParams) (*CursorPage[Meetup], error) {
+	return &CursorPage[Meetup]{Items: nil, Limit: 20}, nil
 }
 
-func (s *stubQuerier) AttachAttendeePreviews(context.Context, []Meetup, int) error {
-	return nil
+func (s *stubQuerier) ListMyMeetups(context.Context, uuid.UUID, MyMeetupsParams) (*CursorPage[Meetup], error) {
+	return &CursorPage[Meetup]{Items: nil, Limit: 20}, nil
 }
 
 func (s *stubQuerier) GetMeetup(_ context.Context, meetupID, userID uuid.UUID) (*Meetup, error) {
 	s.getMeetupCalls++
 	return &Meetup{
-		ID:          meetupID,
-		OrganizerID: organizerID,
-		Title:       "meetup",
-		StartsAt:    time.Unix(int64(s.getMeetupCalls), 0).UTC(),
-		IsAttending: userID == organizerID,
+		ID:                meetupID,
+		OrganizerID:       organizerID,
+		OrganizerUsername: "host",
+		Title:             "meetup",
+		CategorySlug:      "coffee",
+		CategoryLabel:     "Coffee",
+		City:              "Dublin",
+		StartsAt:          time.Unix(int64(s.getMeetupCalls), 0).UTC(),
+		IsAttending:       userID == organizerID,
+		UpdatedAt:         time.Unix(int64(s.getMeetupCalls), 0).UTC(),
+		CreatedAt:         time.Unix(0, 0).UTC(),
 	}, nil
 }
 
-func (s *stubQuerier) CreateMeetup(context.Context, uuid.UUID, string, *string, string, time.Time, *int) (*Meetup, error) {
+func (s *stubQuerier) CreateMeetup(context.Context, uuid.UUID, CreateMeetupInput) (*Meetup, error) {
+	return nil, nil
+}
+
+func (s *stubQuerier) UpdateMeetup(context.Context, uuid.UUID, uuid.UUID, UpdateMeetupInput) (*Meetup, error) {
+	return nil, nil
+}
+
+func (s *stubQuerier) PublishMeetup(context.Context, uuid.UUID, uuid.UUID) (*Meetup, error) {
+	return nil, nil
+}
+
+func (s *stubQuerier) CancelMeetup(context.Context, uuid.UUID, uuid.UUID) (*Meetup, error) {
 	return nil, nil
 }
 
@@ -46,24 +64,12 @@ func (s *stubQuerier) GetAttendees(context.Context, uuid.UUID, int, int) ([]Atte
 	return nil, nil
 }
 
-func (s *stubQuerier) GetMeetupCapacity(context.Context, uuid.UUID) (*int, int, error) {
-	return nil, 0, nil
+func (s *stubQuerier) GetWaitlist(context.Context, uuid.UUID, uuid.UUID, int, int) ([]Attendee, error) {
+	return nil, nil
 }
 
-func (s *stubQuerier) IsRSVPd(context.Context, uuid.UUID, uuid.UUID) (bool, error) {
-	return false, nil
-}
-
-func (s *stubQuerier) AddRSVP(context.Context, uuid.UUID, uuid.UUID) error {
-	return nil
-}
-
-func (s *stubQuerier) RemoveRSVP(context.Context, uuid.UUID, uuid.UUID) error {
-	return nil
-}
-
-func (s *stubQuerier) GetMeetupOrganizerID(context.Context, uuid.UUID) (uuid.UUID, error) {
-	return organizerID, nil
+func (s *stubQuerier) ToggleRSVP(context.Context, uuid.UUID, uuid.UUID) (*RSVPResult, error) {
+	return &RSVPResult{State: "going", Attending: true, AttendeeCount: 1}, nil
 }
 
 func TestCachedStoreInvalidatesMeetupDetailAfterRSVP(t *testing.T) {
@@ -91,8 +97,8 @@ func TestCachedStoreInvalidatesMeetupDetailAfterRSVP(t *testing.T) {
 		t.Fatalf("expected cached meetup detail to be identical before invalidation")
 	}
 
-	if err := cached.AddRSVP(context.Background(), meetupID, viewerID); err != nil {
-		t.Fatalf("AddRSVP: %v", err)
+	if _, err := cached.ToggleRSVP(context.Background(), meetupID, viewerID); err != nil {
+		t.Fatalf("ToggleRSVP: %v", err)
 	}
 
 	third, err := cached.GetMeetup(context.Background(), meetupID, viewerID)

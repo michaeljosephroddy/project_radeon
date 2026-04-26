@@ -90,7 +90,7 @@ func main() {
 
 	userHandler := user.NewHandler(userStore, uploader)
 	feedHandler := feed.NewHandler(feedStore, uploader)
-	meetupsHandler := meetups.NewHandler(meetups.NewPgStore(db))
+	meetupsHandler := meetups.NewHandler(meetups.NewPgStore(db), uploader)
 	notificationsService := notifications.NewService(
 		notifications.NewPgStore(db),
 		notifications.NewExpoProvider(nil),
@@ -99,7 +99,7 @@ func main() {
 	chatsHandler := chats.NewHandlerWithNotifier(chats.NewPgStore(db), notificationsService)
 	friendsHandler := friends.NewHandler(friendsStore)
 	feedHandler = feed.NewHandlerWithNotifier(feedStore, notificationsService, uploader)
-	meetupsHandler = meetups.NewHandler(meetupsStore)
+	meetupsHandler = meetups.NewHandler(meetupsStore, uploader)
 	supportHandler := support.NewHandler(supportStore)
 
 	r := chi.NewRouter()
@@ -134,6 +134,7 @@ func main() {
 	// ── Protected routes ───────────────────────────────────────────
 	r.Group(func(r chi.Router) {
 		r.Use(middleware.Authenticate)
+		r.Use(middleware.EnsureCurrentUserExists(middleware.NewPGUserChecker(db)))
 		r.Use(middleware.RateLimitUser)
 
 		// Feed
@@ -168,11 +169,17 @@ func main() {
 		r.Delete("/users/{id}/friend", friendsHandler.RemoveFriend)
 
 		// Meetups
+		r.Get("/meetups/categories", meetupsHandler.ListCategories)
 		r.Get("/meetups", meetupsHandler.ListMeetups)
 		r.Post("/meetups", meetupsHandler.CreateMeetup)
+		r.Post("/meetups/images", meetupsHandler.UploadCoverImage)
 		r.Get("/meetups/{id}", meetupsHandler.GetMeetup)
+		r.Patch("/meetups/{id}", meetupsHandler.UpdateMeetup)
+		r.Post("/meetups/{id}/publish", meetupsHandler.PublishMeetup)
+		r.Post("/meetups/{id}/cancel", meetupsHandler.CancelMeetup)
 		r.Post("/meetups/{id}/rsvp", meetupsHandler.RSVP)
 		r.Get("/meetups/{id}/attendees", meetupsHandler.GetAttendees)
+		r.Get("/meetups/{id}/waitlist", meetupsHandler.GetWaitlist)
 
 		// Support
 		r.Get("/support/me", supportHandler.GetMySupportProfile)
