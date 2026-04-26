@@ -2,6 +2,7 @@ package user
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -18,10 +19,11 @@ import (
 type mockQuerier struct {
 	getUser                 func(ctx context.Context, viewerID, userID uuid.UUID) (*User, error)
 	usernameExistsForOthers func(ctx context.Context, username string, userID uuid.UUID) (bool, error)
-	updateUser              func(ctx context.Context, userID uuid.UUID, username, city, country, bio *string, soberSince *time.Time, replaceSoberSince bool, interests []string, replaceInterests bool, lat, lng *float64) error
+	updateUser              func(ctx context.Context, userID uuid.UUID, username, city, country, gender, bio *string, soberSince *time.Time, replaceSoberSince bool, birthDate *time.Time, replaceBirthDate bool, interests []string, replaceInterests bool, lat, lng *float64) error
 	updateAvatarURL         func(ctx context.Context, userID uuid.UUID, avatarURL string) error
 	updateBannerURL         func(ctx context.Context, userID uuid.UUID, bannerURL string) error
-	discoverUsers           func(ctx context.Context, currentUserID uuid.UUID, city, query string, lat, lng *float64, limit, offset int) ([]User, error)
+	discoverUsers           func(ctx context.Context, params DiscoverUsersParams) ([]User, error)
+	countDiscoverUsers      func(ctx context.Context, params DiscoverUsersParams) (int, error)
 	listInterests           func(ctx context.Context) ([]string, error)
 }
 
@@ -37,9 +39,9 @@ func (m *mockQuerier) UsernameExistsForOthers(ctx context.Context, uname string,
 	}
 	return false, nil
 }
-func (m *mockQuerier) UpdateUser(ctx context.Context, userID uuid.UUID, username, city, country, bio *string, soberSince *time.Time, replaceSoberSince bool, interests []string, replaceInterests bool, lat, lng *float64) error {
+func (m *mockQuerier) UpdateUser(ctx context.Context, userID uuid.UUID, username, city, country, gender, bio *string, soberSince *time.Time, replaceSoberSince bool, birthDate *time.Time, replaceBirthDate bool, interests []string, replaceInterests bool, lat, lng *float64) error {
 	if m.updateUser != nil {
-		return m.updateUser(ctx, userID, username, city, country, bio, soberSince, replaceSoberSince, interests, replaceInterests, lat, lng)
+		return m.updateUser(ctx, userID, username, city, country, gender, bio, soberSince, replaceSoberSince, birthDate, replaceBirthDate, interests, replaceInterests, lat, lng)
 	}
 	return nil
 }
@@ -55,11 +57,18 @@ func (m *mockQuerier) UpdateBannerURL(ctx context.Context, userID uuid.UUID, ban
 	}
 	return nil
 }
-func (m *mockQuerier) DiscoverUsers(ctx context.Context, currentUserID uuid.UUID, city, query string, lat, lng *float64, limit, offset int) ([]User, error) {
+func (m *mockQuerier) DiscoverUsers(ctx context.Context, params DiscoverUsersParams) ([]User, error) {
 	if m.discoverUsers != nil {
-		return m.discoverUsers(ctx, currentUserID, city, query, lat, lng, limit, offset)
+		return m.discoverUsers(ctx, params)
 	}
 	return nil, nil
+}
+
+func (m *mockQuerier) CountDiscoverUsers(ctx context.Context, params DiscoverUsersParams) (int, error) {
+	if m.countDiscoverUsers != nil {
+		return m.countDiscoverUsers(ctx, params)
+	}
+	return 0, nil
 }
 
 func (m *mockQuerier) ListInterests(ctx context.Context) ([]string, error) {
@@ -102,7 +111,17 @@ func withURLParam(r *http.Request, key, value string) *http.Request {
 // ── GetMe ─────────────────────────────────────────────────────────────────────
 
 func TestGetMeSuccess(t *testing.T) {
-	h := NewHandler(&mockQuerier{}, &mockUploader{})
+	h := NewHandler(&mockQuerier{
+		getUser: func(_ context.Context, _, userID uuid.UUID) (*User, error) {
+			return &User{
+				ID:                 userID,
+				Username:           "testuser",
+				IsPlus:             true,
+				SubscriptionTier:   "plus",
+				SubscriptionStatus: "active",
+			}, nil
+		},
+	}, &mockUploader{})
 	req := withUserID(httptest.NewRequest(http.MethodGet, "/users/me", nil), fixedUser)
 	rec := httptest.NewRecorder()
 
@@ -110,6 +129,21 @@ func TestGetMeSuccess(t *testing.T) {
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	var body struct {
+		Data User `json:"data"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("Decode() error = %v", err)
+	}
+	if !body.Data.IsPlus {
+		t.Fatal("expected is_plus to be true")
+	}
+	if body.Data.SubscriptionTier != "plus" {
+		t.Fatalf("subscription_tier = %q, want plus", body.Data.SubscriptionTier)
+	}
+	if body.Data.SubscriptionStatus != "active" {
+		t.Fatalf("subscription_status = %q, want active", body.Data.SubscriptionStatus)
 	}
 }
 
@@ -228,7 +262,7 @@ func TestUpdateMeSuccess(t *testing.T) {
 
 func TestUpdateMeDBError(t *testing.T) {
 	h := NewHandler(&mockQuerier{
-		updateUser: func(_ context.Context, _ uuid.UUID, _, _, _, _ *string, _ *time.Time, _ bool, _ []string, _ bool, _, _ *float64) error {
+		updateUser: func(_ context.Context, _ uuid.UUID, _, _, _, _, _ *string, _ *time.Time, _ bool, _ *time.Time, _ bool, _ []string, _ bool, _, _ *float64) error {
 			return errors.New("db error")
 		},
 	}, &mockUploader{})
@@ -246,7 +280,7 @@ func TestUpdateMePersistsSoberSince(t *testing.T) {
 	var gotSoberSince *time.Time
 	var gotReplace bool
 	h := NewHandler(&mockQuerier{
-		updateUser: func(_ context.Context, _ uuid.UUID, _, _, _, _ *string, soberSince *time.Time, replaceSoberSince bool, _ []string, _ bool, _, _ *float64) error {
+		updateUser: func(_ context.Context, _ uuid.UUID, _, _, _, _, _ *string, soberSince *time.Time, replaceSoberSince bool, _ *time.Time, _ bool, _ []string, _ bool, _, _ *float64) error {
 			gotSoberSince = soberSince
 			gotReplace = replaceSoberSince
 			return nil
@@ -292,6 +326,61 @@ func TestUpdateMeRejectsLongBio(t *testing.T) {
 	}
 }
 
+func TestUpdateMeRejectsInvalidGender(t *testing.T) {
+	h := NewHandler(&mockQuerier{}, &mockUploader{})
+	req := withUserID(httptest.NewRequest(http.MethodPatch, "/users/me", strings.NewReader(`{"gender":"robot"}`)), fixedUser)
+	rec := httptest.NewRecorder()
+
+	h.UpdateMe(rec, req)
+
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnprocessableEntity)
+	}
+}
+
+func TestUpdateMePersistsGenderAndBirthDate(t *testing.T) {
+	var gotGender *string
+	var gotBirthDate *time.Time
+	var gotReplaceBirthDate bool
+	h := NewHandler(&mockQuerier{
+		updateUser: func(_ context.Context, _ uuid.UUID, _, _, _, gender, _ *string, _ *time.Time, _ bool, birthDate *time.Time, replaceBirthDate bool, _ []string, _ bool, _, _ *float64) error {
+			gotGender = gender
+			gotBirthDate = birthDate
+			gotReplaceBirthDate = replaceBirthDate
+			return nil
+		},
+	}, &mockUploader{})
+	req := withUserID(httptest.NewRequest(http.MethodPatch, "/users/me", strings.NewReader(`{"gender":"women","birth_date":"1990-05-14"}`)), fixedUser)
+	rec := httptest.NewRecorder()
+
+	h.UpdateMe(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if gotGender == nil || *gotGender != "woman" {
+		t.Fatalf("unexpected gender value: %v", gotGender)
+	}
+	if !gotReplaceBirthDate {
+		t.Fatal("expected birth_date replacement flag to be true")
+	}
+	if gotBirthDate == nil || gotBirthDate.Format("2006-01-02") != "1990-05-14" {
+		t.Fatalf("unexpected birth_date value: %v", gotBirthDate)
+	}
+}
+
+func TestUpdateMeRejectsInvalidBirthDate(t *testing.T) {
+	h := NewHandler(&mockQuerier{}, &mockUploader{})
+	req := withUserID(httptest.NewRequest(http.MethodPatch, "/users/me", strings.NewReader(`{"birth_date":"14-05-1990"}`)), fixedUser)
+	rec := httptest.NewRecorder()
+
+	h.UpdateMe(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+}
+
 func TestUpdateMeRejectsInvalidInterest(t *testing.T) {
 	h := NewHandler(&mockQuerier{}, &mockUploader{})
 	req := withUserID(httptest.NewRequest(http.MethodPatch, "/users/me", strings.NewReader(`{"interests":["Coffee","Clubbing"]}`)), fixedUser)
@@ -332,7 +421,7 @@ func TestDiscoverSuccess(t *testing.T) {
 
 func TestDiscoverDBError(t *testing.T) {
 	h := NewHandler(&mockQuerier{
-		discoverUsers: func(_ context.Context, _ uuid.UUID, _, _ string, _, _ *float64, _, _ int) ([]User, error) {
+		discoverUsers: func(_ context.Context, _ DiscoverUsersParams) ([]User, error) {
 			return nil, errors.New("db error")
 		},
 	}, &mockUploader{})
@@ -343,5 +432,213 @@ func TestDiscoverDBError(t *testing.T) {
 
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusInternalServerError)
+	}
+}
+
+func TestDiscoverParsesAdvancedFilters(t *testing.T) {
+	var got DiscoverUsersParams
+	h := NewHandler(&mockQuerier{
+		getUser: func(_ context.Context, _, userID uuid.UUID) (*User, error) {
+			return &User{
+				ID:                 userID,
+				Username:           "testuser",
+				IsPlus:             true,
+				SubscriptionTier:   "plus",
+				SubscriptionStatus: "active",
+			}, nil
+		},
+		discoverUsers: func(_ context.Context, params DiscoverUsersParams) ([]User, error) {
+			got = params
+			return []User{}, nil
+		},
+	}, &mockUploader{})
+	req := withUserID(httptest.NewRequest(http.MethodGet, "/users/discover?q=hello&gender=woman&age_min=25&age_max=40&distance_km=30&sobriety=years_1&interest=Coffee&interest=Hiking&lat=53.34&lng=-6.26", nil), fixedUser)
+	rec := httptest.NewRecorder()
+
+	h.Discover(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if got.Query != "hello" {
+		t.Fatalf("query = %q, want hello", got.Query)
+	}
+	if got.Gender != "woman" {
+		t.Fatalf("gender = %q, want woman", got.Gender)
+	}
+	if got.Sobriety != "years_1" {
+		t.Fatalf("sobriety = %q, want years_1", got.Sobriety)
+	}
+	if got.AgeMin == nil || *got.AgeMin != 25 {
+		t.Fatalf("ageMin = %v, want 25", got.AgeMin)
+	}
+	if got.AgeMax == nil || *got.AgeMax != 40 {
+		t.Fatalf("ageMax = %v, want 40", got.AgeMax)
+	}
+	if got.DistanceKm == nil || *got.DistanceKm != 30 {
+		t.Fatalf("distanceKm = %v, want 30", got.DistanceKm)
+	}
+	if len(got.Interests) != 2 || got.Interests[0] != "Coffee" || got.Interests[1] != "Hiking" {
+		t.Fatalf("interests = %v, want [Coffee Hiking]", got.Interests)
+	}
+	if got.Lat == nil || *got.Lat != 53.34 {
+		t.Fatalf("lat = %v, want 53.34", got.Lat)
+	}
+	if got.Lng == nil || *got.Lng != -6.26 {
+		t.Fatalf("lng = %v, want -6.26", got.Lng)
+	}
+}
+
+func TestDiscoverIgnoresAdvancedFiltersWithoutPlus(t *testing.T) {
+	var got DiscoverUsersParams
+	h := NewHandler(&mockQuerier{
+		getUser: func(_ context.Context, _, userID uuid.UUID) (*User, error) {
+			return &User{
+				ID:                 userID,
+				Username:           "testuser",
+				SubscriptionTier:   "free",
+				SubscriptionStatus: "inactive",
+			}, nil
+		},
+		discoverUsers: func(_ context.Context, params DiscoverUsersParams) ([]User, error) {
+			got = params
+			return []User{}, nil
+		},
+	}, &mockUploader{})
+	req := withUserID(httptest.NewRequest(http.MethodGet, "/users/discover?q=hello&gender=robot&age_min=40&age_max=25&distance_km=30&sobriety=not-real&lat=53.34&lng=-6.26", nil), fixedUser)
+	rec := httptest.NewRecorder()
+
+	h.Discover(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if got.Query != "hello" {
+		t.Fatalf("query = %q, want hello", got.Query)
+	}
+	if got.Gender != "" {
+		t.Fatalf("gender = %q, want empty", got.Gender)
+	}
+	if got.Sobriety != "" {
+		t.Fatalf("sobriety = %q, want empty", got.Sobriety)
+	}
+	if got.AgeMin != nil {
+		t.Fatalf("ageMin = %v, want nil", got.AgeMin)
+	}
+	if got.AgeMax != nil {
+		t.Fatalf("ageMax = %v, want nil", got.AgeMax)
+	}
+	if got.DistanceKm != nil {
+		t.Fatalf("distanceKm = %v, want nil", got.DistanceKm)
+	}
+	if got.Lat == nil || *got.Lat != 53.34 {
+		t.Fatalf("lat = %v, want 53.34", got.Lat)
+	}
+	if got.Lng == nil || *got.Lng != -6.26 {
+		t.Fatalf("lng = %v, want -6.26", got.Lng)
+	}
+}
+
+func TestDiscoverRejectsInvalidAgeRange(t *testing.T) {
+	h := NewHandler(&mockQuerier{
+		getUser: func(_ context.Context, _, userID uuid.UUID) (*User, error) {
+			return &User{
+				ID:                 userID,
+				Username:           "testuser",
+				IsPlus:             true,
+				SubscriptionTier:   "plus",
+				SubscriptionStatus: "active",
+			}, nil
+		},
+	}, &mockUploader{})
+	req := withUserID(httptest.NewRequest(http.MethodGet, "/users/discover?age_min=40&age_max=25", nil), fixedUser)
+	rec := httptest.NewRecorder()
+
+	h.Discover(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+}
+
+func TestDiscoverPreviewBuildsBroadenedResponse(t *testing.T) {
+	h := NewHandler(&mockQuerier{
+		countDiscoverUsers: func(_ context.Context, params DiscoverUsersParams) (int, error) {
+			if len(params.Interests) > 0 || params.Sobriety != "" {
+				return 0, nil
+			}
+			return 14, nil
+		},
+	}, &mockUploader{})
+	req := withUserID(httptest.NewRequest(http.MethodGet, "/users/discover/preview?gender=woman&distance_km=25&sobriety=years_1&interest=Coffee", nil), fixedUser)
+	rec := httptest.NewRecorder()
+
+	h.DiscoverPreview(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	var body struct {
+		Data DiscoverPreviewResponse `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if body.Data.ExactCount != 0 {
+		t.Fatalf("exact_count = %d, want 0", body.Data.ExactCount)
+	}
+	if !body.Data.BroadenedAvailable {
+		t.Fatalf("broadened_available = false, want true")
+	}
+	if body.Data.BroadenedCount == nil || *body.Data.BroadenedCount != 14 {
+		t.Fatalf("broadened_count = %v, want 14", body.Data.BroadenedCount)
+	}
+	if len(body.Data.RelaxedFilters) == 0 {
+		t.Fatalf("relaxed_filters = %v, want non-empty", body.Data.RelaxedFilters)
+	}
+	if body.Data.EffectiveFilters.Sobriety != "" {
+		t.Fatalf("effective sobriety = %q, want empty after broadening", body.Data.EffectiveFilters.Sobriety)
+	}
+	if len(body.Data.EffectiveFilters.Interests) != 0 {
+		t.Fatalf("effective interests = %v, want empty after broadening", body.Data.EffectiveFilters.Interests)
+	}
+}
+
+func TestDiscoverPreviewKeepsExactMatchesExact(t *testing.T) {
+	h := NewHandler(&mockQuerier{
+		countDiscoverUsers: func(_ context.Context, params DiscoverUsersParams) (int, error) {
+			if len(params.Interests) > 0 || params.Sobriety != "" {
+				return 1, nil
+			}
+			return 12, nil
+		},
+	}, &mockUploader{})
+	req := withUserID(httptest.NewRequest(http.MethodGet, "/users/discover/preview?distance_km=25&sobriety=years_1&interest=Coffee", nil), fixedUser)
+	rec := httptest.NewRecorder()
+
+	h.DiscoverPreview(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	var body struct {
+		Data DiscoverPreviewResponse `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if body.Data.ExactCount != 1 {
+		t.Fatalf("exact_count = %d, want 1", body.Data.ExactCount)
+	}
+	if body.Data.BroadenedAvailable {
+		t.Fatalf("broadened_available = true, want false")
+	}
+	if body.Data.BroadenedCount != nil {
+		t.Fatalf("broadened_count = %v, want nil", body.Data.BroadenedCount)
+	}
+	if len(body.Data.RelaxedFilters) != 0 {
+		t.Fatalf("relaxed_filters = %v, want empty", body.Data.RelaxedFilters)
 	}
 }

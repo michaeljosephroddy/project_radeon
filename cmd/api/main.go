@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -26,6 +27,7 @@ import (
 	"github.com/project_radeon/api/internal/notifications"
 	"github.com/project_radeon/api/internal/support"
 	"github.com/project_radeon/api/internal/user"
+	"github.com/project_radeon/api/pkg/cache"
 	"github.com/project_radeon/api/pkg/database"
 	"github.com/project_radeon/api/pkg/middleware"
 	"github.com/project_radeon/api/pkg/response"
@@ -59,9 +61,33 @@ func main() {
 	s3Client := s3.NewFromConfig(awsCfg)
 	uploader := storage.NewS3Uploader(s3Client, awsBucket, awsRegion)
 
+	cacheEnabled := parseBoolEnv("CACHE_ENABLED")
+	cacheStore, err := cache.New(context.Background(), cache.Config{
+		Enabled:  cacheEnabled,
+		Addr:     strings.TrimSpace(os.Getenv("REDIS_ADDR")),
+		Password: os.Getenv("REDIS_PASSWORD"),
+		DB:       parseIntEnv("REDIS_DB"),
+		TLS:      parseBoolEnv("REDIS_TLS"),
+		Prefix:   strings.TrimSpace(os.Getenv("REDIS_PREFIX")),
+	})
+	if err != nil {
+		log.Fatalf("cache initialization failed: %v", err)
+	}
+	if cacheStore.Enabled() {
+		log.Println("connected to redis cache")
+	} else {
+		log.Println("redis cache disabled")
+	}
+
 	authHandler := auth.NewHandler(auth.NewPgStore(db))
-	userHandler := user.NewHandler(user.NewPgStore(db), uploader)
-	feedHandler := feed.NewHandler(feed.NewPgStore(db), uploader)
+	userStore := user.NewCachedStore(user.NewPgStore(db), cacheStore)
+	feedStore := feed.NewCachedStore(feed.NewPgStore(db), cacheStore)
+	meetupsStore := meetups.NewCachedStore(meetups.NewPgStore(db), cacheStore)
+	supportStore := support.NewCachedStore(support.NewPgStore(db), cacheStore)
+	friendsStore := friends.NewCachedStore(friends.NewPgStore(db), cacheStore)
+
+	userHandler := user.NewHandler(userStore, uploader)
+	feedHandler := feed.NewHandler(feedStore, uploader)
 	meetupsHandler := meetups.NewHandler(meetups.NewPgStore(db))
 	notificationsService := notifications.NewService(
 		notifications.NewPgStore(db),
@@ -69,9 +95,10 @@ func main() {
 	)
 	notificationsHandler := notifications.NewHandler(notificationsService)
 	chatsHandler := chats.NewHandlerWithNotifier(chats.NewPgStore(db), notificationsService)
-	friendsHandler := friends.NewHandler(friends.NewPgStore(db))
-	feedHandler = feed.NewHandlerWithNotifier(feed.NewPgStore(db), notificationsService, uploader)
-	supportHandler := support.NewHandler(support.NewPgStore(db))
+	friendsHandler := friends.NewHandler(friendsStore)
+	feedHandler = feed.NewHandlerWithNotifier(feedStore, notificationsService, uploader)
+	meetupsHandler = meetups.NewHandler(meetupsStore)
+	supportHandler := support.NewHandler(supportStore)
 
 	r := chi.NewRouter()
 
@@ -129,6 +156,7 @@ func main() {
 		r.Get("/users/me/friends", friendsHandler.ListFriends)
 		r.Get("/users/me/friend-requests/incoming", friendsHandler.ListIncomingRequests)
 		r.Get("/users/me/friend-requests/outgoing", friendsHandler.ListOutgoingRequests)
+		r.Get("/users/discover/preview", userHandler.DiscoverPreview)
 		r.Get("/users/discover", userHandler.Discover)
 		r.Get("/users/{id}/posts", feedHandler.GetUserPosts)
 		r.Get("/users/{id}", userHandler.GetUser)
@@ -213,4 +241,30 @@ func main() {
 		log.Fatalf("server error: %v", err)
 	}
 	log.Println("server stopped")
+}
+
+func parseBoolEnv(key string) bool {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return false
+	}
+
+	enabled, err := strconv.ParseBool(value)
+	if err != nil {
+		return false
+	}
+	return enabled
+}
+
+func parseIntEnv(key string) int {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return 0
+	}
+
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		return 0
+	}
+	return parsed
 }

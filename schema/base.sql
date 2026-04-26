@@ -7,16 +7,29 @@ CREATE TABLE IF NOT EXISTS users (
     email TEXT NOT NULL,
     password_hash TEXT NOT NULL DEFAULT '',
     avatar_url TEXT,
+    banner_url TEXT,
     city TEXT,
     country TEXT,
     bio TEXT,
+    gender TEXT,
+    birth_date DATE,
     sober_since DATE,
+    subscription_tier TEXT NOT NULL DEFAULT 'free',
+    subscription_status TEXT NOT NULL DEFAULT 'inactive',
     is_available_to_support BOOLEAN NOT NULL DEFAULT FALSE,
     support_modes TEXT[] NOT NULL DEFAULT '{}',
     support_updated_at TIMESTAMPTZ,
     friend_count INT NOT NULL DEFAULT 0,
+    lat DOUBLE PRECISION,
+    lng DOUBLE PRECISION,
+    current_lat DOUBLE PRECISION,
+    current_lng DOUBLE PRECISION,
+    current_city TEXT,
+    location_updated_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    CONSTRAINT users_username_format_chk CHECK (username ~ '^[a-z0-9._]{3,20}$')
+    CONSTRAINT users_username_format_chk CHECK (username ~ '^[a-z0-9._]{3,20}$'),
+    CONSTRAINT users_subscription_tier_chk CHECK (subscription_tier IN ('free', 'plus')),
+    CONSTRAINT users_subscription_status_chk CHECK (subscription_status IN ('inactive', 'active', 'canceled', 'expired'))
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS users_email_unique_idx

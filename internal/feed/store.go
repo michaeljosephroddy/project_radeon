@@ -142,6 +142,15 @@ func (s *pgStore) DeletePost(ctx context.Context, postID, userID uuid.UUID) erro
 	return nil
 }
 
+func (s *pgStore) GetPostAuthorID(ctx context.Context, postID uuid.UUID) (uuid.UUID, error) {
+	var userID uuid.UUID
+	err := s.pool.QueryRow(ctx, `SELECT user_id FROM posts WHERE id = $1`, postID).Scan(&userID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return uuid.Nil, ErrNotFound
+	}
+	return userID, err
+}
+
 func (s *pgStore) ListReactions(ctx context.Context, postID uuid.UUID, limit, offset int) ([]Reaction, error) {
 	rows, err := s.pool.Query(ctx,
 		`SELECT
