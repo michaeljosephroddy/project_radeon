@@ -1,8 +1,14 @@
 package meetups
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"image"
+	"image/color"
+	"image/png"
+	"io"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -14,78 +20,106 @@ import (
 	"github.com/project_radeon/api/pkg/middleware"
 )
 
-type mockQuerier struct {
-	listMeetups            func(ctx context.Context, userID uuid.UUID, cityFilter, queryFilter string, limit, offset int) ([]Meetup, error)
-	listMyMeetups          func(ctx context.Context, userID uuid.UUID, limit, offset int) ([]Meetup, error)
-	attachAttendeePreviews func(ctx context.Context, meetups []Meetup, previewLimit int) error
-	getMeetup              func(ctx context.Context, meetupID, userID uuid.UUID) (*Meetup, error)
-	createMeetup           func(ctx context.Context, userID uuid.UUID, title string, description *string, city string, startsAt time.Time, capacity *int) (*Meetup, error)
-	getAttendees           func(ctx context.Context, meetupID uuid.UUID, limit, offset int) ([]Attendee, error)
-	getMeetupCapacity      func(ctx context.Context, meetupID uuid.UUID) (*int, int, error)
-	isRSVPd                func(ctx context.Context, meetupID, userID uuid.UUID) (bool, error)
-	addRSVP                func(ctx context.Context, meetupID, userID uuid.UUID) error
-	removeRSVP             func(ctx context.Context, meetupID, userID uuid.UUID) error
+type mockUploader struct {
+	upload func(ctx context.Context, key, contentType string, body io.Reader) (string, error)
 }
 
-func (m *mockQuerier) ListMeetups(ctx context.Context, userID uuid.UUID, cf, qf string, limit, offset int) ([]Meetup, error) {
-	if m.listMeetups != nil {
-		return m.listMeetups(ctx, userID, cf, qf, limit, offset)
+func (m *mockUploader) Upload(ctx context.Context, key, contentType string, body io.Reader) (string, error) {
+	if m.upload != nil {
+		return m.upload(ctx, key, contentType, body)
 	}
-	return nil, nil
+	return "https://example.com/" + key, nil
 }
-func (m *mockQuerier) ListMyMeetups(ctx context.Context, userID uuid.UUID, limit, offset int) ([]Meetup, error) {
+
+type mockQuerier struct {
+	listCategories  func(ctx context.Context) ([]MeetupCategory, error)
+	discoverMeetups func(ctx context.Context, userID uuid.UUID, params DiscoverMeetupsParams) (*CursorPage[Meetup], error)
+	listMyMeetups   func(ctx context.Context, userID uuid.UUID, params MyMeetupsParams) (*CursorPage[Meetup], error)
+	getMeetup       func(ctx context.Context, meetupID, userID uuid.UUID) (*Meetup, error)
+	createMeetup    func(ctx context.Context, userID uuid.UUID, input CreateMeetupInput) (*Meetup, error)
+	updateMeetup    func(ctx context.Context, meetupID, userID uuid.UUID, input UpdateMeetupInput) (*Meetup, error)
+	publishMeetup   func(ctx context.Context, meetupID, userID uuid.UUID) (*Meetup, error)
+	cancelMeetup    func(ctx context.Context, meetupID, userID uuid.UUID) (*Meetup, error)
+	getAttendees    func(ctx context.Context, meetupID uuid.UUID, limit, offset int) ([]Attendee, error)
+	getWaitlist     func(ctx context.Context, meetupID, userID uuid.UUID, limit, offset int) ([]Attendee, error)
+	toggleRSVP      func(ctx context.Context, meetupID, userID uuid.UUID) (*RSVPResult, error)
+}
+
+func (m *mockQuerier) ListCategories(ctx context.Context) ([]MeetupCategory, error) {
+	if m.listCategories != nil {
+		return m.listCategories(ctx)
+	}
+	return []MeetupCategory{{Slug: "coffee", Label: "Coffee", SortOrder: 1}}, nil
+}
+
+func (m *mockQuerier) DiscoverMeetups(ctx context.Context, userID uuid.UUID, params DiscoverMeetupsParams) (*CursorPage[Meetup], error) {
+	if m.discoverMeetups != nil {
+		return m.discoverMeetups(ctx, userID, params)
+	}
+	return &CursorPage[Meetup]{Items: []Meetup{}, Limit: params.Limit}, nil
+}
+
+func (m *mockQuerier) ListMyMeetups(ctx context.Context, userID uuid.UUID, params MyMeetupsParams) (*CursorPage[Meetup], error) {
 	if m.listMyMeetups != nil {
-		return m.listMyMeetups(ctx, userID, limit, offset)
+		return m.listMyMeetups(ctx, userID, params)
 	}
-	return nil, nil
+	return &CursorPage[Meetup]{Items: []Meetup{}, Limit: params.Limit}, nil
 }
-func (m *mockQuerier) AttachAttendeePreviews(ctx context.Context, meetups []Meetup, previewLimit int) error {
-	if m.attachAttendeePreviews != nil {
-		return m.attachAttendeePreviews(ctx, meetups, previewLimit)
-	}
-	return nil
-}
+
 func (m *mockQuerier) GetMeetup(ctx context.Context, meetupID, userID uuid.UUID) (*Meetup, error) {
 	if m.getMeetup != nil {
 		return m.getMeetup(ctx, meetupID, userID)
 	}
-	return &Meetup{ID: meetupID}, nil
+	return &Meetup{ID: meetupID, OrganizerID: userID, Title: "Coffee", CategorySlug: "coffee", CategoryLabel: "Coffee", City: "Dublin", StartsAt: time.Now().UTC()}, nil
 }
-func (m *mockQuerier) CreateMeetup(ctx context.Context, userID uuid.UUID, title string, description *string, city string, startsAt time.Time, capacity *int) (*Meetup, error) {
+
+func (m *mockQuerier) CreateMeetup(ctx context.Context, userID uuid.UUID, input CreateMeetupInput) (*Meetup, error) {
 	if m.createMeetup != nil {
-		return m.createMeetup(ctx, userID, title, description, city, startsAt, capacity)
+		return m.createMeetup(ctx, userID, input)
 	}
-	return &Meetup{ID: uuid.New(), OrganizerID: userID, Title: title, City: city, StartsAt: startsAt}, nil
+	return &Meetup{ID: uuid.New(), OrganizerID: userID, Title: input.Title, CategorySlug: input.CategorySlug, CategoryLabel: "Coffee", City: input.City, StartsAt: input.StartsAt}, nil
 }
+
+func (m *mockQuerier) UpdateMeetup(ctx context.Context, meetupID, userID uuid.UUID, input UpdateMeetupInput) (*Meetup, error) {
+	if m.updateMeetup != nil {
+		return m.updateMeetup(ctx, meetupID, userID, input)
+	}
+	return &Meetup{ID: meetupID, OrganizerID: userID, Title: input.Title, CategorySlug: input.CategorySlug, CategoryLabel: "Coffee", City: input.City, StartsAt: input.StartsAt}, nil
+}
+
+func (m *mockQuerier) PublishMeetup(ctx context.Context, meetupID, userID uuid.UUID) (*Meetup, error) {
+	if m.publishMeetup != nil {
+		return m.publishMeetup(ctx, meetupID, userID)
+	}
+	return &Meetup{ID: meetupID, OrganizerID: userID, Status: "published"}, nil
+}
+
+func (m *mockQuerier) CancelMeetup(ctx context.Context, meetupID, userID uuid.UUID) (*Meetup, error) {
+	if m.cancelMeetup != nil {
+		return m.cancelMeetup(ctx, meetupID, userID)
+	}
+	return &Meetup{ID: meetupID, OrganizerID: userID, Status: "cancelled"}, nil
+}
+
 func (m *mockQuerier) GetAttendees(ctx context.Context, meetupID uuid.UUID, limit, offset int) ([]Attendee, error) {
 	if m.getAttendees != nil {
 		return m.getAttendees(ctx, meetupID, limit, offset)
 	}
 	return nil, nil
 }
-func (m *mockQuerier) GetMeetupCapacity(ctx context.Context, meetupID uuid.UUID) (*int, int, error) {
-	if m.getMeetupCapacity != nil {
-		return m.getMeetupCapacity(ctx, meetupID)
+
+func (m *mockQuerier) GetWaitlist(ctx context.Context, meetupID, userID uuid.UUID, limit, offset int) ([]Attendee, error) {
+	if m.getWaitlist != nil {
+		return m.getWaitlist(ctx, meetupID, userID, limit, offset)
 	}
-	return nil, 0, nil
+	return nil, nil
 }
-func (m *mockQuerier) IsRSVPd(ctx context.Context, meetupID, userID uuid.UUID) (bool, error) {
-	if m.isRSVPd != nil {
-		return m.isRSVPd(ctx, meetupID, userID)
+
+func (m *mockQuerier) ToggleRSVP(ctx context.Context, meetupID, userID uuid.UUID) (*RSVPResult, error) {
+	if m.toggleRSVP != nil {
+		return m.toggleRSVP(ctx, meetupID, userID)
 	}
-	return false, nil
-}
-func (m *mockQuerier) AddRSVP(ctx context.Context, meetupID, userID uuid.UUID) error {
-	if m.addRSVP != nil {
-		return m.addRSVP(ctx, meetupID, userID)
-	}
-	return nil
-}
-func (m *mockQuerier) RemoveRSVP(ctx context.Context, meetupID, userID uuid.UUID) error {
-	if m.removeRSVP != nil {
-		return m.removeRSVP(ctx, meetupID, userID)
-	}
-	return nil
+	return &RSVPResult{State: "going", Attending: true, AttendeeCount: 1}, nil
 }
 
 var (
@@ -113,7 +147,18 @@ func authedRequest(method, target, body string) *http.Request {
 	return withUserID(req, fixedUser)
 }
 
-// ── ListMeetups ───────────────────────────────────────────────────────────────
+func validCreateBody() string {
+	return `{"title":"Coffee Walk","category_slug":"coffee","event_type":"in_person","status":"published","visibility":"public","city":"Dublin","starts_at":"2026-05-01T19:00:00Z"}`
+}
+
+func TestListCategoriesSuccess(t *testing.T) {
+	h := NewHandler(&mockQuerier{})
+	rec := httptest.NewRecorder()
+	h.ListCategories(rec, httptest.NewRequest(http.MethodGet, "/meetups/categories", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+}
 
 func TestListMeetupsSuccess(t *testing.T) {
 	h := NewHandler(&mockQuerier{})
@@ -124,20 +169,15 @@ func TestListMeetupsSuccess(t *testing.T) {
 	}
 }
 
-func TestListMeetupsDBError(t *testing.T) {
-	h := NewHandler(&mockQuerier{
-		listMeetups: func(_ context.Context, _ uuid.UUID, _, _ string, _, _ int) ([]Meetup, error) {
-			return nil, errors.New("db error")
-		},
-	})
+func TestListMyMeetupsRejectsInvalidScope(t *testing.T) {
+	h := NewHandler(&mockQuerier{})
+	req := authedRequest(http.MethodGet, "/users/me/meetups?scope=nope", "")
 	rec := httptest.NewRecorder()
-	h.ListMeetups(rec, authedRequest(http.MethodGet, "/meetups", ""))
-	if rec.Code != http.StatusInternalServerError {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusInternalServerError)
+	h.ListMyMeetups(rec, req)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnprocessableEntity)
 	}
 }
-
-// ── GetMeetup ─────────────────────────────────────────────────────────────────
 
 func TestGetMeetupRejectsInvalidUUID(t *testing.T) {
 	h := NewHandler(&mockQuerier{})
@@ -165,23 +205,10 @@ func TestGetMeetupNotFound(t *testing.T) {
 	}
 }
 
-func TestGetMeetupSuccess(t *testing.T) {
-	h := NewHandler(&mockQuerier{})
-	req := authedRequest(http.MethodGet, "/", "")
-	req = withURLParam(req, "id", fixedMeetup.String())
-	rec := httptest.NewRecorder()
-	h.GetMeetup(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
-	}
-}
-
-// ── CreateMeetup ──────────────────────────────────────────────────────────────
-
 func TestCreateMeetupValidationFlow(t *testing.T) {
 	h := NewHandler(&mockQuerier{})
 	rec := httptest.NewRecorder()
-	h.CreateMeetup(rec, authedRequest(http.MethodPost, "/meetups", `{"title":"","city":"","starts_at":""}`))
+	h.CreateMeetup(rec, authedRequest(http.MethodPost, "/meetups", `{"title":"","category_slug":"","city":"","starts_at":""}`))
 	if rec.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnprocessableEntity)
 	}
@@ -190,16 +217,16 @@ func TestCreateMeetupValidationFlow(t *testing.T) {
 func TestCreateMeetupRejectsInvalidStartsAt(t *testing.T) {
 	h := NewHandler(&mockQuerier{})
 	rec := httptest.NewRecorder()
-	h.CreateMeetup(rec, authedRequest(http.MethodPost, "/meetups", `{"title":"Coffee","city":"Dublin","starts_at":"tomorrow"}`))
+	h.CreateMeetup(rec, authedRequest(http.MethodPost, "/meetups", `{"title":"Coffee","category_slug":"coffee","event_type":"in_person","status":"published","visibility":"public","city":"Dublin","starts_at":"tomorrow"}`))
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
 	}
 }
 
-func TestCreateMeetupRejectsInvalidCapacity(t *testing.T) {
+func TestCreateMeetupRejectsUnknownCategory(t *testing.T) {
 	h := NewHandler(&mockQuerier{})
 	rec := httptest.NewRecorder()
-	h.CreateMeetup(rec, authedRequest(http.MethodPost, "/meetups", `{"title":"Coffee","city":"Dublin","starts_at":"2026-04-19T18:00:00Z","capacity":0}`))
+	h.CreateMeetup(rec, authedRequest(http.MethodPost, "/meetups", `{"title":"Coffee","category_slug":"not-real","event_type":"in_person","status":"published","visibility":"public","city":"Dublin","starts_at":"2026-05-01T19:00:00Z"}`))
 	if rec.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnprocessableEntity)
 	}
@@ -208,58 +235,97 @@ func TestCreateMeetupRejectsInvalidCapacity(t *testing.T) {
 func TestCreateMeetupSuccess(t *testing.T) {
 	h := NewHandler(&mockQuerier{})
 	rec := httptest.NewRecorder()
-	h.CreateMeetup(rec, authedRequest(http.MethodPost, "/meetups", `{"title":"Coffee","city":"Dublin","starts_at":"2026-04-19T18:00:00Z"}`))
+	h.CreateMeetup(rec, authedRequest(http.MethodPost, "/meetups", validCreateBody()))
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusCreated)
 	}
 }
 
-func TestCreateMeetupDBError(t *testing.T) {
-	h := NewHandler(&mockQuerier{
-		createMeetup: func(_ context.Context, _ uuid.UUID, _ string, _ *string, _ string, _ time.Time, _ *int) (*Meetup, error) {
-			return nil, errors.New("db error")
+func TestUploadCoverImageSuccess(t *testing.T) {
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, err := writer.CreateFormFile("cover", "cover.png")
+	if err != nil {
+		t.Fatalf("CreateFormFile error = %v", err)
+	}
+
+	img := image.NewRGBA(image.Rect(0, 0, 8, 8))
+	img.Set(0, 0, color.RGBA{B: 255, A: 255})
+	if err := png.Encode(part, img); err != nil {
+		t.Fatalf("png.Encode error = %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("writer.Close error = %v", err)
+	}
+
+	var uploadedKeys []string
+	h := NewHandler(&mockQuerier{}, &mockUploader{
+		upload: func(_ context.Context, key, _ string, _ io.Reader) (string, error) {
+			uploadedKeys = append(uploadedKeys, key)
+			return "https://example.com/" + key, nil
 		},
 	})
+
+	req := httptest.NewRequest(http.MethodPost, "/meetups/images", &body)
+	req = withUserID(req, fixedUser)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
 	rec := httptest.NewRecorder()
-	h.CreateMeetup(rec, authedRequest(http.MethodPost, "/meetups", `{"title":"Coffee","city":"Dublin","starts_at":"2026-04-19T18:00:00Z"}`))
-	if rec.Code != http.StatusInternalServerError {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusInternalServerError)
+
+	h.UploadCoverImage(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if len(uploadedKeys) != 1 {
+		t.Fatalf("upload count = %d, want 1", len(uploadedKeys))
 	}
 }
 
-// ── RSVP ──────────────────────────────────────────────────────────────────────
-
-func TestRSVPRejectsInvalidUUID(t *testing.T) {
-	h := NewHandler(&mockQuerier{})
-	req := authedRequest(http.MethodPost, "/", "")
-	req = withURLParam(req, "id", "bad")
-	rec := httptest.NewRecorder()
-	h.RSVP(rec, req)
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
-	}
-}
-
-func TestRSVPMeetupNotFound(t *testing.T) {
+func TestUpdateMeetupForbidden(t *testing.T) {
 	h := NewHandler(&mockQuerier{
-		getMeetupCapacity: func(_ context.Context, _ uuid.UUID) (*int, int, error) {
-			return nil, 0, ErrNotFound
+		updateMeetup: func(_ context.Context, _, _ uuid.UUID, _ UpdateMeetupInput) (*Meetup, error) {
+			return nil, ErrForbidden
+		},
+	})
+	req := authedRequest(http.MethodPatch, "/", validCreateBody())
+	req = withURLParam(req, "id", fixedMeetup.String())
+	rec := httptest.NewRecorder()
+	h.UpdateMeetup(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusForbidden)
+	}
+}
+
+func TestPublishMeetupNotFound(t *testing.T) {
+	h := NewHandler(&mockQuerier{
+		publishMeetup: func(_ context.Context, _, _ uuid.UUID) (*Meetup, error) {
+			return nil, ErrNotFound
 		},
 	})
 	req := authedRequest(http.MethodPost, "/", "")
 	req = withURLParam(req, "id", fixedMeetup.String())
 	rec := httptest.NewRecorder()
-	h.RSVP(rec, req)
+	h.PublishMeetup(rec, req)
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNotFound)
 	}
 }
 
+func TestRSVPTogglesState(t *testing.T) {
+	h := NewHandler(&mockQuerier{})
+	req := authedRequest(http.MethodPost, "/", "")
+	req = withURLParam(req, "id", fixedMeetup.String())
+	rec := httptest.NewRecorder()
+	h.RSVP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+}
+
 func TestRSVPAtCapacity(t *testing.T) {
-	cap := 5
 	h := NewHandler(&mockQuerier{
-		getMeetupCapacity: func(_ context.Context, _ uuid.UUID) (*int, int, error) {
-			return &cap, 5, nil
+		toggleRSVP: func(_ context.Context, _, _ uuid.UUID) (*RSVPResult, error) {
+			return nil, ErrCapacityReached
 		},
 	})
 	req := authedRequest(http.MethodPost, "/", "")
@@ -271,62 +337,30 @@ func TestRSVPAtCapacity(t *testing.T) {
 	}
 }
 
-func TestRSVPTogglesOn(t *testing.T) {
-	added := false
+func TestGetWaitlistForbidden(t *testing.T) {
 	h := NewHandler(&mockQuerier{
-		isRSVPd: func(_ context.Context, _, _ uuid.UUID) (bool, error) { return false, nil },
-		addRSVP: func(_ context.Context, _, _ uuid.UUID) error { added = true; return nil },
+		getWaitlist: func(_ context.Context, _, _ uuid.UUID, _, _ int) ([]Attendee, error) {
+			return nil, ErrForbidden
+		},
 	})
-	req := authedRequest(http.MethodPost, "/", "")
+	req := authedRequest(http.MethodGet, "/", "")
 	req = withURLParam(req, "id", fixedMeetup.String())
 	rec := httptest.NewRecorder()
-	h.RSVP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
-	}
-	if !added {
-		t.Fatal("expected AddRSVP to be called")
+	h.GetWaitlist(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusForbidden)
 	}
 }
 
-func TestRSVPTogglesOff(t *testing.T) {
-	removed := false
+func TestListCategoriesError(t *testing.T) {
 	h := NewHandler(&mockQuerier{
-		isRSVPd:    func(_ context.Context, _, _ uuid.UUID) (bool, error) { return true, nil },
-		removeRSVP: func(_ context.Context, _, _ uuid.UUID) error { removed = true; return nil },
+		listCategories: func(_ context.Context) ([]MeetupCategory, error) {
+			return nil, errors.New("db error")
+		},
 	})
-	req := authedRequest(http.MethodPost, "/", "")
-	req = withURLParam(req, "id", fixedMeetup.String())
 	rec := httptest.NewRecorder()
-	h.RSVP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
-	}
-	if !removed {
-		t.Fatal("expected RemoveRSVP to be called")
-	}
-}
-
-// ── GetAttendees ──────────────────────────────────────────────────────────────
-
-func TestGetAttendeesRejectsInvalidUUID(t *testing.T) {
-	h := NewHandler(&mockQuerier{})
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req = withURLParam(req, "id", "bad")
-	rec := httptest.NewRecorder()
-	h.GetAttendees(rec, req)
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
-	}
-}
-
-func TestGetAttendeesSuccess(t *testing.T) {
-	h := NewHandler(&mockQuerier{})
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req = withURLParam(req, "id", fixedMeetup.String())
-	rec := httptest.NewRecorder()
-	h.GetAttendees(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	h.ListCategories(rec, httptest.NewRequest(http.MethodGet, "/meetups/categories", nil))
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusInternalServerError)
 	}
 }

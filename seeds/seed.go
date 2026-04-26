@@ -2,11 +2,14 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"log"
 	"math"
 	"math/rand"
+	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -15,12 +18,30 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/joho/godotenv"
 	"github.com/project_radeon/api/pkg/database"
+	"github.com/redis/go-redis/v9"
 	"golang.org/x/crypto/bcrypt"
 )
 
 const totalUsers = 150
 
 var rng = rand.New(rand.NewSource(42))
+
+var meetupCategorySeeds = []struct {
+	Slug      string
+	Label     string
+	SortOrder int
+}{
+	{Slug: "recovery", Label: "Recovery", SortOrder: 10},
+	{Slug: "coffee", Label: "Coffee", SortOrder: 20},
+	{Slug: "running", Label: "Running", SortOrder: 30},
+	{Slug: "wellness", Label: "Wellness", SortOrder: 40},
+	{Slug: "outdoors", Label: "Outdoors", SortOrder: 50},
+	{Slug: "community", Label: "Community", SortOrder: 60},
+	{Slug: "books", Label: "Books", SortOrder: 70},
+	{Slug: "arts", Label: "Arts", SortOrder: 80},
+	{Slug: "food", Label: "Food", SortOrder: 90},
+	{Slug: "volunteering", Label: "Volunteering", SortOrder: 100},
+}
 
 type citySeed struct {
 	City     string
@@ -69,9 +90,14 @@ type seededPost struct {
 }
 
 type seededMeetup struct {
-	ID          uuid.UUID
-	OrganizerID uuid.UUID
-	City        string
+	ID              uuid.UUID
+	OrganizerID     uuid.UUID
+	City            string
+	Capacity        *int
+	Status          string
+	WaitlistEnabled bool
+	AttendeeTarget  int
+	WaitlistTarget  int
 }
 
 type supportRequestRow struct {
@@ -113,6 +139,9 @@ func main() {
 	if err := seed(context.Background(), pool); err != nil {
 		log.Fatalf("seed failed: %v", err)
 	}
+	if err := flushRedisCache(context.Background()); err != nil {
+		log.Printf("cache flush skipped: %v", err)
+	}
 
 	fmt.Println("\n✓ seed complete")
 	fmt.Println("  login: test@radeon.dev / password123")
@@ -136,12 +165,16 @@ func seed(ctx context.Context, pool *pgxpool.Pool) error {
 	if _, err := tx.Exec(ctx, `
 		TRUNCATE messages, chat_members, chats,
 			support_responses, support_requests,
-			meetup_attendees, meetups,
+			event_waitlist, event_hosts, meetup_attendees, meetups,
 			post_reactions, comments, post_images, posts,
 			user_interests, friendships, users
 		RESTART IDENTITY CASCADE
 	`); err != nil {
 		return fmt.Errorf("truncate: %w", err)
+	}
+
+	if err := ensureEventCategories(ctx, tx); err != nil {
+		return fmt.Errorf("ensure event categories: %w", err)
 	}
 
 	interestNames, interestIDs, err := loadInterests(ctx, tx)
@@ -204,6 +237,9 @@ func seed(ctx context.Context, pool *pgxpool.Pool) error {
 	if err := refreshDerivedUserState(ctx, tx); err != nil {
 		return err
 	}
+	if err := refreshMeetupState(ctx, tx); err != nil {
+		return err
+	}
 	if err := refreshSupportResponseCounts(ctx, tx); err != nil {
 		return err
 	}
@@ -230,6 +266,60 @@ func loadInterests(ctx context.Context, tx pgx.Tx) ([]string, map[string]uuid.UU
 		ids[name] = id
 	}
 	return names, ids, rows.Err()
+}
+
+func ensureEventCategories(ctx context.Context, tx pgx.Tx) error {
+	for _, category := range meetupCategorySeeds {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO event_categories (slug, label, sort_order)
+			VALUES ($1, $2, $3)
+			ON CONFLICT (slug) DO UPDATE
+			SET label = EXCLUDED.label,
+				sort_order = EXCLUDED.sort_order
+		`, category.Slug, category.Label, category.SortOrder); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func flushRedisCache(ctx context.Context) error {
+	if strings.ToLower(strings.TrimSpace(os.Getenv("CACHE_ENABLED"))) != "true" {
+		return nil
+	}
+	addr := strings.TrimSpace(os.Getenv("REDIS_ADDR"))
+	if addr == "" {
+		return nil
+	}
+	dbIndex := 0
+	if rawDB := strings.TrimSpace(os.Getenv("REDIS_DB")); rawDB != "" {
+		parsed, err := strconv.Atoi(rawDB)
+		if err != nil {
+			return fmt.Errorf("parse REDIS_DB: %w", err)
+		}
+		dbIndex = parsed
+	}
+	options := &redis.Options{
+		Addr:     addr,
+		Password: os.Getenv("REDIS_PASSWORD"),
+		DB:       dbIndex,
+	}
+	if strings.ToLower(strings.TrimSpace(os.Getenv("REDIS_TLS"))) == "true" {
+		options.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+	}
+	client := redis.NewClient(options)
+	defer client.Close()
+
+	flushCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+
+	if err := client.Ping(flushCtx).Err(); err != nil {
+		return fmt.Errorf("ping redis: %w", err)
+	}
+	if err := client.FlushDB(flushCtx).Err(); err != nil {
+		return fmt.Errorf("flush redis db: %w", err)
+	}
+	return nil
 }
 
 func buildUsers(interestNames []string) []seededUser {
@@ -955,37 +1045,262 @@ func insertReactions(ctx context.Context, tx pgx.Tx, posts []seededPost, users [
 }
 
 func insertMeetups(ctx context.Context, tx pgx.Tx, users []seededUser) ([]seededMeetup, error) {
-	defs := []struct {
-		organizer int
-		title     string
-		desc      string
-		city      string
-		startsAt  time.Time
-		capacity  int
-	}{
-		{0, "Portlaoise Coffee Check-In", "A relaxed weekend coffee for people in recovery.", "Portlaoise", time.Now().UTC().Add(6 * 24 * time.Hour), 24},
-		{5, "Dublin Coastal Walk", "Easy pace walk and a catch-up afterwards.", "Dublin", time.Now().UTC().Add(9 * 24 * time.Hour), 30},
-		{12, "Cork Sunday Brunch", "Low-key brunch table and a good check-in.", "Cork", time.Now().UTC().Add(12 * 24 * time.Hour), 18},
-		{20, "Galway Sober Social", "Evening hangout for anyone nearby.", "Galway", time.Now().UTC().Add(16 * 24 * time.Hour), 20},
-		{28, "Kilkenny Midweek Walk", "Fresh air, short loop, and a natter.", "Kilkenny", time.Now().UTC().Add(8 * 24 * time.Hour), 16},
-		{36, "Belfast Morning Run", "Easy 5k and coffee after.", "Belfast", time.Now().UTC().Add(10 * 24 * time.Hour), 16},
-		{44, "Paris Recovery Picnic", "Bring a snack, meet some people, no pressure.", "Paris", time.Now().UTC().Add(18 * 24 * time.Hour), 28},
-		{52, "Berlin Book and Brew", "Books, tea, and a quiet room full of kind people.", "Berlin", time.Now().UTC().Add(21 * 24 * time.Hour), 18},
-		{60, "Madrid Park Meetup", "Sunshine, chats, and a walk around the park.", "Madrid", time.Now().UTC().Add(14 * 24 * time.Hour), 22},
-		{70, "New York Evening Check-In", "Casual after-work meet for people staying steady.", "New York", time.Now().UTC().Add(11 * 24 * time.Hour), 26},
+	type meetupSeedDef struct {
+		title           string
+		description     string
+		categorySlug    string
+		eventType       string
+		status          string
+		visibility      string
+		city            string
+		venueName       string
+		addressLine1    string
+		addressLine2    string
+		howToFindUs     string
+		onlineURL       *string
+		startsAt        time.Time
+		endsAt          time.Time
+		capacity        *int
+		waitlistEnabled bool
+		attendeeTarget  int
+		waitlistTarget  int
+		coHostCount     int
+	}
+
+	defs := []meetupSeedDef{
+		{
+			title: "Portlaoise Saturday Coffee Circle", description: "A warm cafe catch-up for anyone wanting an easy sober start to the weekend.",
+			categorySlug: "coffee", eventType: "in_person", status: "published", visibility: "public", city: "Portlaoise",
+			venueName: "Brew & Ground", addressLine1: "Main Street", addressLine2: "Portlaoise Town Centre",
+			howToFindUs: "Look for the blue Radeon tote on the long table at the back.", startsAt: time.Now().UTC().Add(5 * 24 * time.Hour).Add(10 * time.Hour),
+			endsAt: time.Now().UTC().Add(5 * 24 * time.Hour).Add(12 * time.Hour), capacity: intPtr(18), waitlistEnabled: true, attendeeTarget: 18, waitlistTarget: 4, coHostCount: 1,
+		},
+		{
+			title: "Portlaoise New Members Welcome Night", description: "Short introductions, tea, and a gentle way into the community for anyone new here.",
+			categorySlug: "community", eventType: "in_person", status: "draft", visibility: "public", city: "Portlaoise",
+			venueName: "The Parish Centre", addressLine1: "Church Avenue", addressLine2: "",
+			howToFindUs: "Draft event for next month once the room booking is confirmed.", startsAt: time.Now().UTC().Add(24 * 24 * time.Hour).Add(19 * time.Hour),
+			endsAt: time.Now().UTC().Add(24 * 24 * time.Hour).Add(21 * time.Hour), capacity: intPtr(30), waitlistEnabled: false, attendeeTarget: 0, waitlistTarget: 0, coHostCount: 1,
+		},
+		{
+			title: "Dublin Coastal Walk and Check-In", description: "Easy paced walk followed by coffee and a check-in by the sea.",
+			categorySlug: "outdoors", eventType: "in_person", status: "published", visibility: "public", city: "Dublin",
+			venueName: "Clontarf Promenade", addressLine1: "Bull Wall Car Park", addressLine2: "Clontarf",
+			howToFindUs: "We meet beside the coffee van ten minutes before the start.", startsAt: time.Now().UTC().Add(7 * 24 * time.Hour).Add(9 * time.Hour),
+			endsAt: time.Now().UTC().Add(7 * 24 * time.Hour).Add(11 * time.Hour), capacity: intPtr(32), waitlistEnabled: true, attendeeTarget: 28, waitlistTarget: 0, coHostCount: 2,
+		},
+		{
+			title: "Dublin Midweek Recovery Circle", description: "A structured hour to check in, share wins, and set intentions for the week.",
+			categorySlug: "recovery", eventType: "hybrid", status: "published", visibility: "public", city: "Dublin",
+			venueName: "Studio Twelve", addressLine1: "Camden Street Lower", addressLine2: "Dublin 2",
+			howToFindUs: "Buzz studio 12 or join on the meeting link if you are online.", onlineURL: stringPtr("https://meet.projectradeon.app/dublin-midweek-circle"),
+			startsAt: time.Now().UTC().Add(11 * 24 * time.Hour).Add(18 * time.Hour), endsAt: time.Now().UTC().Add(11 * 24 * time.Hour).Add(20 * time.Hour),
+			capacity: intPtr(24), waitlistEnabled: true, attendeeTarget: 24, waitlistTarget: 6, coHostCount: 1,
+		},
+		{
+			title: "Dublin Early Morning Run Club", description: "Friendly 5k, plenty of walk breaks, and coffee after if you want it.",
+			categorySlug: "running", eventType: "in_person", status: "published", visibility: "public", city: "Dublin",
+			venueName: "Phoenix Park Visitors Centre", addressLine1: "Phoenix Park", addressLine2: "",
+			howToFindUs: "Meet by the main gate with a light blue running top.", startsAt: time.Now().UTC().Add(3 * 24 * time.Hour).Add(7 * time.Hour),
+			endsAt: time.Now().UTC().Add(3 * 24 * time.Hour).Add(8 * time.Hour), capacity: intPtr(20), waitlistEnabled: false, attendeeTarget: 12, waitlistTarget: 0, coHostCount: 1,
+		},
+		{
+			title: "Cork Sunday Brunch Table", description: "Low-pressure brunch for people who want real company without the pub scene.",
+			categorySlug: "food", eventType: "in_person", status: "published", visibility: "public", city: "Cork",
+			venueName: "Market Lane", addressLine1: "Oliver Plunkett Street", addressLine2: "Cork City Centre",
+			howToFindUs: "Ask for the Radeon booking under Hannah.", startsAt: time.Now().UTC().Add(9 * 24 * time.Hour).Add(11 * time.Hour),
+			endsAt: time.Now().UTC().Add(9 * 24 * time.Hour).Add(13 * time.Hour), capacity: intPtr(16), waitlistEnabled: true, attendeeTarget: 16, waitlistTarget: 3, coHostCount: 1,
+		},
+		{
+			title: "Galway Sober Social by the Canal", description: "A casual evening chat and short walk before everyone heads home.",
+			categorySlug: "community", eventType: "in_person", status: "published", visibility: "public", city: "Galway",
+			venueName: "Canal Walk Entrance", addressLine1: "Eglinton Street", addressLine2: "",
+			howToFindUs: "We gather at the benches closest to the bridge.", startsAt: time.Now().UTC().Add(13 * 24 * time.Hour).Add(18 * time.Hour),
+			endsAt: time.Now().UTC().Add(13 * 24 * time.Hour).Add(20 * time.Hour), capacity: intPtr(20), waitlistEnabled: false, attendeeTarget: 11, waitlistTarget: 0, coHostCount: 1,
+		},
+		{
+			title: "Kilkenny Midweek Reset Walk", description: "A steady town loop for clearing the head after work.",
+			categorySlug: "wellness", eventType: "in_person", status: "published", visibility: "public", city: "Kilkenny",
+			venueName: "Kilkenny Castle Gates", addressLine1: "The Parade", addressLine2: "",
+			howToFindUs: "Meet at the front gates five minutes before the start.", startsAt: time.Now().UTC().Add(8 * 24 * time.Hour).Add(17 * time.Hour),
+			endsAt: time.Now().UTC().Add(8 * 24 * time.Hour).Add(18 * time.Hour), capacity: intPtr(14), waitlistEnabled: false, attendeeTarget: 9, waitlistTarget: 0, coHostCount: 1,
+		},
+		{
+			title: "Carlow Book Swap and Tea", description: "Bring a book that helped you and leave with another one.",
+			categorySlug: "books", eventType: "in_person", status: "published", visibility: "public", city: "Carlow",
+			venueName: "Visual Carlow Cafe", addressLine1: "Old Dublin Road", addressLine2: "",
+			howToFindUs: "We have a bookshelf reserved beside the window.", startsAt: time.Now().UTC().Add(15 * 24 * time.Hour).Add(18 * time.Hour),
+			endsAt: time.Now().UTC().Add(15 * 24 * time.Hour).Add(20 * time.Hour), capacity: intPtr(18), waitlistEnabled: false, attendeeTarget: 10, waitlistTarget: 0, coHostCount: 1,
+		},
+		{
+			title: "Athlone Weekend Wellness Session", description: "Breathwork, journaling, and a calm group check-in.",
+			categorySlug: "wellness", eventType: "in_person", status: "published", visibility: "public", city: "Athlone",
+			venueName: "Shamrock Lodge", addressLine1: "Clonown Road", addressLine2: "",
+			howToFindUs: "Reception will point you to the upstairs meeting room.", startsAt: time.Now().UTC().Add(6 * 24 * time.Hour).Add(14 * time.Hour),
+			endsAt: time.Now().UTC().Add(6 * 24 * time.Hour).Add(16 * time.Hour), capacity: intPtr(22), waitlistEnabled: true, attendeeTarget: 17, waitlistTarget: 0, coHostCount: 1,
+		},
+		{
+			title: "Belfast Morning Run and Coffee", description: "Easy 5k followed by a coffee stop for anyone who wants to stay and chat.",
+			categorySlug: "running", eventType: "in_person", status: "published", visibility: "public", city: "Belfast",
+			venueName: "Ormeau Park Gates", addressLine1: "Ormeau Road", addressLine2: "",
+			howToFindUs: "Meet at the main gates with the group leader in a navy cap.", startsAt: time.Now().UTC().Add(12 * 24 * time.Hour).Add(8 * time.Hour),
+			endsAt: time.Now().UTC().Add(12 * 24 * time.Hour).Add(9 * time.Hour), capacity: intPtr(14), waitlistEnabled: false, attendeeTarget: 8, waitlistTarget: 0, coHostCount: 1,
+		},
+		{
+			title: "Paris Recovery Picnic", description: "Bring a snack, meet a few people, and spend a gentle afternoon in the park.",
+			categorySlug: "recovery", eventType: "in_person", status: "published", visibility: "public", city: "Paris",
+			venueName: "Jardin du Luxembourg", addressLine1: "Rue de Vaugirard", addressLine2: "",
+			howToFindUs: "Look for the checked blanket beside the fountain lawn.", startsAt: time.Now().UTC().Add(17 * 24 * time.Hour).Add(13 * time.Hour),
+			endsAt: time.Now().UTC().Add(17 * 24 * time.Hour).Add(16 * time.Hour), capacity: intPtr(24), waitlistEnabled: false, attendeeTarget: 12, waitlistTarget: 0, coHostCount: 1,
+		},
+		{
+			title: "Berlin Book and Brew", description: "A quiet evening of reading, tea, and low-key conversation.",
+			categorySlug: "books", eventType: "in_person", status: "published", visibility: "public", city: "Berlin",
+			venueName: "Kreuzberg Reading Room", addressLine1: "Mehringdamm 54", addressLine2: "",
+			howToFindUs: "Second floor lounge, shoes off if you are comfortable.", startsAt: time.Now().UTC().Add(19 * 24 * time.Hour).Add(18 * time.Hour),
+			endsAt: time.Now().UTC().Add(19 * 24 * time.Hour).Add(20 * time.Hour), capacity: intPtr(14), waitlistEnabled: true, attendeeTarget: 14, waitlistTarget: 2, coHostCount: 1,
+		},
+		{
+			title: "Madrid Park Meetup", description: "Sunshine, chats, and a relaxed loop through the park before lunch.",
+			categorySlug: "community", eventType: "in_person", status: "published", visibility: "public", city: "Madrid",
+			venueName: "El Retiro North Gate", addressLine1: "Plaza de la Independencia", addressLine2: "",
+			howToFindUs: "We start just inside the gate by the map board.", startsAt: time.Now().UTC().Add(10 * 24 * time.Hour).Add(10 * time.Hour),
+			endsAt: time.Now().UTC().Add(10 * 24 * time.Hour).Add(12 * time.Hour), capacity: intPtr(20), waitlistEnabled: false, attendeeTarget: 9, waitlistTarget: 0, coHostCount: 1,
+		},
+		{
+			title: "New York Evening Check-In", description: "An after-work meet-up for anyone trying to stay steady through a busy week.",
+			categorySlug: "recovery", eventType: "hybrid", status: "published", visibility: "public", city: "New York",
+			venueName: "Hudson Commons", addressLine1: "11th Avenue", addressLine2: "Jersey City-facing lounge",
+			howToFindUs: "Ask concierge for the community room or join the live stream.", onlineURL: stringPtr("https://meet.projectradeon.app/ny-evening-check-in"),
+			startsAt: time.Now().UTC().Add(9 * 24 * time.Hour).Add(23 * time.Hour), endsAt: time.Now().UTC().Add(10 * 24 * time.Hour).Add(1 * time.Hour),
+			capacity: intPtr(26), waitlistEnabled: true, attendeeTarget: 21, waitlistTarget: 0, coHostCount: 1,
+		},
+		{
+			title: "Los Angeles Sunrise Hike", description: "A gentle hill walk, some space to breathe, and coffee after if people want it.",
+			categorySlug: "outdoors", eventType: "in_person", status: "published", visibility: "public", city: "Los Angeles",
+			venueName: "Griffith Park Trailhead", addressLine1: "4730 Crystal Springs Drive", addressLine2: "",
+			howToFindUs: "Meet by the trail map with plenty of water.", startsAt: time.Now().UTC().Add(14 * 24 * time.Hour).Add(15 * time.Hour),
+			endsAt: time.Now().UTC().Add(14 * 24 * time.Hour).Add(18 * time.Hour), capacity: intPtr(18), waitlistEnabled: false, attendeeTarget: 10, waitlistTarget: 0, coHostCount: 1,
+		},
+		{
+			title: "Athy Community Service Morning", description: "Two hours of volunteering followed by coffee together in town.",
+			categorySlug: "volunteering", eventType: "in_person", status: "published", visibility: "public", city: "Athy",
+			venueName: "Athy Tidy Towns Depot", addressLine1: "Carlow Road", addressLine2: "",
+			howToFindUs: "High-vis vests provided at the depot entrance.", startsAt: time.Now().UTC().Add(18 * 24 * time.Hour).Add(9 * time.Hour),
+			endsAt: time.Now().UTC().Add(18 * 24 * time.Hour).Add(12 * time.Hour), capacity: intPtr(15), waitlistEnabled: false, attendeeTarget: 9, waitlistTarget: 0, coHostCount: 1,
+		},
+		{
+			title: "Monasterevin Journaling Hour", description: "A quiet hour to write, reflect, and talk only if you want to.",
+			categorySlug: "wellness", eventType: "in_person", status: "completed", visibility: "public", city: "Monasterevin",
+			venueName: "Community Library Room", addressLine1: "Main Street", addressLine2: "",
+			howToFindUs: "Past event kept for organizer and attendee history.", startsAt: time.Now().UTC().Add(-6 * 24 * time.Hour).Add(18 * time.Hour),
+			endsAt: time.Now().UTC().Add(-6 * 24 * time.Hour).Add(19 * time.Hour), capacity: intPtr(12), waitlistEnabled: false, attendeeTarget: 7, waitlistTarget: 0, coHostCount: 1,
+		},
+		{
+			title: "Rennes Online Reflection Session", description: "Camera-optional conversation about routines that keep us grounded.",
+			categorySlug: "recovery", eventType: "online", status: "published", visibility: "public", city: "Rennes",
+			venueName: "", addressLine1: "", addressLine2: "", howToFindUs: "Join from anywhere in Europe.", onlineURL: stringPtr("https://meet.projectradeon.app/rennes-reflection-room"),
+			startsAt: time.Now().UTC().Add(4 * 24 * time.Hour).Add(19 * time.Hour), endsAt: time.Now().UTC().Add(4 * 24 * time.Hour).Add(20 * time.Hour),
+			capacity: intPtr(40), waitlistEnabled: false, attendeeTarget: 13, waitlistTarget: 0, coHostCount: 1,
+		},
+		{
+			title: "Stradbally Arts Table", description: "Watercolours, tea, and a relaxed creative hour together.",
+			categorySlug: "arts", eventType: "in_person", status: "cancelled", visibility: "public", city: "Stradbally",
+			venueName: "Community Arts Hall", addressLine1: "Market Square", addressLine2: "",
+			howToFindUs: "Cancelled due to a venue issue, kept to test organizer history.", startsAt: time.Now().UTC().Add(2 * 24 * time.Hour).Add(18 * time.Hour),
+			endsAt: time.Now().UTC().Add(2 * 24 * time.Hour).Add(20 * time.Hour), capacity: intPtr(14), waitlistEnabled: false, attendeeTarget: 6, waitlistTarget: 0, coHostCount: 1,
+		},
+	}
+
+	byCity := make(map[string][]seededUser)
+	for _, user := range users {
+		byCity[user.City] = append(byCity[user.City], user)
+	}
+	cityCursors := make(map[string]int)
+	nextCityUser := func(city string) seededUser {
+		candidates := byCity[city]
+		if len(candidates) == 0 {
+			return users[0]
+		}
+		index := cityCursors[city] % len(candidates)
+		cityCursors[city]++
+		return candidates[index]
 	}
 
 	meetups := make([]seededMeetup, 0, len(defs))
 	for _, def := range defs {
+		organizer := nextCityUser(def.city)
+		if def.city == "Portlaoise" && def.status == "draft" && len(byCity[def.city]) > 0 {
+			organizer = byCity[def.city][0]
+		}
 		meetupID := uuid.New()
-		organizerID := users[def.organizer].ID
+		var lat, lng *float64
+		if def.eventType != "online" {
+			lat = floatPtr(organizer.CurrentLat)
+			lng = floatPtr(organizer.CurrentLng)
+		}
+		var venueName *string
+		var addressLine1 *string
+		var addressLine2 *string
+		var howToFindUs *string
+		if def.venueName != "" {
+			venueName = stringPtr(def.venueName)
+		}
+		if def.addressLine1 != "" {
+			addressLine1 = stringPtr(def.addressLine1)
+		}
+		if def.addressLine2 != "" {
+			addressLine2 = stringPtr(def.addressLine2)
+		}
+		if def.howToFindUs != "" {
+			howToFindUs = stringPtr(def.howToFindUs)
+		}
+		var publishedAt *time.Time
+		if def.status == "published" || def.status == "completed" || def.status == "cancelled" {
+			publishedAt = timePtr(def.startsAt.Add(-10 * 24 * time.Hour))
+		}
 		if _, err := tx.Exec(ctx,
-			`INSERT INTO meetups (id, organiser_id, title, description, city, starts_at, capacity) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-			meetupID, organizerID, def.title, def.desc, def.city, def.startsAt, def.capacity,
+			`INSERT INTO meetups (
+				id, organiser_id, title, description, category_slug, event_type, status, visibility,
+				city, country, venue_name, address_line_1, address_line_2, how_to_find_us,
+				online_url, starts_at, ends_at, timezone, lat, lng, capacity, waitlist_enabled,
+				saved_count, published_at, created_at, updated_at
+			) VALUES (
+				$1, $2, $3, $4, $5, $6, $7, $8,
+				$9, $10, $11, $12, $13, $14,
+				$15, $16, $17, $18, $19, $20, $21, $22,
+				$23, $24, $25, $26
+			)`,
+			meetupID, organizer.ID, def.title, def.description, def.categorySlug, def.eventType, def.status, def.visibility,
+			def.city, organizer.Country, venueName, addressLine1, addressLine2, howToFindUs,
+			def.onlineURL, def.startsAt, def.endsAt, timezoneForCity(def.city), lat, lng, def.capacity, def.waitlistEnabled,
+			rng.Intn(18), publishedAt, def.startsAt.Add(-14*24*time.Hour), def.startsAt.Add(-48*time.Hour),
 		); err != nil {
 			return nil, fmt.Errorf("insert meetup %s: %w", def.title, err)
 		}
-		meetups = append(meetups, seededMeetup{ID: meetupID, OrganizerID: organizerID, City: def.city})
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO event_hosts (meetup_id, user_id, role)
+			VALUES ($1, $2, 'organizer')
+		`, meetupID, organizer.ID); err != nil {
+			return nil, fmt.Errorf("insert meetup organizer host %s: %w", def.title, err)
+		}
+		for cohostIndex := 0; cohostIndex < def.coHostCount; cohostIndex++ {
+			host := nextCityUser(def.city)
+			if host.ID == organizer.ID {
+				continue
+			}
+			if _, err := tx.Exec(ctx, `
+				INSERT INTO event_hosts (meetup_id, user_id, role)
+				VALUES ($1, $2, 'co_host')
+				ON CONFLICT (meetup_id, user_id) DO NOTHING
+			`, meetupID, host.ID); err != nil {
+				return nil, fmt.Errorf("insert meetup co-host %s: %w", def.title, err)
+			}
+		}
+		meetups = append(meetups, seededMeetup{
+			ID: meetupID, OrganizerID: organizer.ID, City: def.city, Capacity: def.capacity, Status: def.status,
+			WaitlistEnabled: def.waitlistEnabled, AttendeeTarget: def.attendeeTarget, WaitlistTarget: def.waitlistTarget,
+		})
 	}
 	return meetups, nil
 }
@@ -997,8 +1312,14 @@ func insertMeetupAttendees(ctx context.Context, tx pgx.Tx, meetups []seededMeetu
 	}
 
 	for _, meetup := range meetups {
+		if meetup.Status == "draft" {
+			continue
+		}
 		candidates := byCity[meetup.City]
-		attendeeTarget := 8 + rng.Intn(16)
+		attendeeTarget := meetup.AttendeeTarget
+		if attendeeTarget <= 0 {
+			attendeeTarget = 1
+		}
 		if attendeeTarget > len(candidates) {
 			attendeeTarget = len(candidates)
 		}
@@ -1020,6 +1341,23 @@ func insertMeetupAttendees(ctx context.Context, tx pgx.Tx, meetups []seededMeetu
 				meetup.ID, user.ID, daysAgo(rng.Intn(18)+1),
 			); err != nil {
 				return fmt.Errorf("insert meetup attendee: %w", err)
+			}
+		}
+		if meetup.WaitlistEnabled && meetup.Capacity != nil && attendeeTarget >= *meetup.Capacity && meetup.WaitlistTarget > 0 {
+			maxWaitlist := minInt(meetup.WaitlistTarget, len(candidates)-len(seen))
+			for waitlisted := 0; waitlisted < maxWaitlist; {
+				user := candidates[rng.Intn(len(candidates))]
+				if _, exists := seen[user.ID]; exists {
+					continue
+				}
+				seen[user.ID] = struct{}{}
+				if _, err := tx.Exec(ctx,
+					`INSERT INTO event_waitlist (meetup_id, user_id, joined_at) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
+					meetup.ID, user.ID, daysAgo(rng.Intn(10)+1),
+				); err != nil {
+					return fmt.Errorf("insert meetup waitlist: %w", err)
+				}
+				waitlisted++
 			}
 		}
 	}
@@ -1407,6 +1745,44 @@ func refreshDerivedUserState(ctx context.Context, tx pgx.Tx) error {
 	return nil
 }
 
+func refreshMeetupState(ctx context.Context, tx pgx.Tx) error {
+	if _, err := tx.Exec(ctx, `
+		UPDATE meetups m
+		SET attendee_count = attendee_counts.count,
+			waitlist_count = waitlist_counts.count
+		FROM (
+			SELECT meetup_id, COUNT(*)::INT AS count
+			FROM meetup_attendees
+			GROUP BY meetup_id
+		) attendee_counts,
+		(
+			SELECT meetup_id, COUNT(*)::INT AS count
+			FROM event_waitlist
+			GROUP BY meetup_id
+		) waitlist_counts
+		WHERE m.id = attendee_counts.meetup_id
+		  AND m.id = waitlist_counts.meetup_id
+	`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE meetups m
+		SET attendee_count = COALESCE((
+				SELECT COUNT(*)::INT
+				FROM meetup_attendees ma
+				WHERE ma.meetup_id = m.id
+			), 0),
+			waitlist_count = COALESCE((
+				SELECT COUNT(*)::INT
+				FROM event_waitlist ew
+				WHERE ew.meetup_id = m.id
+			), 0)
+	`); err != nil {
+		return err
+	}
+	return nil
+}
+
 func refreshSupportResponseCounts(ctx context.Context, tx pgx.Tx) error {
 	if _, err := tx.Exec(ctx, `
 		UPDATE support_requests sr
@@ -1419,6 +1795,39 @@ func refreshSupportResponseCounts(ctx context.Context, tx pgx.Tx) error {
 		return fmt.Errorf("refresh support counts: %w", err)
 	}
 	return nil
+}
+
+func intPtr(value int) *int {
+	return &value
+}
+
+func stringPtr(value string) *string {
+	return &value
+}
+
+func floatPtr(value float64) *float64 {
+	return &value
+}
+
+func timePtr(value time.Time) *time.Time {
+	return &value
+}
+
+func timezoneForCity(city string) string {
+	switch city {
+	case "New York":
+		return "America/New_York"
+	case "Los Angeles":
+		return "America/Los_Angeles"
+	case "Paris", "Rennes":
+		return "Europe/Paris"
+	case "Berlin":
+		return "Europe/Berlin"
+	case "Madrid":
+		return "Europe/Madrid"
+	default:
+		return "Europe/Dublin"
+	}
 }
 
 func randomTimeBetween(start, end time.Time) time.Time {
