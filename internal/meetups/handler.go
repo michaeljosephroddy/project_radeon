@@ -33,6 +33,7 @@ type Querier interface {
 	UpdateMeetup(ctx context.Context, meetupID, userID uuid.UUID, input UpdateMeetupInput) (*Meetup, error)
 	PublishMeetup(ctx context.Context, meetupID, userID uuid.UUID) (*Meetup, error)
 	CancelMeetup(ctx context.Context, meetupID, userID uuid.UUID) (*Meetup, error)
+	DeleteMeetup(ctx context.Context, meetupID, userID uuid.UUID) error
 	GetAttendees(ctx context.Context, meetupID uuid.UUID, limit, offset int) ([]Attendee, error)
 	GetWaitlist(ctx context.Context, meetupID, userID uuid.UUID, limit, offset int) ([]Attendee, error)
 	ToggleRSVP(ctx context.Context, meetupID, userID uuid.UUID) (*RSVPResult, error)
@@ -79,7 +80,7 @@ func (h *Handler) ListMyMeetups(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.CurrentUserID(r)
 	scope := strings.TrimSpace(strings.ToLower(r.URL.Query().Get("scope")))
 	if scope == "" {
-		scope = "hosting"
+		scope = "upcoming"
 	}
 	if !validMyMeetupScopes[scope] {
 		response.ValidationError(w, map[string]string{"scope": "invalid"})
@@ -162,11 +163,17 @@ func (h *Handler) CreateMeetup(w http.ResponseWriter, r *http.Request) {
 		response.ValidationError(w, map[string]string{"ends_at": msg})
 		return
 	}
+	coHostIDs, hostErrs := parseCoHostIDs(input.CoHostIDs)
+	if len(hostErrs) > 0 {
+		response.ValidationError(w, hostErrs)
+		return
+	}
 
 	meetup, err := h.db.CreateMeetup(r.Context(), userID, CreateMeetupInput{
 		Title:           input.Title,
 		Description:     input.Description,
 		CategorySlug:    input.CategorySlug,
+		CoHostIDs:       coHostIDs,
 		EventType:       input.EventType,
 		Status:          input.Status,
 		Visibility:      input.Visibility,
@@ -281,11 +288,17 @@ func (h *Handler) UpdateMeetup(w http.ResponseWriter, r *http.Request) {
 		response.ValidationError(w, map[string]string{"ends_at": msg})
 		return
 	}
+	coHostIDs, hostErrs := parseCoHostIDs(input.CoHostIDs)
+	if len(hostErrs) > 0 {
+		response.ValidationError(w, hostErrs)
+		return
+	}
 
 	meetup, err := h.db.UpdateMeetup(r.Context(), meetupID, userID, UpdateMeetupInput{
 		Title:           input.Title,
 		Description:     input.Description,
 		CategorySlug:    input.CategorySlug,
+		CoHostIDs:       coHostIDs,
 		EventType:       input.EventType,
 		Status:          input.Status,
 		Visibility:      input.Visibility,
@@ -315,12 +328,40 @@ func (h *Handler) UpdateMeetup(w http.ResponseWriter, r *http.Request) {
 		} else if errors.Is(err, ErrForbidden) {
 			status = http.StatusForbidden
 			message = "forbidden"
+		} else if errors.Is(err, ErrInvalidTransition) {
+			status = http.StatusConflict
+			message = "published events stay live when edited"
 		}
 		response.Error(w, status, message)
 		return
 	}
 
 	response.Success(w, http.StatusOK, meetup)
+}
+
+func (h *Handler) DeleteMeetup(w http.ResponseWriter, r *http.Request) {
+	userID := middleware.CurrentUserID(r)
+	meetupID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		response.Error(w, http.StatusBadRequest, "invalid meetup id")
+		return
+	}
+
+	if err := h.db.DeleteMeetup(r.Context(), meetupID, userID); err != nil {
+		switch {
+		case errors.Is(err, ErrNotFound):
+			response.Error(w, http.StatusNotFound, "meetup not found")
+		case errors.Is(err, ErrForbidden):
+			response.Error(w, http.StatusForbidden, "forbidden")
+		case errors.Is(err, ErrDeleteNotAllowed):
+			response.Error(w, http.StatusConflict, "event cannot be deleted while attendees remain")
+		default:
+			response.Error(w, http.StatusInternalServerError, "could not delete meetup")
+		}
+		return
+	}
+
+	response.Success(w, http.StatusOK, map[string]any{"deleted": true})
 }
 
 func (h *Handler) categoryExists(ctx context.Context, slug string) (bool, error) {
@@ -608,6 +649,23 @@ func parseStringList(raw string) []string {
 		}
 	}
 	return values
+}
+
+func parseCoHostIDs(raw []string) ([]uuid.UUID, map[string]string) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	ids := make([]uuid.UUID, 0, len(raw))
+	for index, value := range raw {
+		parsed, err := uuid.Parse(strings.TrimSpace(value))
+		if err != nil {
+			return nil, map[string]string{
+				fmt.Sprintf("co_host_ids.%d", index): "invalid",
+			}
+		}
+		ids = append(ids, parsed)
+	}
+	return ids, nil
 }
 
 func encodeOffsetCursor(offset int) *string {

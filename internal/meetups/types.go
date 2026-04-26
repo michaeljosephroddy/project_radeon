@@ -116,6 +116,7 @@ type CreateMeetupInput struct {
 	Title           string
 	Description     *string
 	CategorySlug    string
+	CoHostIDs       []uuid.UUID
 	EventType       string
 	Status          string
 	Visibility      string

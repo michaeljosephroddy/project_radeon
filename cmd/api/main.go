@@ -175,6 +175,7 @@ func main() {
 		r.Post("/meetups/images", meetupsHandler.UploadCoverImage)
 		r.Get("/meetups/{id}", meetupsHandler.GetMeetup)
 		r.Patch("/meetups/{id}", meetupsHandler.UpdateMeetup)
+		r.Delete("/meetups/{id}", meetupsHandler.DeleteMeetup)
 		r.Post("/meetups/{id}/publish", meetupsHandler.PublishMeetup)
 		r.Post("/meetups/{id}/cancel", meetupsHandler.CancelMeetup)
 		r.Post("/meetups/{id}/rsvp", meetupsHandler.RSVP)

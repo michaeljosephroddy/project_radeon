@@ -52,16 +52,18 @@ var validTimeOfDay = map[string]bool{
 }
 
 var validMyMeetupScopes = map[string]bool{
-	"hosting": true,
-	"going":   true,
-	"drafts":  true,
-	"past":    true,
+	"upcoming":  true,
+	"going":     true,
+	"drafts":    true,
+	"cancelled": true,
+	"past":      true,
 }
 
 type meetupInput struct {
 	Title           string   `json:"title"`
 	Description     *string  `json:"description"`
 	CategorySlug    string   `json:"category_slug"`
+	CoHostIDs       []string `json:"co_host_ids"`
 	EventType       string   `json:"event_type"`
 	Status          string   `json:"status"`
 	Visibility      string   `json:"visibility"`
@@ -113,7 +115,31 @@ func normalizeMeetupInput(input meetupInput) meetupInput {
 	if input.EndsAt != nil {
 		trimStringPtrValue(input.EndsAt)
 	}
+	input.CoHostIDs = normalizeStringSlice(input.CoHostIDs)
 	return input
+}
+
+func normalizeStringSlice(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(values))
+	normalized := make([]string, 0, len(values))
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" {
+			continue
+		}
+		if _, exists := seen[trimmed]; exists {
+			continue
+		}
+		seen[trimmed] = struct{}{}
+		normalized = append(normalized, trimmed)
+	}
+	if len(normalized) == 0 {
+		return nil
+	}
+	return normalized
 }
 
 func trimStringPtr(ptr **string) {
