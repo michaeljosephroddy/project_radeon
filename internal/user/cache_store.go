@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -63,8 +64,8 @@ func (s *cachedStore) UsernameExistsForOthers(ctx context.Context, username stri
 	return s.inner.UsernameExistsForOthers(ctx, username, userID)
 }
 
-func (s *cachedStore) UpdateUser(ctx context.Context, userID uuid.UUID, username, city, country, bio *string, soberSince *time.Time, replaceSoberSince bool, interests []string, replaceInterests bool, lat, lng *float64) error {
-	if err := s.inner.UpdateUser(ctx, userID, username, city, country, bio, soberSince, replaceSoberSince, interests, replaceInterests, lat, lng); err != nil {
+func (s *cachedStore) UpdateUser(ctx context.Context, userID uuid.UUID, username, city, country, gender, bio *string, soberSince *time.Time, replaceSoberSince bool, birthDate *time.Time, replaceBirthDate bool, interests []string, replaceInterests bool, lat, lng *float64) error {
+	if err := s.inner.UpdateUser(ctx, userID, username, city, country, gender, bio, soberSince, replaceSoberSince, birthDate, replaceBirthDate, interests, replaceInterests, lat, lng); err != nil {
 		return err
 	}
 
@@ -109,18 +110,18 @@ func (s *cachedStore) UpdateBannerURL(ctx context.Context, userID uuid.UUID, ban
 	)
 }
 
-func (s *cachedStore) DiscoverUsers(ctx context.Context, currentUserID uuid.UUID, city, query string, lat, lng *float64, limit, offset int) ([]User, error) {
-	viewerVersion, err := s.cache.GetVersion(ctx, s.discoverViewerVersionKey(currentUserID))
+func (s *cachedStore) DiscoverUsers(ctx context.Context, params DiscoverUsersParams) ([]User, error) {
+	viewerVersion, err := s.cache.GetVersion(ctx, s.discoverViewerVersionKey(params.CurrentUserID))
 	if err != nil {
-		return s.inner.DiscoverUsers(ctx, currentUserID, city, query, lat, lng, limit, offset)
+		return s.inner.DiscoverUsers(ctx, params)
 	}
 	globalVersion, err := s.cache.GetVersion(ctx, s.discoverGlobalVersionKey())
 	if err != nil {
-		return s.inner.DiscoverUsers(ctx, currentUserID, city, query, lat, lng, limit, offset)
+		return s.inner.DiscoverUsers(ctx, params)
 	}
 
 	ttl := discoverRankedTTL
-	if query != "" {
+	if params.Query != "" {
 		ttl = discoverSearchTTL
 	}
 
@@ -129,18 +130,24 @@ func (s *cachedStore) DiscoverUsers(ctx context.Context, currentUserID uuid.UUID
 		"discover",
 		"viewer_v", strconv.FormatInt(viewerVersion, 10),
 		"global_v", strconv.FormatInt(globalVersion, 10),
-		"viewer", currentUserID.String(),
-		"city", encodePart(city),
-		"query", encodePart(query),
-		"lat", floatPart(lat),
-		"lng", floatPart(lng),
-		"limit", strconv.Itoa(limit),
-		"offset", strconv.Itoa(offset),
+		"viewer", params.CurrentUserID.String(),
+		"city", encodePart(params.City),
+		"query", encodePart(params.Query),
+		"gender", encodePart(params.Gender),
+		"sobriety", encodePart(params.Sobriety),
+		"age_min", intPart(params.AgeMin),
+		"age_max", intPart(params.AgeMax),
+		"distance_km", intPart(params.DistanceKm),
+		"interests", stringSlicePart(params.Interests),
+		"lat", floatPart(params.Lat),
+		"lng", floatPart(params.Lng),
+		"limit", strconv.Itoa(params.Limit),
+		"offset", strconv.Itoa(params.Offset),
 	)
 
 	var users []User
 	if err := s.cache.ReadThrough(ctx, key, ttl, &users, func(ctx context.Context, dest any) error {
-		loaded, err := s.inner.DiscoverUsers(ctx, currentUserID, city, query, lat, lng, limit, offset)
+		loaded, err := s.inner.DiscoverUsers(ctx, params)
 		if err != nil {
 			return err
 		}
@@ -151,6 +158,10 @@ func (s *cachedStore) DiscoverUsers(ctx context.Context, currentUserID uuid.UUID
 	}
 
 	return users, nil
+}
+
+func (s *cachedStore) CountDiscoverUsers(ctx context.Context, params DiscoverUsersParams) (int, error) {
+	return s.inner.CountDiscoverUsers(ctx, params)
 }
 
 func (s *cachedStore) ListInterests(ctx context.Context) ([]string, error) {
@@ -195,4 +206,22 @@ func floatPart(value *float64) string {
 		return "none"
 	}
 	return strconv.FormatFloat(*value, 'f', 6, 64)
+}
+
+func intPart(value *int) string {
+	if value == nil {
+		return "none"
+	}
+	return strconv.Itoa(*value)
+}
+
+func stringSlicePart(values []string) string {
+	if len(values) == 0 {
+		return "none"
+	}
+	escaped := make([]string, 0, len(values))
+	for _, value := range values {
+		escaped = append(escaped, url.QueryEscape(value))
+	}
+	return strings.Join(escaped, ",")
 }
