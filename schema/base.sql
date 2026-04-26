@@ -26,6 +26,11 @@ CREATE TABLE IF NOT EXISTS users (
     current_lng DOUBLE PRECISION,
     current_city TEXT,
     location_updated_at TIMESTAMPTZ,
+    discover_lat DOUBLE PRECISION,
+    discover_lng DOUBLE PRECISION,
+    sobriety_band SMALLINT,
+    profile_completeness SMALLINT NOT NULL DEFAULT 0,
+    last_active_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     CONSTRAINT users_username_format_chk CHECK (username ~ '^[a-z0-9._]{3,20}$'),
     CONSTRAINT users_subscription_tier_chk CHECK (subscription_tier IN ('free', 'plus')),
@@ -46,6 +51,18 @@ CREATE INDEX IF NOT EXISTS idx_users_username_trgm
 
 CREATE INDEX IF NOT EXISTS idx_users_city
     ON users(city);
+
+CREATE INDEX IF NOT EXISTS idx_users_gender
+    ON users(gender);
+
+CREATE INDEX IF NOT EXISTS idx_users_sobriety_band
+    ON users(sobriety_band);
+
+CREATE INDEX IF NOT EXISTS idx_users_last_active_at_desc
+    ON users(last_active_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_users_discover_lat_lng
+    ON users(discover_lat, discover_lng);
 
 CREATE TABLE IF NOT EXISTS interests (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -262,6 +279,36 @@ CREATE INDEX IF NOT EXISTS friendships_requester_id_idx
 
 CREATE INDEX IF NOT EXISTS friendships_status_idx
     ON friendships(status);
+
+CREATE INDEX IF NOT EXISTS idx_friendships_status_user_a
+    ON friendships(status, user_a_id);
+
+CREATE INDEX IF NOT EXISTS idx_friendships_status_user_b
+    ON friendships(status, user_b_id);
+
+CREATE TABLE IF NOT EXISTS discover_impressions (
+    viewer_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    candidate_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    source TEXT NOT NULL,
+    shown_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (viewer_id, candidate_id, shown_at)
+);
+
+CREATE INDEX IF NOT EXISTS idx_discover_impressions_viewer_shown_at
+    ON discover_impressions(viewer_id, shown_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_discover_impressions_viewer_candidate
+    ON discover_impressions(viewer_id, candidate_id, shown_at DESC);
+
+CREATE TABLE IF NOT EXISTS discover_dismissals (
+    viewer_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    candidate_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    dismissed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (viewer_id, candidate_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_discover_dismissals_viewer_dismissed_at
+    ON discover_dismissals(viewer_id, dismissed_at DESC);
 
 CREATE TABLE IF NOT EXISTS comment_mentions (
     comment_id UUID NOT NULL REFERENCES comments(id) ON DELETE CASCADE,

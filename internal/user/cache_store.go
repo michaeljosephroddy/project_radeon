@@ -15,6 +15,7 @@ const (
 	profileTTL         = 5 * time.Minute
 	discoverRankedTTL  = 10 * time.Minute
 	discoverSearchTTL  = 3 * time.Minute
+	discoverCountTTL   = 45 * time.Second
 	interestsTTL       = 24 * time.Hour
 	discoverGlobalPart = "discover_global"
 )
@@ -104,10 +105,7 @@ func (s *cachedStore) UpdateBannerURL(ctx context.Context, userID uuid.UUID, ban
 		return err
 	}
 
-	return s.cache.BumpVersions(ctx,
-		s.userVersionKey(userID),
-		s.discoverGlobalVersionKey(),
-	)
+	return s.cache.BumpVersions(ctx, s.userVersionKey(userID))
 }
 
 func (s *cachedStore) DiscoverUsers(ctx context.Context, params DiscoverUsersParams) ([]User, error) {
@@ -128,6 +126,7 @@ func (s *cachedStore) DiscoverUsers(ctx context.Context, params DiscoverUsersPar
 	key := s.cache.Key(
 		"user",
 		"discover",
+		"pipeline", s.discoverPipelinePart(),
 		"viewer_v", strconv.FormatInt(viewerVersion, 10),
 		"global_v", strconv.FormatInt(globalVersion, 10),
 		"viewer", params.CurrentUserID.String(),
@@ -161,7 +160,47 @@ func (s *cachedStore) DiscoverUsers(ctx context.Context, params DiscoverUsersPar
 }
 
 func (s *cachedStore) CountDiscoverUsers(ctx context.Context, params DiscoverUsersParams) (int, error) {
-	return s.inner.CountDiscoverUsers(ctx, params)
+	viewerVersion, err := s.cache.GetVersion(ctx, s.discoverViewerVersionKey(params.CurrentUserID))
+	if err != nil {
+		return s.inner.CountDiscoverUsers(ctx, params)
+	}
+	globalVersion, err := s.cache.GetVersion(ctx, s.discoverGlobalVersionKey())
+	if err != nil {
+		return s.inner.CountDiscoverUsers(ctx, params)
+	}
+
+	key := s.cache.Key(
+		"user",
+		"discover_count",
+		"pipeline", s.discoverPipelinePart(),
+		"viewer_v", strconv.FormatInt(viewerVersion, 10),
+		"global_v", strconv.FormatInt(globalVersion, 10),
+		"viewer", params.CurrentUserID.String(),
+		"city", encodePart(params.City),
+		"query", encodePart(params.Query),
+		"gender", encodePart(params.Gender),
+		"sobriety", encodePart(params.Sobriety),
+		"age_min", intPart(params.AgeMin),
+		"age_max", intPart(params.AgeMax),
+		"distance_km", intPart(params.DistanceKm),
+		"interests", stringSlicePart(params.Interests),
+		"lat", floatPart(params.Lat),
+		"lng", floatPart(params.Lng),
+	)
+
+	var count int
+	if err := s.cache.ReadThrough(ctx, key, discoverCountTTL, &count, func(ctx context.Context, dest any) error {
+		loaded, err := s.inner.CountDiscoverUsers(ctx, params)
+		if err != nil {
+			return err
+		}
+		*dest.(*int) = loaded
+		return nil
+	}); err != nil {
+		return 0, err
+	}
+
+	return count, nil
 }
 
 func (s *cachedStore) ListInterests(ctx context.Context) ([]string, error) {
@@ -192,6 +231,17 @@ func (s *cachedStore) discoverViewerVersionKey(userID uuid.UUID) string {
 
 func (s *cachedStore) discoverGlobalVersionKey() string {
 	return s.cache.Key("ver", "discover", discoverGlobalPart)
+}
+
+func (s *cachedStore) discoverPipelinePart() string {
+	store, ok := s.inner.(*pgStore)
+	if !ok {
+		return "legacy"
+	}
+	if store.discoverPipelineV2 {
+		return "v2"
+	}
+	return "legacy"
 }
 
 func encodePart(value string) string {

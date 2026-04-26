@@ -125,6 +125,15 @@ func (s *pgStore) CreatePost(ctx context.Context, userID uuid.UUID, body string,
 		}
 	}
 
+	if _, err := tx.Exec(ctx,
+		`UPDATE users
+		SET last_active_at = GREATEST(last_active_at, NOW())
+		WHERE id = $1`,
+		userID,
+	); err != nil {
+		return uuid.Nil, err
+	}
+
 	if err := tx.Commit(ctx); err != nil {
 		return uuid.Nil, err
 	}

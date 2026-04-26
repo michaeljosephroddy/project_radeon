@@ -172,3 +172,48 @@ func TestCachedStoreDiscoverUsersKeysByFilters(t *testing.T) {
 		t.Fatalf("expected distinct filtered queries to bypass each other's cache keys, got %d underlying calls", inner.discoverUsersCalls)
 	}
 }
+
+func TestCachedStoreCountDiscoverUsersCachesAndInvalidates(t *testing.T) {
+	t.Parallel()
+
+	inner := &stubQuerier{}
+	store := cachetest.NewStore()
+	cached := NewCachedStore(inner, store)
+
+	viewerID := uuid.New()
+	params := DiscoverUsersParams{
+		CurrentUserID: viewerID,
+		Gender:        "woman",
+		Interests:     []string{"fitness"},
+	}
+
+	first, err := cached.CountDiscoverUsers(context.Background(), params)
+	if err != nil {
+		t.Fatalf("first CountDiscoverUsers: %v", err)
+	}
+	second, err := cached.CountDiscoverUsers(context.Background(), params)
+	if err != nil {
+		t.Fatalf("second CountDiscoverUsers: %v", err)
+	}
+	if first != second {
+		t.Fatalf("expected cached discover count to be stable, got %d and %d", first, second)
+	}
+	if inner.countDiscoverCalls != 1 {
+		t.Fatalf("expected one underlying CountDiscoverUsers call after cache hit, got %d", inner.countDiscoverCalls)
+	}
+
+	if err := cached.UpdateUser(context.Background(), viewerID, nil, nil, nil, nil, nil, nil, false, nil, false, nil, false, nil, nil); err != nil {
+		t.Fatalf("UpdateUser: %v", err)
+	}
+
+	third, err := cached.CountDiscoverUsers(context.Background(), params)
+	if err != nil {
+		t.Fatalf("third CountDiscoverUsers: %v", err)
+	}
+	if inner.countDiscoverCalls != 2 {
+		t.Fatalf("expected discover-count cache invalidation to force a second underlying call, got %d", inner.countDiscoverCalls)
+	}
+	if third == second {
+		t.Fatalf("expected invalidated discover count to be refreshed, got %d and %d", third, second)
+	}
+}

@@ -13,12 +13,27 @@ import (
 var ErrNotFound = errors.New("not found")
 
 type pgStore struct {
-	pool *pgxpool.Pool
+	pool               *pgxpool.Pool
+	discoverPipelineV2 bool
 }
+
+const discoverProfileCompletenessExpr = `(
+	CASE WHEN NULLIF(u.avatar_url, '') IS NOT NULL THEN 1 ELSE 0 END
+	+ CASE WHEN NULLIF(u.city, '') IS NOT NULL THEN 1 ELSE 0 END
+	+ CASE WHEN NULLIF(u.country, '') IS NOT NULL THEN 1 ELSE 0 END
+	+ CASE WHEN NULLIF(u.bio, '') IS NOT NULL THEN 1 ELSE 0 END
+	+ CASE WHEN NULLIF(u.gender, '') IS NOT NULL THEN 1 ELSE 0 END
+	+ CASE WHEN u.birth_date IS NOT NULL THEN 1 ELSE 0 END
+	+ CASE WHEN u.sober_since IS NOT NULL THEN 1 ELSE 0 END
+	+ CASE
+		WHEN EXISTS (SELECT 1 FROM user_interests ui WHERE ui.user_id = u.id) THEN 1
+		ELSE 0
+	  END
+)::smallint`
 
 // NewPgStore wraps a pgxpool.Pool as the production Querier implementation.
 func NewPgStore(pool *pgxpool.Pool) Querier {
-	return &pgStore{pool: pool}
+	return NewPgStoreWithConfig(pool, StoreConfig{DiscoverPipelineV2: true})
 }
 
 func (s *pgStore) GetUser(ctx context.Context, viewerID, userID uuid.UUID) (*User, error) {
@@ -166,13 +181,23 @@ func (s *pgStore) UpdateUser(ctx context.Context, userID uuid.UUID, username, ci
 		}
 	}
 
+	if err := s.syncDiscoverUserStateTx(ctx, tx, userID); err != nil {
+		return err
+	}
+
 	return tx.Commit(ctx)
 }
 
 func (s *pgStore) UpdateCurrentLocation(ctx context.Context, userID uuid.UUID, lat, lng float64, city string) error {
 	_, err := s.pool.Exec(ctx,
 		`UPDATE users
-		SET current_lat = $2, current_lng = $3, current_city = $4, location_updated_at = NOW()
+		SET
+			current_lat = $2,
+			current_lng = $3,
+			current_city = $4,
+			location_updated_at = NOW(),
+			discover_lat = $2,
+			discover_lng = $3
 		WHERE id = $1`,
 		userID, lat, lng, city,
 	)
@@ -184,7 +209,10 @@ func (s *pgStore) UpdateAvatarURL(ctx context.Context, userID uuid.UUID, avatarU
 		`UPDATE users SET avatar_url = $1 WHERE id = $2`,
 		avatarURL, userID,
 	)
-	return err
+	if err != nil {
+		return err
+	}
+	return s.syncDiscoverUserState(ctx, userID)
 }
 
 func (s *pgStore) UpdateBannerURL(ctx context.Context, userID uuid.UUID, bannerURL string) error {
@@ -195,15 +223,66 @@ func (s *pgStore) UpdateBannerURL(ctx context.Context, userID uuid.UUID, bannerU
 	return err
 }
 
+func (s *pgStore) syncDiscoverUserState(ctx context.Context, userID uuid.UUID) error {
+	_, err := s.pool.Exec(ctx,
+		`UPDATE users u
+		SET
+			discover_lat = COALESCE(u.current_lat, u.lat),
+			discover_lng = COALESCE(u.current_lng, u.lng),
+			sobriety_band = CASE
+				WHEN u.sober_since IS NULL THEN NULL
+				WHEN CURRENT_DATE - u.sober_since < 30 THEN 1
+				WHEN CURRENT_DATE - u.sober_since < 90 THEN 2
+				WHEN CURRENT_DATE - u.sober_since < 365 THEN 3
+				WHEN CURRENT_DATE - u.sober_since < 730 THEN 4
+				WHEN CURRENT_DATE - u.sober_since < 1825 THEN 5
+				ELSE 6
+			END,
+			profile_completeness = `+discoverProfileCompletenessExpr+`
+		WHERE u.id = $1`,
+		userID,
+	)
+	return err
+}
+
+func (s *pgStore) syncDiscoverUserStateTx(ctx context.Context, tx pgx.Tx, userID uuid.UUID) error {
+	_, err := tx.Exec(ctx,
+		`UPDATE users u
+		SET
+			discover_lat = COALESCE(u.current_lat, u.lat),
+			discover_lng = COALESCE(u.current_lng, u.lng),
+			sobriety_band = CASE
+				WHEN u.sober_since IS NULL THEN NULL
+				WHEN CURRENT_DATE - u.sober_since < 30 THEN 1
+				WHEN CURRENT_DATE - u.sober_since < 90 THEN 2
+				WHEN CURRENT_DATE - u.sober_since < 365 THEN 3
+				WHEN CURRENT_DATE - u.sober_since < 730 THEN 4
+				WHEN CURRENT_DATE - u.sober_since < 1825 THEN 5
+				ELSE 6
+			END,
+			profile_completeness = `+discoverProfileCompletenessExpr+`
+		WHERE u.id = $1`,
+		userID,
+	)
+	return err
+}
+
 func (s *pgStore) DiscoverUsers(ctx context.Context, params DiscoverUsersParams) ([]User, error) {
 	if params.Query != "" {
 		// Search mode: prioritise exact and prefix username matches.
 		return s.discoverBySearch(ctx, params)
 	}
+	if s.discoverPipelineV2 {
+		return s.discoverUsersV2(ctx, params)
+	}
 	return s.discoverRanked(ctx, params)
 }
 
 func (s *pgStore) CountDiscoverUsers(ctx context.Context, params DiscoverUsersParams) (int, error) {
+	if s.discoverPipelineV2 {
+		return s.countDiscoverUsersV2(ctx, params)
+	}
+
 	sobrietyMinDays := sobrietyMinimumDays(params.Sobriety)
 
 	var count int
@@ -292,7 +371,20 @@ func (s *pgStore) discoverBySearch(ctx context.Context, params DiscoverUsersPara
 			WHERE ui.user_id = u.id
 		) interest_names ON true
 		WHERE u.id != $1
-			AND ($2 = '' OR u.city ILIKE $2)
+			AND NOT EXISTS (
+				SELECT 1
+				FROM friendships fx
+				WHERE (fx.user_a_id = $1 AND fx.user_b_id = u.id)
+					OR (fx.user_b_id = $1 AND fx.user_a_id = u.id)
+			)
+			AND NOT EXISTS (
+				SELECT 1
+				FROM discover_dismissals dd
+				WHERE dd.viewer_id = $1
+					AND dd.candidate_id = u.id
+					AND dd.dismissed_at > NOW() - INTERVAL '14 days'
+			)
+			AND ($2 = '' OR COALESCE(u.current_city, u.city) ILIKE $2)
 			AND u.username ILIKE '%' || $3 || '%'
 			AND ($4 = '' OR u.gender = $4)
 			AND ($5::int IS NULL OR (u.birth_date IS NOT NULL AND u.birth_date <= CURRENT_DATE - make_interval(years => $5::int)))
@@ -304,12 +396,12 @@ func (s *pgStore) discoverBySearch(ctx context.Context, params DiscoverUsersPara
 				OR $8::float8 IS NULL
 				OR $9::float8 IS NULL
 				OR (
-					COALESCE(u.current_lat, u.lat) IS NOT NULL
-					AND COALESCE(u.current_lng, u.lng) IS NOT NULL
+					u.discover_lat IS NOT NULL
+					AND u.discover_lng IS NOT NULL
 					AND 2.0 * 6371.0 * ASIN(SQRT(
-						POWER(SIN(RADIANS((COALESCE(u.current_lat, u.lat) - $8::float8) / 2.0)), 2)
-						+ COS(RADIANS($8::float8)) * COS(RADIANS(COALESCE(u.current_lat, u.lat)))
-						* POWER(SIN(RADIANS((COALESCE(u.current_lng, u.lng) - $9::float8) / 2.0)), 2)
+						POWER(SIN(RADIANS((u.discover_lat - $8::float8) / 2.0)), 2)
+						+ COS(RADIANS($8::float8)) * COS(RADIANS(u.discover_lat))
+						* POWER(SIN(RADIANS((u.discover_lng - $9::float8) / 2.0)), 2)
 					)) <= $10::float8
 				)
 			)

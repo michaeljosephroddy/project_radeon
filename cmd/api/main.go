@@ -80,7 +80,9 @@ func main() {
 	}
 
 	authHandler := auth.NewHandler(auth.NewPgStore(db))
-	userStore := user.NewCachedStore(user.NewPgStore(db), cacheStore)
+	userStore := user.NewCachedStore(user.NewPgStoreWithConfig(db, user.StoreConfig{
+		DiscoverPipelineV2: parseBoolEnvWithDefault("DISCOVER_PIPELINE_V2", true),
+	}), cacheStore)
 	feedStore := feed.NewCachedStore(feed.NewPgStore(db), cacheStore)
 	meetupsStore := meetups.NewCachedStore(meetups.NewPgStore(db), cacheStore)
 	supportStore := support.NewCachedStore(support.NewPgStore(db), cacheStore)
@@ -244,14 +246,18 @@ func main() {
 }
 
 func parseBoolEnv(key string) bool {
+	return parseBoolEnvWithDefault(key, false)
+}
+
+func parseBoolEnvWithDefault(key string, fallback bool) bool {
 	value := strings.TrimSpace(os.Getenv(key))
 	if value == "" {
-		return false
+		return fallback
 	}
 
 	enabled, err := strconv.ParseBool(value)
 	if err != nil {
-		return false
+		return fallback
 	}
 	return enabled
 }
