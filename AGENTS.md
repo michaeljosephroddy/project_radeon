@@ -105,6 +105,7 @@ Validation: `{"errors": {"field": "message"}}`
 - Always plan before writing code
 - Present a plan and wait for approval before implementing
 - Break tasks into steps and confirm each one
+- Create a git branch for new features
 
 ### ExecPlans
 - When writing complex features or significant refactors, use an ExecPlan (as described in PLANS.md) from design to implementation.

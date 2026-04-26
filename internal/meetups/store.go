@@ -257,6 +257,15 @@ func (s *pgStore) GetMeetupCapacity(ctx context.Context, meetupID uuid.UUID) (*i
 	return capacity, attendeeCount, err
 }
 
+func (s *pgStore) GetMeetupOrganizerID(ctx context.Context, meetupID uuid.UUID) (uuid.UUID, error) {
+	var organizerID uuid.UUID
+	err := s.pool.QueryRow(ctx, `SELECT organiser_id FROM meetups WHERE id = $1`, meetupID).Scan(&organizerID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return uuid.Nil, ErrNotFound
+	}
+	return organizerID, err
+}
+
 func (s *pgStore) IsRSVPd(ctx context.Context, meetupID, userID uuid.UUID) (bool, error) {
 	var exists bool
 	err := s.pool.QueryRow(ctx,
