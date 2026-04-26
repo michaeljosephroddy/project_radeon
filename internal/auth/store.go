@@ -38,9 +38,34 @@ func (s *pgStore) CreateUser(ctx context.Context, username, email, passwordHash,
 			password_hash,
 			city,
 			country,
-			sober_since
+			sober_since,
+			sobriety_band,
+			profile_completeness,
+			last_active_at
 		)
-		VALUES ($1, $2, $3, $4, $5, $6)
+		VALUES (
+			$1,
+			$2,
+			$3,
+			$4,
+			$5,
+			$6,
+			CASE
+				WHEN $6::date IS NULL THEN NULL
+				WHEN CURRENT_DATE - $6::date < 30 THEN 1
+				WHEN CURRENT_DATE - $6::date < 90 THEN 2
+				WHEN CURRENT_DATE - $6::date < 365 THEN 3
+				WHEN CURRENT_DATE - $6::date < 730 THEN 4
+				WHEN CURRENT_DATE - $6::date < 1825 THEN 5
+				ELSE 6
+			END,
+			(
+				CASE WHEN NULLIF($4, '') IS NOT NULL THEN 1 ELSE 0 END
+				+ CASE WHEN NULLIF($5, '') IS NOT NULL THEN 1 ELSE 0 END
+				+ CASE WHEN $6::date IS NOT NULL THEN 1 ELSE 0 END
+			)::smallint,
+			NOW()
+		)
 		RETURNING id`,
 		username, email, passwordHash, city, country, soberSince,
 	).Scan(&id)
