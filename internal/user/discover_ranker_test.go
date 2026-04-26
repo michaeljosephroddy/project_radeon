@@ -89,3 +89,28 @@ func TestRerankDiscoverCandidatesAvoidsImmediateSourceRepeatsWhenPossible(t *tes
 		t.Fatalf("expected reranker to interleave sources when possible, got %v then %v", reranked[0].Sources, reranked[1].Sources)
 	}
 }
+
+func TestShouldApplyDiscoverImpressionSuppressionOnlyOnFirstPage(t *testing.T) {
+	t.Parallel()
+
+	if !shouldApplyDiscoverImpressionSuppression(DiscoverUsersParams{Offset: 0, Limit: 21, DisplayLimit: 20}) {
+		t.Fatal("expected first page to apply impression suppression")
+	}
+	if shouldApplyDiscoverImpressionSuppression(DiscoverUsersParams{Offset: 20, Limit: 21, DisplayLimit: 20}) {
+		t.Fatal("expected later pages to keep a stable ranked set without impression suppression")
+	}
+}
+
+func TestDiscoverVisibleLimitPrefersDisplayLimit(t *testing.T) {
+	t.Parallel()
+
+	if got := discoverVisibleLimit(DiscoverUsersParams{DisplayLimit: 20, Limit: 21}); got != 20 {
+		t.Fatalf("discoverVisibleLimit(display=20, limit=21) = %d, want 20", got)
+	}
+	if got := discoverVisibleLimit(DiscoverUsersParams{DisplayLimit: 25, Limit: 21}); got != 21 {
+		t.Fatalf("discoverVisibleLimit(display=25, limit=21) = %d, want 21", got)
+	}
+	if got := discoverVisibleLimit(DiscoverUsersParams{DisplayLimit: 0, Limit: 20}); got != 20 {
+		t.Fatalf("discoverVisibleLimit(display=0, limit=20) = %d, want 20", got)
+	}
+}

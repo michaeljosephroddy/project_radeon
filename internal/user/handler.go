@@ -39,17 +39,18 @@ type DiscoverUsersParams struct {
 	Interests     []string
 	Lat           *float64
 	Lng           *float64
+	DisplayLimit  int
 	Limit         int
 	Offset        int
 }
 
 type DiscoverPreviewResponse struct {
-	ExactCount           int                    `json:"exact_count"`
-	BroadenedCount       *int                   `json:"broadened_count,omitempty"`
-	BroadenedAvailable   bool                   `json:"broadened_available"`
-	RelaxedFilters       []string               `json:"relaxed_filters,omitempty"`
-	LikelyTooNarrow      []string               `json:"likely_too_narrow_fields,omitempty"`
-	EffectiveFilters     DiscoverPreviewFilters `json:"effective_filters"`
+	ExactCount         int                    `json:"exact_count"`
+	BroadenedCount     *int                   `json:"broadened_count,omitempty"`
+	BroadenedAvailable bool                   `json:"broadened_available"`
+	RelaxedFilters     []string               `json:"relaxed_filters,omitempty"`
+	LikelyTooNarrow    []string               `json:"likely_too_narrow_fields,omitempty"`
+	EffectiveFilters   DiscoverPreviewFilters `json:"effective_filters"`
 }
 
 type DiscoverPreviewFilters struct {
@@ -420,10 +421,11 @@ func parseDiscoverRequest(r *http.Request, allowAdvanced bool) (DiscoverUsersPar
 	query := strings.TrimSpace(r.URL.Query().Get("q"))
 
 	request := DiscoverUsersParams{
-		City:   strings.TrimSpace(r.URL.Query().Get("city")),
-		Query:  username.Normalize(query),
-		Limit:  params.Limit + 1,
-		Offset: params.Offset,
+		City:         strings.TrimSpace(r.URL.Query().Get("city")),
+		Query:        username.Normalize(query),
+		DisplayLimit: params.Limit,
+		Limit:        params.Limit + 1,
+		Offset:       params.Offset,
 	}
 
 	if s := r.URL.Query().Get("lat"); s != "" {

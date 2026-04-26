@@ -140,6 +140,7 @@ func (s *cachedStore) DiscoverUsers(ctx context.Context, params DiscoverUsersPar
 		"interests", stringSlicePart(params.Interests),
 		"lat", floatPart(params.Lat),
 		"lng", floatPart(params.Lng),
+		"display_limit", strconv.Itoa(params.DisplayLimit),
 		"limit", strconv.Itoa(params.Limit),
 		"offset", strconv.Itoa(params.Offset),
 	)

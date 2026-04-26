@@ -15,10 +15,10 @@ import (
 )
 
 type mockQuerier struct {
-	emailExists      func(ctx context.Context, email string) (bool, error)
-	usernameExists   func(ctx context.Context, username string) (bool, error)
-	createUser       func(ctx context.Context, username, email, passwordHash, city, country string, soberSince *time.Time) (uuid.UUID, error)
-	getUserCreds     func(ctx context.Context, email string) (uuid.UUID, string, error)
+	emailExists    func(ctx context.Context, email string) (bool, error)
+	usernameExists func(ctx context.Context, username string) (bool, error)
+	createUser     func(ctx context.Context, username, email, passwordHash, city, country string, gender *string, birthDate, soberSince *time.Time) (uuid.UUID, error)
+	getUserCreds   func(ctx context.Context, email string) (uuid.UUID, string, error)
 }
 
 func (m *mockQuerier) EmailExists(ctx context.Context, email string) (bool, error) {
@@ -33,9 +33,9 @@ func (m *mockQuerier) UsernameExists(ctx context.Context, username string) (bool
 	}
 	return false, nil
 }
-func (m *mockQuerier) CreateUser(ctx context.Context, username, email, passwordHash, city, country string, soberSince *time.Time) (uuid.UUID, error) {
+func (m *mockQuerier) CreateUser(ctx context.Context, username, email, passwordHash, city, country string, gender *string, birthDate, soberSince *time.Time) (uuid.UUID, error) {
 	if m.createUser != nil {
-		return m.createUser(ctx, username, email, passwordHash, city, country, soberSince)
+		return m.createUser(ctx, username, email, passwordHash, city, country, gender, birthDate, soberSince)
 	}
 	return uuid.New(), nil
 }
@@ -75,6 +75,32 @@ func TestRegisterInvalidSoberSince(t *testing.T) {
 	}
 }
 
+func TestRegisterInvalidBirthDate(t *testing.T) {
+	h := NewHandler(&mockQuerier{})
+	req := httptest.NewRequest(http.MethodPost, "/auth/register", strings.NewReader(`{"username":"valid.user","email":"user@example.com","password":"password123","birth_date":"04/19/1990"}`))
+	rec := httptest.NewRecorder()
+
+	h.Register(rec, req)
+
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnprocessableEntity)
+	}
+	assertErrorFields(t, rec, "birth_date")
+}
+
+func TestRegisterInvalidGender(t *testing.T) {
+	h := NewHandler(&mockQuerier{})
+	req := httptest.NewRequest(http.MethodPost, "/auth/register", strings.NewReader(`{"username":"valid.user","email":"user@example.com","password":"password123","gender":"robot"}`))
+	rec := httptest.NewRecorder()
+
+	h.Register(rec, req)
+
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnprocessableEntity)
+	}
+	assertErrorFields(t, rec, "gender")
+}
+
 func TestRegisterEmailConflict(t *testing.T) {
 	h := NewHandler(&mockQuerier{
 		emailExists: func(_ context.Context, _ string) (bool, error) { return true, nil },
@@ -105,7 +131,7 @@ func TestRegisterUsernameConflict(t *testing.T) {
 
 func TestRegisterDBErrorOnCreate(t *testing.T) {
 	h := NewHandler(&mockQuerier{
-		createUser: func(_ context.Context, _, _, _, _, _ string, _ *time.Time) (uuid.UUID, error) {
+		createUser: func(_ context.Context, _, _, _, _, _ string, _ *string, _, _ *time.Time) (uuid.UUID, error) {
 			return uuid.Nil, errors.New("db error")
 		},
 	})
@@ -122,12 +148,16 @@ func TestRegisterDBErrorOnCreate(t *testing.T) {
 func TestRegisterSuccess(t *testing.T) {
 	t.Setenv("JWT_SECRET", "test-secret")
 	fixed := uuid.MustParse("00000000-0000-0000-0000-000000000001")
+	var gotGender *string
+	var gotBirthDate *time.Time
 	h := NewHandler(&mockQuerier{
-		createUser: func(_ context.Context, _, _, _, _, _ string, _ *time.Time) (uuid.UUID, error) {
+		createUser: func(_ context.Context, _, _, _, _, _ string, gender *string, birthDate, _ *time.Time) (uuid.UUID, error) {
+			gotGender = gender
+			gotBirthDate = birthDate
 			return fixed, nil
 		},
 	})
-	req := httptest.NewRequest(http.MethodPost, "/auth/register", strings.NewReader(validRegisterBody))
+	req := httptest.NewRequest(http.MethodPost, "/auth/register", strings.NewReader(`{"username":"valid.user","email":"user@example.com","password":"password123","gender":"Women","birth_date":"1990-05-14"}`))
 	rec := httptest.NewRecorder()
 
 	h.Register(rec, req)
@@ -149,6 +179,12 @@ func TestRegisterSuccess(t *testing.T) {
 	}
 	if body.Data.UserID != fixed {
 		t.Fatalf("user_id = %v, want %v", body.Data.UserID, fixed)
+	}
+	if gotGender == nil || *gotGender != "woman" {
+		t.Fatalf("gender = %v, want woman", gotGender)
+	}
+	if gotBirthDate == nil || gotBirthDate.Format("2006-01-02") != "1990-05-14" {
+		t.Fatalf("birthDate = %v, want 1990-05-14", gotBirthDate)
 	}
 }
 
