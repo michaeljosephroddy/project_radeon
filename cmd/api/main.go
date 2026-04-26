@@ -84,7 +84,9 @@ func main() {
 		DiscoverPipelineV2: parseBoolEnvWithDefault("DISCOVER_PIPELINE_V2", true),
 	}), cacheStore)
 	feedStore := feed.NewCachedStore(feed.NewPgStore(db), cacheStore)
-	meetupsStore := meetups.NewCachedStore(meetups.NewPgStore(db), cacheStore)
+	meetupsStore := meetups.NewCachedStore(meetups.NewPgStoreWithConfig(db, meetups.StoreConfig{
+		RecommendedPipelineV2: parseBoolEnvWithDefault("MEETUPS_RECOMMENDER_V2", true),
+	}), cacheStore)
 	supportStore := support.NewCachedStore(support.NewPgStore(db), cacheStore)
 	friendsStore := friends.NewCachedStore(friends.NewPgStore(db), cacheStore)
 

@@ -59,6 +59,7 @@ func (s *cachedStore) DiscoverMeetups(ctx context.Context, userID uuid.UUID, par
 	key := s.cache.Key(
 		"meetups", "discover",
 		"v", strconv.FormatInt(version, 10),
+		"pipeline", discoverPipelineCacheVersion(params.Sort),
 		"viewer", userID.String(),
 		"q", encodeMeetupPart(params.Query),
 		"category", encodeMeetupPart(params.CategorySlug),
@@ -87,6 +88,13 @@ func (s *cachedStore) DiscoverMeetups(ctx context.Context, userID uuid.UUID, par
 		return nil, err
 	}
 	return &page, nil
+}
+
+func discoverPipelineCacheVersion(sortKey string) string {
+	if sortKey == "recommended" {
+		return recommendedPipelineVersion
+	}
+	return "legacy"
 }
 
 func (s *cachedStore) ListMyMeetups(ctx context.Context, userID uuid.UUID, params MyMeetupsParams) (*CursorPage[Meetup], error) {
