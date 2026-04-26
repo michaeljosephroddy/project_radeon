@@ -40,6 +40,7 @@ type mockQuerier struct {
 	updateMeetup    func(ctx context.Context, meetupID, userID uuid.UUID, input UpdateMeetupInput) (*Meetup, error)
 	publishMeetup   func(ctx context.Context, meetupID, userID uuid.UUID) (*Meetup, error)
 	cancelMeetup    func(ctx context.Context, meetupID, userID uuid.UUID) (*Meetup, error)
+	deleteMeetup    func(ctx context.Context, meetupID, userID uuid.UUID) error
 	getAttendees    func(ctx context.Context, meetupID uuid.UUID, limit, offset int) ([]Attendee, error)
 	getWaitlist     func(ctx context.Context, meetupID, userID uuid.UUID, limit, offset int) ([]Attendee, error)
 	toggleRSVP      func(ctx context.Context, meetupID, userID uuid.UUID) (*RSVPResult, error)
@@ -99,6 +100,13 @@ func (m *mockQuerier) CancelMeetup(ctx context.Context, meetupID, userID uuid.UU
 		return m.cancelMeetup(ctx, meetupID, userID)
 	}
 	return &Meetup{ID: meetupID, OrganizerID: userID, Status: "cancelled"}, nil
+}
+
+func (m *mockQuerier) DeleteMeetup(ctx context.Context, meetupID, userID uuid.UUID) error {
+	if m.deleteMeetup != nil {
+		return m.deleteMeetup(ctx, meetupID, userID)
+	}
+	return nil
 }
 
 func (m *mockQuerier) GetAttendees(ctx context.Context, meetupID uuid.UUID, limit, offset int) ([]Attendee, error) {
@@ -241,6 +249,34 @@ func TestCreateMeetupSuccess(t *testing.T) {
 	}
 }
 
+func TestCreateMeetupParsesCoHosts(t *testing.T) {
+	coHostID := uuid.New()
+	h := NewHandler(&mockQuerier{
+		createMeetup: func(_ context.Context, userID uuid.UUID, input CreateMeetupInput) (*Meetup, error) {
+			if len(input.CoHostIDs) != 1 || input.CoHostIDs[0] != coHostID {
+				t.Fatalf("co-host ids = %v, want [%s]", input.CoHostIDs, coHostID)
+			}
+			return &Meetup{ID: uuid.New(), OrganizerID: userID, Title: input.Title, CategorySlug: input.CategorySlug, CategoryLabel: "Coffee", City: input.City, StartsAt: input.StartsAt}, nil
+		},
+	})
+	body := `{"title":"Coffee Walk","category_slug":"coffee","event_type":"in_person","status":"published","visibility":"public","city":"Dublin","starts_at":"2026-05-01T19:00:00Z","co_host_ids":["` + coHostID.String() + `"]}`
+	rec := httptest.NewRecorder()
+	h.CreateMeetup(rec, authedRequest(http.MethodPost, "/meetups", body))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusCreated)
+	}
+}
+
+func TestCreateMeetupRejectsInvalidCoHostID(t *testing.T) {
+	h := NewHandler(&mockQuerier{})
+	body := `{"title":"Coffee Walk","category_slug":"coffee","event_type":"in_person","status":"published","visibility":"public","city":"Dublin","starts_at":"2026-05-01T19:00:00Z","co_host_ids":["bad-id"]}`
+	rec := httptest.NewRecorder()
+	h.CreateMeetup(rec, authedRequest(http.MethodPost, "/meetups", body))
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnprocessableEntity)
+	}
+}
+
 func TestUploadCoverImageSuccess(t *testing.T) {
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
@@ -293,6 +329,21 @@ func TestUpdateMeetupForbidden(t *testing.T) {
 	h.UpdateMeetup(rec, req)
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusForbidden)
+	}
+}
+
+func TestUpdateMeetupRejectsInvalidTransition(t *testing.T) {
+	h := NewHandler(&mockQuerier{
+		updateMeetup: func(_ context.Context, _, _ uuid.UUID, _ UpdateMeetupInput) (*Meetup, error) {
+			return nil, ErrInvalidTransition
+		},
+	})
+	req := authedRequest(http.MethodPatch, "/", validCreateBody())
+	req = withURLParam(req, "id", fixedMeetup.String())
+	rec := httptest.NewRecorder()
+	h.UpdateMeetup(rec, req)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusConflict)
 	}
 }
 
@@ -349,6 +400,21 @@ func TestGetWaitlistForbidden(t *testing.T) {
 	h.GetWaitlist(rec, req)
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusForbidden)
+	}
+}
+
+func TestDeleteMeetupConflict(t *testing.T) {
+	h := NewHandler(&mockQuerier{
+		deleteMeetup: func(_ context.Context, _, _ uuid.UUID) error {
+			return ErrDeleteNotAllowed
+		},
+	})
+	req := authedRequest(http.MethodDelete, "/", "")
+	req = withURLParam(req, "id", fixedMeetup.String())
+	rec := httptest.NewRecorder()
+	h.DeleteMeetup(rec, req)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusConflict)
 	}
 }
 

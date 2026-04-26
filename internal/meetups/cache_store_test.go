@@ -60,6 +60,10 @@ func (s *stubQuerier) CancelMeetup(context.Context, uuid.UUID, uuid.UUID) (*Meet
 	return nil, nil
 }
 
+func (s *stubQuerier) DeleteMeetup(context.Context, uuid.UUID, uuid.UUID) error {
+	return nil
+}
+
 func (s *stubQuerier) GetAttendees(context.Context, uuid.UUID, int, int) ([]Attendee, error) {
 	return nil, nil
 }

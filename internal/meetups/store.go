@@ -11,13 +11,16 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 var (
-	ErrNotFound        = errors.New("not found")
-	ErrForbidden       = errors.New("forbidden")
-	ErrCapacityReached = errors.New("capacity reached")
+	ErrNotFound          = errors.New("not found")
+	ErrForbidden         = errors.New("forbidden")
+	ErrCapacityReached   = errors.New("capacity reached")
+	ErrDeleteNotAllowed  = errors.New("delete not allowed")
+	ErrInvalidTransition = errors.New("invalid transition")
 )
 
 type pgStore struct {
@@ -156,6 +159,9 @@ func (s *pgStore) CreateMeetup(ctx context.Context, userID uuid.UUID, input Crea
 	`, meetup.ID, userID); err != nil {
 		return nil, err
 	}
+	if err := syncMeetupHosts(ctx, tx, meetup.ID, userID, input.CoHostIDs); err != nil {
+		return nil, err
+	}
 
 	if input.Status == "published" {
 		if _, err := tx.Exec(ctx, `
@@ -180,8 +186,24 @@ func (s *pgStore) UpdateMeetup(ctx context.Context, meetupID, userID uuid.UUID, 
 	if err := s.ensureManagePermission(ctx, meetupID, userID); err != nil {
 		return nil, err
 	}
+	currentStatus, err := s.loadManagedMeetupStatus(ctx, meetupID, userID)
+	if err != nil {
+		return nil, err
+	}
+	if currentStatus == "published" && input.Status != "published" {
+		return nil, ErrInvalidTransition
+	}
+	if currentStatus != "draft" && currentStatus != "published" {
+		return nil, ErrForbidden
+	}
 
-	tag, err := s.pool.Exec(ctx, `
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+
+	tag, err := tx.Exec(ctx, `
 		UPDATE meetups
 		SET title = $3,
 			description = $4,
@@ -216,6 +238,12 @@ func (s *pgStore) UpdateMeetup(ctx context.Context, meetupID, userID uuid.UUID, 
 	}
 	if tag.RowsAffected() == 0 {
 		return nil, ErrNotFound
+	}
+	if err := syncMeetupHosts(ctx, tx, meetupID, userID, input.CoHostIDs); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
 	}
 	return s.GetMeetup(ctx, meetupID, userID)
 }
@@ -276,6 +304,38 @@ func (s *pgStore) CancelMeetup(ctx context.Context, meetupID, userID uuid.UUID) 
 		return nil, ErrNotFound
 	}
 	return s.GetMeetup(ctx, meetupID, userID)
+}
+
+func (s *pgStore) DeleteMeetup(ctx context.Context, meetupID, userID uuid.UUID) error {
+	if err := s.ensureManagePermission(ctx, meetupID, userID); err != nil {
+		return err
+	}
+
+	var status string
+	var attendeeCount int
+	err := s.pool.QueryRow(ctx, `
+		SELECT status, attendee_count
+		FROM meetups
+		WHERE id = $1 AND organiser_id = $2
+	`, meetupID, userID).Scan(&status, &attendeeCount)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if status != "draft" && attendeeCount > 1 {
+		return ErrDeleteNotAllowed
+	}
+
+	tag, err := s.pool.Exec(ctx, `DELETE FROM meetups WHERE id = $1 AND organiser_id = $2`, meetupID, userID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 func (s *pgStore) GetAttendees(ctx context.Context, meetupID uuid.UUID, limit, offset int) ([]Attendee, error) {
@@ -489,6 +549,22 @@ func (s *pgStore) ensureManagePermission(ctx context.Context, meetupID, userID u
 	return nil
 }
 
+func (s *pgStore) loadManagedMeetupStatus(ctx context.Context, meetupID, userID uuid.UUID) (string, error) {
+	var status string
+	err := s.pool.QueryRow(ctx, `
+		SELECT status
+		FROM meetups
+		WHERE id = $1 AND organiser_id = $2
+	`, meetupID, userID).Scan(&status)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", ErrNotFound
+	}
+	if err != nil {
+		return "", err
+	}
+	return status, nil
+}
+
 func (s *pgStore) loadViewerContext(ctx context.Context, userID uuid.UUID) (viewerContext, error) {
 	viewer := viewerContext{UserID: userID, Interests: map[string]struct{}{}}
 	var lat, lng *float64
@@ -520,6 +596,35 @@ func (s *pgStore) loadViewerContext(ctx context.Context, userID uuid.UUID) (view
 		viewer.Interests[interest] = struct{}{}
 	}
 	return viewer, rows.Err()
+}
+
+type meetupHostExecutor interface {
+	Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error)
+}
+
+func syncMeetupHosts(ctx context.Context, execer meetupHostExecutor, meetupID, organizerID uuid.UUID, coHostIDs []uuid.UUID) error {
+	if _, err := execer.Exec(ctx, `
+		DELETE FROM event_hosts
+		WHERE meetup_id = $1
+			AND user_id <> $2
+	`, meetupID, organizerID); err != nil {
+		return err
+	}
+
+	for _, hostID := range coHostIDs {
+		if hostID == organizerID {
+			continue
+		}
+		if _, err := execer.Exec(ctx, `
+			INSERT INTO event_hosts (meetup_id, user_id, role)
+			VALUES ($1, $2, 'co_host')
+			ON CONFLICT (meetup_id, user_id)
+			DO UPDATE SET role = 'co_host'
+		`, meetupID, hostID); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *pgStore) loadDiscoverMeetups(ctx context.Context, userID uuid.UUID, params DiscoverMeetupsParams, dateFrom, dateTo *time.Time) ([]Meetup, error) {
@@ -685,11 +790,17 @@ func (s *pgStore) loadMyMeetups(ctx context.Context, userID uuid.UUID, scope str
 	case "going":
 		query += `
 			EXISTS (SELECT 1 FROM meetup_attendees ma WHERE ma.meetup_id = m.id AND ma.user_id = $1)
+			AND m.organiser_id <> $1
 			AND m.status = 'published'
 			AND m.starts_at >= NOW()
 		`
 	case "drafts":
 		query += "m.organiser_id = $1 AND m.status = 'draft'"
+	case "cancelled":
+		query += `
+			m.organiser_id = $1
+			AND m.status = 'cancelled'
+		`
 	case "past":
 		query += `
 			(
@@ -704,8 +815,8 @@ func (s *pgStore) loadMyMeetups(ctx context.Context, userID uuid.UUID, scope str
 	default:
 		query += `
 			m.organiser_id = $1
-			AND m.status IN ('published', 'cancelled', 'completed')
-			AND m.starts_at >= NOW() - INTERVAL '1 day'
+			AND m.status = 'published'
+			AND m.starts_at >= NOW()
 		`
 	}
 

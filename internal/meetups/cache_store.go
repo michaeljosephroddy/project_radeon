@@ -94,10 +94,15 @@ func (s *cachedStore) ListMyMeetups(ctx context.Context, userID uuid.UUID, param
 	if err != nil {
 		return s.inner.ListMyMeetups(ctx, userID, params)
 	}
+	globalVersion, err := s.cache.GetVersion(ctx, s.meetupsVersionKey())
+	if err != nil {
+		return s.inner.ListMyMeetups(ctx, userID, params)
+	}
 	key := s.cache.Key(
 		"meetups", "mine",
 		"user", userID.String(),
 		"v", strconv.FormatInt(version, 10),
+		"global_v", strconv.FormatInt(globalVersion, 10),
 		"scope", encodeMeetupPart(params.Scope),
 		"cursor", encodeMeetupPart(params.Cursor),
 		"limit", strconv.Itoa(params.Limit),
@@ -175,6 +180,14 @@ func (s *cachedStore) CancelMeetup(ctx context.Context, meetupID, userID uuid.UU
 	}
 	s.bumpMeetupVersions(ctx, meetup.ID, userID)
 	return meetup, nil
+}
+
+func (s *cachedStore) DeleteMeetup(ctx context.Context, meetupID, userID uuid.UUID) error {
+	if err := s.inner.DeleteMeetup(ctx, meetupID, userID); err != nil {
+		return err
+	}
+	s.bumpMeetupVersions(ctx, meetupID, userID)
+	return nil
 }
 
 func (s *cachedStore) GetAttendees(ctx context.Context, meetupID uuid.UUID, limit, offset int) ([]Attendee, error) {
