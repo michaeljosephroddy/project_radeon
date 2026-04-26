@@ -185,8 +185,14 @@ CREATE INDEX IF NOT EXISTS idx_meetups_starts_at
 CREATE INDEX IF NOT EXISTS idx_meetups_status_starts_at
     ON meetups(status, starts_at);
 
+CREATE INDEX IF NOT EXISTS idx_meetups_status_visibility_starts_at
+    ON meetups(status, visibility, starts_at);
+
 CREATE INDEX IF NOT EXISTS idx_meetups_category_starts_at
     ON meetups(category_slug, starts_at);
+
+CREATE INDEX IF NOT EXISTS idx_meetups_event_type_starts_at
+    ON meetups(event_type, starts_at);
 
 CREATE INDEX IF NOT EXISTS idx_meetups_lat_lng
     ON meetups(lat, lng);
@@ -200,6 +206,9 @@ CREATE TABLE IF NOT EXISTS meetup_attendees (
 
 CREATE INDEX IF NOT EXISTS idx_meetup_attendees_meetup_id
     ON meetup_attendees(meetup_id);
+
+CREATE INDEX IF NOT EXISTS idx_meetup_attendees_user_meetup_id
+    ON meetup_attendees(user_id, meetup_id);
 
 CREATE TABLE IF NOT EXISTS event_hosts (
     meetup_id UUID NOT NULL REFERENCES meetups(id) ON DELETE CASCADE,

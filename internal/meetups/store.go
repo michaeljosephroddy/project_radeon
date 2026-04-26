@@ -24,18 +24,28 @@ var (
 )
 
 type pgStore struct {
-	pool *pgxpool.Pool
+	pool                  *pgxpool.Pool
+	recommendedPipelineV2 bool
 }
 
 type viewerContext struct {
-	UserID    uuid.UUID
-	Latitude  *float64
-	Longitude *float64
-	Interests map[string]struct{}
+	UserID        uuid.UUID
+	Latitude      *float64
+	Longitude     *float64
+	Interests     map[string]struct{}
+	InterestNames []string
 }
 
 func NewPgStore(pool *pgxpool.Pool) Querier {
-	return &pgStore{pool: pool}
+	return NewPgStoreWithConfig(pool, StoreConfig{RecommendedPipelineV2: true})
+}
+
+type StoreConfig struct {
+	RecommendedPipelineV2 bool
+}
+
+func NewPgStoreWithConfig(pool *pgxpool.Pool, cfg StoreConfig) Querier {
+	return &pgStore{pool: pool, recommendedPipelineV2: cfg.RecommendedPipelineV2}
 }
 
 func (s *pgStore) ListCategories(ctx context.Context) ([]MeetupCategory, error) {
@@ -64,6 +74,9 @@ func (s *pgStore) DiscoverMeetups(ctx context.Context, userID uuid.UUID, params 
 	viewer, err := s.loadViewerContext(ctx, userID)
 	if err != nil {
 		return nil, err
+	}
+	if s.recommendedPipelineV2 && params.Sort == "recommended" {
+		return s.discoverRecommendedMeetups(ctx, userID, params, viewer)
 	}
 	dateFrom, dateTo := resolveDateWindow(params)
 	meetups, err := s.loadDiscoverMeetups(ctx, userID, params, dateFrom, dateTo)
@@ -595,6 +608,7 @@ func (s *pgStore) loadViewerContext(ctx context.Context, userID uuid.UUID) (view
 		}
 		viewer.Interests[interest] = struct{}{}
 	}
+	viewer.InterestNames = sortedInterestNames(viewer.Interests)
 	return viewer, rows.Err()
 }
 
