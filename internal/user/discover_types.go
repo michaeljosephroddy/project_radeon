@@ -118,6 +118,20 @@ func discoverCandidatePoolLimit(params DiscoverUsersParams) int {
 	return target
 }
 
+func discoverVisibleLimit(params DiscoverUsersParams) int {
+	if params.DisplayLimit > 0 && params.DisplayLimit <= params.Limit {
+		return params.DisplayLimit
+	}
+	if params.DisplayLimit > params.Limit && params.Limit > 0 {
+		return params.Limit
+	}
+	return params.Limit
+}
+
+func shouldApplyDiscoverImpressionSuppression(params DiscoverUsersParams) bool {
+	return params.Offset == 0
+}
+
 func discoverPrimarySource(candidate discoverCandidate) string {
 	priority := []string{
 		discoverSourceMutual,

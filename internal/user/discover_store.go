@@ -69,13 +69,15 @@ func (s *pgStore) discoverUsersV2(ctx context.Context, params DiscoverUsersParam
 		return candidates[left].Score > candidates[right].Score
 	})
 
-	impressions, err := s.loadRecentDiscoverImpressions(ctx, params.CurrentUserID, candidateIDs(candidates))
-	if err != nil {
-		return nil, err
-	}
-	filtered, changed := filterDiscoverSuppressedCandidates(candidates, impressions, now)
-	if changed && len(filtered) > 0 {
-		candidates = filtered
+	if shouldApplyDiscoverImpressionSuppression(params) {
+		impressions, err := s.loadRecentDiscoverImpressions(ctx, params.CurrentUserID, candidateIDs(candidates))
+		if err != nil {
+			return nil, err
+		}
+		filtered, changed := filterDiscoverSuppressedCandidates(candidates, impressions, now)
+		if changed && len(filtered) > 0 {
+			candidates = filtered
+		}
 	}
 
 	candidates = rerankDiscoverCandidates(candidates)
@@ -94,6 +96,11 @@ func (s *pgStore) discoverUsersV2(ctx context.Context, params DiscoverUsersParam
 	if err != nil {
 		return nil, err
 	}
+	visibleLimit := discoverVisibleLimit(params)
+	if visibleLimit > 0 && len(page) > visibleLimit {
+		page = page[:visibleLimit]
+	}
+
 	_ = s.recordDiscoverImpressions(ctx, params.CurrentUserID, page, now)
 	return users, nil
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -15,7 +16,7 @@ import (
 type Querier interface {
 	EmailExists(ctx context.Context, email string) (bool, error)
 	UsernameExists(ctx context.Context, username string) (bool, error)
-	CreateUser(ctx context.Context, username, email, passwordHash, city, country string, soberSince *time.Time) (uuid.UUID, error)
+	CreateUser(ctx context.Context, username, email, passwordHash, city, country string, gender *string, birthDate, soberSince *time.Time) (uuid.UUID, error)
 	GetUserCredentials(ctx context.Context, email string) (id uuid.UUID, passwordHash string, err error)
 }
 
@@ -50,6 +51,21 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	birthDate, err := parseBirthDate(input.BirthDate)
+	if err != nil {
+		response.Error(w, http.StatusBadRequest, "birth_date must be YYYY-MM-DD")
+		return
+	}
+
+	var gender *string
+	if input.Gender != nil {
+		trimmedGender := strings.TrimSpace(*input.Gender)
+		if trimmedGender != "" {
+			normalizedGender, _ := normalizeRegisterGender(trimmedGender)
+			gender = &normalizedGender
+		}
+	}
+
 	// Uniqueness checks stay explicit so the handler can return field-specific
 	// API errors instead of a generic database constraint failure.
 	emailExists, err := h.db.EmailExists(r.Context(), input.Email)
@@ -78,7 +94,7 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	userID, err := h.db.CreateUser(r.Context(), input.Username, input.Email, string(hash), input.City, input.Country, soberSince)
+	userID, err := h.db.CreateUser(r.Context(), input.Username, input.Email, string(hash), input.City, input.Country, gender, birthDate, soberSince)
 	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "could not create user")
 		return
