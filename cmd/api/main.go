@@ -79,6 +79,7 @@ func main() {
 		log.Println("redis cache disabled")
 	}
 
+	userChecker := middleware.NewPGUserChecker(db)
 	authHandler := auth.NewHandler(auth.NewPgStore(db))
 	userStore := user.NewCachedStore(user.NewPgStoreWithConfig(db, user.StoreConfig{
 		DiscoverPipelineV2: parseBoolEnvWithDefault("DISCOVER_PIPELINE_V2", true),
@@ -98,7 +99,9 @@ func main() {
 		notifications.NewExpoProvider(nil),
 	)
 	notificationsHandler := notifications.NewHandler(notificationsService)
-	chatsHandler := chats.NewHandlerWithNotifier(chats.NewPgStore(db), notificationsService)
+	chatsRealtimeHub := chats.NewRealtimeHub()
+	chatsRealtimeBus := chats.NewRedisRealtimeBus(cacheStore)
+	chatsHandler := chats.NewHandlerWithRealtimeInfra(chats.NewPgStore(db), notificationsService, chatsRealtimeHub, chatsRealtimeBus)
 	friendsHandler := friends.NewHandler(friendsStore)
 	feedHandler = feed.NewHandlerWithNotifier(feedStore, notificationsService, uploader)
 	meetupsHandler = meetups.NewHandler(meetupsStore, uploader)
@@ -109,7 +112,6 @@ func main() {
 	r.Use(chimiddleware.Logger)
 	r.Use(chimiddleware.Recoverer)
 	r.Use(chimiddleware.RequestID)
-	r.Use(chimiddleware.Timeout(30 * time.Second))
 	r.Use(middleware.RateLimitIP)
 	r.Use(cors.Handler(cors.Options{
 		AllowedOrigins:   []string{"*"},
@@ -128,15 +130,26 @@ func main() {
 		response.Success(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
 
+	r.Group(func(r chi.Router) {
+		r.Use(middleware.AuthenticateWebSocket)
+		r.Use(middleware.EnsureCurrentUserExists(userChecker))
+		r.Use(middleware.RateLimitUser)
+
+		r.Get("/chats/ws", chatsHandler.ConnectRealtime)
+	})
+
+	apiRouter := chi.NewRouter()
+	apiRouter.Use(chimiddleware.Timeout(30 * time.Second))
+
 	// ── Public routes ──────────────────────────────────────────────
-	r.Post("/auth/register", authHandler.Register)
-	r.Post("/auth/login", authHandler.Login)
-	r.Get("/interests", userHandler.ListInterests)
+	apiRouter.Post("/auth/register", authHandler.Register)
+	apiRouter.Post("/auth/login", authHandler.Login)
+	apiRouter.Get("/interests", userHandler.ListInterests)
 
 	// ── Protected routes ───────────────────────────────────────────
-	r.Group(func(r chi.Router) {
+	apiRouter.Group(func(r chi.Router) {
 		r.Use(middleware.Authenticate)
-		r.Use(middleware.EnsureCurrentUserExists(middleware.NewPGUserChecker(db)))
+		r.Use(middleware.EnsureCurrentUserExists(userChecker))
 		r.Use(middleware.RateLimitUser)
 
 		// Feed
@@ -215,6 +228,8 @@ func main() {
 		r.Patch("/notifications/preferences", notificationsHandler.UpdatePreferences)
 	})
 
+	r.Mount("/", apiRouter)
+
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
@@ -247,6 +262,9 @@ func main() {
 	}()
 
 	go notifications.RunWorker(workerCtx, log.Default(), notificationsService, 15*time.Second, 25)
+	if err := chatsRealtimeBus.Start(workerCtx, chatsRealtimeHub); err != nil {
+		log.Fatalf("chat realtime bus failed: %v", err)
+	}
 
 	fmt.Printf("project_radeon api running on :%s\n", port)
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {

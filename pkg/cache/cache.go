@@ -24,6 +24,8 @@ type Store interface {
 	Key(parts ...string) string
 	GetJSON(ctx context.Context, key string, dest any) (bool, error)
 	SetJSON(ctx context.Context, key string, value any, ttl time.Duration) error
+	PublishJSON(ctx context.Context, channel string, value any) error
+	Subscribe(ctx context.Context, channel string) (Subscription, error)
 	GetVersion(ctx context.Context, key string) (int64, error)
 	BumpVersions(ctx context.Context, keys ...string) error
 	WithJitter(ttl time.Duration) time.Duration

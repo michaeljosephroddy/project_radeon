@@ -15,10 +15,11 @@ import (
 )
 
 type mockQuerier struct {
-	listChats          func(ctx context.Context, userID uuid.UUID, query string, limit, offset int) ([]Chat, error)
+	listChats          func(ctx context.Context, userID uuid.UUID, query string, before *ChatListCursor, limit int) ([]Chat, error)
 	listChatRequests   func(ctx context.Context, userID uuid.UUID) ([]Chat, error)
 	getChat            func(ctx context.Context, userID, chatID uuid.UUID) (*Chat, error)
 	getChatStatus      func(ctx context.Context, chatID uuid.UUID) (string, error)
+	listChatMemberIDs  func(ctx context.Context, chatID uuid.UUID) ([]uuid.UUID, error)
 	findDirectChat     func(ctx context.Context, userID, otherUserID uuid.UUID) (uuid.UUID, bool, error)
 	createChat         func(ctx context.Context, userID uuid.UUID, isGroup bool, name *string, memberIDs []uuid.UUID) (uuid.UUID, error)
 	isAddresseeOfChat  func(ctx context.Context, chatID, userID uuid.UUID) (bool, error)
@@ -26,13 +27,13 @@ type mockQuerier struct {
 	declineChatRequest func(ctx context.Context, chatID uuid.UUID) error
 	isMemberOfChat     func(ctx context.Context, chatID, userID uuid.UUID) (bool, error)
 	listMessages       func(ctx context.Context, chatID, userID uuid.UUID, before *time.Time, limit int) ([]Message, *uuid.UUID, error)
-	insertMessage      func(ctx context.Context, chatID, userID uuid.UUID, body string) (uuid.UUID, error)
+	insertMessage      func(ctx context.Context, chatID, userID uuid.UUID, body string, clientMessageID *string) (*Message, error)
 	deleteOrLeaveChat  func(ctx context.Context, chatID, userID uuid.UUID) (string, error)
 }
 
-func (m *mockQuerier) ListChats(ctx context.Context, userID uuid.UUID, query string, limit, offset int) ([]Chat, error) {
+func (m *mockQuerier) ListChats(ctx context.Context, userID uuid.UUID, query string, before *ChatListCursor, limit int) ([]Chat, error) {
 	if m.listChats != nil {
-		return m.listChats(ctx, userID, query, limit, offset)
+		return m.listChats(ctx, userID, query, before, limit)
 	}
 	return nil, nil
 }
@@ -53,6 +54,12 @@ func (m *mockQuerier) GetChatStatus(ctx context.Context, chatID uuid.UUID) (stri
 		return m.getChatStatus(ctx, chatID)
 	}
 	return "active", nil
+}
+func (m *mockQuerier) ListChatMemberIDs(ctx context.Context, chatID uuid.UUID) ([]uuid.UUID, error) {
+	if m.listChatMemberIDs != nil {
+		return m.listChatMemberIDs(ctx, chatID)
+	}
+	return []uuid.UUID{fixedUser, fixedOther}, nil
 }
 func (m *mockQuerier) FindDirectChat(ctx context.Context, userID, otherUserID uuid.UUID) (uuid.UUID, bool, error) {
 	if m.findDirectChat != nil {
@@ -96,11 +103,19 @@ func (m *mockQuerier) ListMessages(ctx context.Context, chatID, userID uuid.UUID
 	}
 	return nil, nil, nil
 }
-func (m *mockQuerier) InsertMessage(ctx context.Context, chatID, userID uuid.UUID, body string) (uuid.UUID, error) {
+func (m *mockQuerier) InsertMessage(ctx context.Context, chatID, userID uuid.UUID, body string, clientMessageID *string) (*Message, error) {
 	if m.insertMessage != nil {
-		return m.insertMessage(ctx, chatID, userID, body)
+		return m.insertMessage(ctx, chatID, userID, body, clientMessageID)
 	}
-	return uuid.MustParse("00000000-0000-0000-0000-000000000020"), nil
+	return &Message{
+		ID:              uuid.MustParse("00000000-0000-0000-0000-000000000020"),
+		ChatID:          chatID,
+		SenderID:        userID,
+		Username:        "tester",
+		Body:            body,
+		SentAt:          time.Now().UTC(),
+		ClientMessageID: clientMessageID,
+	}, nil
 }
 func (m *mockQuerier) DeleteOrLeaveChat(ctx context.Context, chatID, userID uuid.UUID) (string, error) {
 	if m.deleteOrLeaveChat != nil {
@@ -141,7 +156,7 @@ func TestListChatsSuccess(t *testing.T) {
 
 func TestListChatsDBError(t *testing.T) {
 	h := NewHandler(&mockQuerier{
-		listChats: func(_ context.Context, _ uuid.UUID, _ string, _, _ int) ([]Chat, error) {
+		listChats: func(_ context.Context, _ uuid.UUID, _ string, _ *ChatListCursor, _ int) ([]Chat, error) {
 			return nil, errors.New("db error")
 		},
 	})
@@ -152,6 +167,18 @@ func TestListChatsDBError(t *testing.T) {
 
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusInternalServerError)
+	}
+}
+
+func TestListChatsInvalidBeforeCursor(t *testing.T) {
+	h := NewHandler(&mockQuerier{})
+	req := withUserID(httptest.NewRequest(http.MethodGet, "/chats?before=bad-cursor", nil), fixedUser)
+	rec := httptest.NewRecorder()
+
+	h.ListChats(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
 	}
 }
 

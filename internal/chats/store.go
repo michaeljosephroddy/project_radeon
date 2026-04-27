@@ -3,6 +3,7 @@ package chats
 import (
 	"context"
 	"errors"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -17,6 +18,10 @@ var (
 
 type pgStore struct {
 	pool *pgxpool.Pool
+
+	messageSchemaOnce           sync.Once
+	messageSchemaRealtimeFields bool
+	messageSchemaErr            error
 }
 
 const chatSelectColumns = `SELECT
@@ -54,7 +59,16 @@ func NewPgStore(pool *pgxpool.Pool) Querier {
 	return &pgStore{pool: pool}
 }
 
-func (s *pgStore) ListChats(ctx context.Context, userID uuid.UUID, query string, limit, offset int) ([]Chat, error) {
+func (s *pgStore) ListChats(ctx context.Context, userID uuid.UUID, query string, before *ChatListCursor, limit int) ([]Chat, error) {
+	var beforeActivityAt *time.Time
+	var beforeChatID *uuid.UUID
+	if before != nil {
+		normalizedActivityAt := before.ActivityAt.UTC()
+		normalizedChatID := before.ChatID
+		beforeActivityAt = &normalizedActivityAt
+		beforeChatID = &normalizedChatID
+	}
+
 	rows, err := s.pool.Query(ctx,
 		chatSelectColumns+`
 		FROM chats ch
@@ -114,9 +128,17 @@ func (s *pgStore) ListChats(ctx context.Context, userID uuid.UUID, query string,
 					AND COALESCE(other.username, '') ILIKE '%' || $2 || '%'
 				)
 			)
-		ORDER BY COALESCE(m.sent_at, ch.created_at) DESC
-		LIMIT $3 OFFSET $4`,
-		userID, query, limit, offset,
+			AND (
+				$3::timestamptz IS NULL
+				OR COALESCE(m.sent_at, ch.created_at) < $3
+				OR (
+					COALESCE(m.sent_at, ch.created_at) = $3
+					AND ch.id < $4
+				)
+			)
+		ORDER BY COALESCE(m.sent_at, ch.created_at) DESC, ch.id DESC
+		LIMIT $5`,
+		userID, query, beforeActivityAt, beforeChatID, limit,
 	)
 	if err != nil {
 		return nil, err
@@ -309,6 +331,29 @@ func (s *pgStore) GetChatStatus(ctx context.Context, chatID uuid.UUID) (string, 
 	return status, err
 }
 
+func (s *pgStore) ListChatMemberIDs(ctx context.Context, chatID uuid.UUID) ([]uuid.UUID, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT user_id
+		FROM chat_members
+		WHERE chat_id = $1`,
+		chatID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	memberIDs := make([]uuid.UUID, 0)
+	for rows.Next() {
+		var memberID uuid.UUID
+		if err := rows.Scan(&memberID); err != nil {
+			return nil, err
+		}
+		memberIDs = append(memberIDs, memberID)
+	}
+	return memberIDs, rows.Err()
+}
+
 func (s *pgStore) FindDirectChat(ctx context.Context, userID, otherUserID uuid.UUID) (uuid.UUID, bool, error) {
 	var chatID uuid.UUID
 	err := s.pool.QueryRow(ctx,
@@ -416,10 +461,66 @@ func (s *pgStore) IsMemberOfChat(ctx context.Context, chatID, userID uuid.UUID) 
 	return is, err
 }
 
+func (s *pgStore) messageRealtimeFieldsEnabled(ctx context.Context) (bool, error) {
+	s.messageSchemaOnce.Do(func() {
+		var clientMessageIDExists bool
+		s.messageSchemaErr = s.pool.QueryRow(ctx,
+			`SELECT EXISTS (
+				SELECT 1
+				FROM information_schema.columns
+				WHERE table_name = 'messages'
+					AND column_name = 'client_message_id'
+			)`,
+		).Scan(&clientMessageIDExists)
+		if s.messageSchemaErr != nil {
+			return
+		}
+
+		var chatSeqExists bool
+		s.messageSchemaErr = s.pool.QueryRow(ctx,
+			`SELECT EXISTS (
+				SELECT 1
+				FROM information_schema.columns
+				WHERE table_name = 'messages'
+					AND column_name = 'chat_seq'
+			)`,
+		).Scan(&chatSeqExists)
+		if s.messageSchemaErr != nil {
+			return
+		}
+
+		s.messageSchemaRealtimeFields = clientMessageIDExists && chatSeqExists
+	})
+
+	return s.messageSchemaRealtimeFields, s.messageSchemaErr
+}
+
 func (s *pgStore) ListMessages(ctx context.Context, chatID, userID uuid.UUID, before *time.Time, limit int) ([]Message, *uuid.UUID, error) {
-	rows, err := s.pool.Query(ctx,
-		`SELECT
+	realtimeFieldsEnabled, err := s.messageRealtimeFieldsEnabled(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	query := `SELECT
 			m.id,
+			m.chat_id,
+			m.sender_id,
+			u.username,
+			u.avatar_url,
+			m.body,
+			m.sent_at,
+			m.client_message_id,
+			m.chat_seq
+		FROM messages m
+		JOIN users u ON u.id = m.sender_id
+		WHERE m.chat_id = $1
+			AND ($2::timestamptz IS NULL OR m.sent_at < $2)
+		ORDER BY m.chat_seq DESC, m.sent_at DESC
+		LIMIT $3`
+	if !realtimeFieldsEnabled {
+		query = `SELECT
+			m.id,
+			m.chat_id,
 			m.sender_id,
 			u.username,
 			u.avatar_url,
@@ -430,9 +531,10 @@ func (s *pgStore) ListMessages(ctx context.Context, chatID, userID uuid.UUID, be
 		WHERE m.chat_id = $1
 			AND ($2::timestamptz IS NULL OR m.sent_at < $2)
 		ORDER BY m.sent_at DESC
-		LIMIT $3`,
-		chatID, before, limit,
-	)
+		LIMIT $3`
+	}
+
+	rows, err := s.pool.Query(ctx, query, chatID, before, limit)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -441,8 +543,14 @@ func (s *pgStore) ListMessages(ctx context.Context, chatID, userID uuid.UUID, be
 	var msgs []Message
 	for rows.Next() {
 		var m Message
-		if err := rows.Scan(&m.ID, &m.SenderID, &m.Username, &m.AvatarURL, &m.Body, &m.SentAt); err != nil {
-			return nil, nil, err
+		if realtimeFieldsEnabled {
+			if err := rows.Scan(&m.ID, &m.ChatID, &m.SenderID, &m.Username, &m.AvatarURL, &m.Body, &m.SentAt, &m.ClientMessageID, &m.ChatSeq); err != nil {
+				return nil, nil, err
+			}
+		} else {
+			if err := rows.Scan(&m.ID, &m.ChatID, &m.SenderID, &m.Username, &m.AvatarURL, &m.Body, &m.SentAt); err != nil {
+				return nil, nil, err
+			}
 		}
 		msgs = append(msgs, m)
 	}
@@ -475,13 +583,149 @@ func (s *pgStore) ListMessages(ctx context.Context, chatID, userID uuid.UUID, be
 	return msgs, otherUserLastReadMessageID, nil
 }
 
-func (s *pgStore) InsertMessage(ctx context.Context, chatID, userID uuid.UUID, body string) (uuid.UUID, error) {
-	var msgID uuid.UUID
-	err := s.pool.QueryRow(ctx,
-		`INSERT INTO messages (chat_id, sender_id, body) VALUES ($1, $2, $3) RETURNING id`,
-		chatID, userID, body,
-	).Scan(&msgID)
-	return msgID, err
+func (s *pgStore) InsertMessage(ctx context.Context, chatID, userID uuid.UUID, body string, clientMessageID *string) (*Message, error) {
+	realtimeFieldsEnabled, err := s.messageRealtimeFieldsEnabled(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	if !realtimeFieldsEnabled {
+		var message Message
+		err = s.pool.QueryRow(ctx,
+			`WITH inserted AS (
+				INSERT INTO messages (chat_id, sender_id, body)
+				VALUES ($1, $2, $3)
+				RETURNING id, chat_id, sender_id, body, sent_at
+			)
+			SELECT
+				inserted.id,
+				inserted.chat_id,
+				inserted.sender_id,
+				u.username,
+				u.avatar_url,
+				inserted.body,
+				inserted.sent_at
+			FROM inserted
+			JOIN users u ON u.id = inserted.sender_id`,
+			chatID, userID, body,
+		).Scan(
+			&message.ID,
+			&message.ChatID,
+			&message.SenderID,
+			&message.Username,
+			&message.AvatarURL,
+			&message.Body,
+			&message.SentAt,
+		)
+		if err != nil {
+			return nil, err
+		}
+		return &message, nil
+	}
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+
+	if clientMessageID != nil {
+		normalizedID := *clientMessageID
+		if normalizedID != "" {
+			var existing Message
+			err = tx.QueryRow(ctx,
+				`SELECT
+					m.id,
+					m.chat_id,
+					m.sender_id,
+					u.username,
+					u.avatar_url,
+					m.body,
+					m.sent_at,
+					m.client_message_id,
+					m.chat_seq
+				FROM messages m
+				JOIN users u ON u.id = m.sender_id
+				WHERE m.chat_id = $1
+					AND m.client_message_id = $2
+				LIMIT 1`,
+				chatID, normalizedID,
+			).Scan(
+				&existing.ID,
+				&existing.ChatID,
+				&existing.SenderID,
+				&existing.Username,
+				&existing.AvatarURL,
+				&existing.Body,
+				&existing.SentAt,
+				&existing.ClientMessageID,
+				&existing.ChatSeq,
+			)
+			if err == nil {
+				if commitErr := tx.Commit(ctx); commitErr != nil {
+					return nil, commitErr
+				}
+				return &existing, nil
+			}
+			if !errors.Is(err, pgx.ErrNoRows) {
+				return nil, err
+			}
+		}
+	}
+
+	if _, err := tx.Exec(ctx, `SELECT id FROM chats WHERE id = $1 FOR UPDATE`, chatID); err != nil {
+		return nil, err
+	}
+
+	var nextSeq int64
+	if err := tx.QueryRow(ctx,
+		`SELECT COALESCE(MAX(chat_seq), 0) + 1
+		FROM messages
+		WHERE chat_id = $1`,
+		chatID,
+	).Scan(&nextSeq); err != nil {
+		return nil, err
+	}
+
+	var message Message
+	err = tx.QueryRow(ctx,
+		`WITH inserted AS (
+			INSERT INTO messages (chat_id, sender_id, body, client_message_id, chat_seq)
+			VALUES ($1, $2, $3, $4, $5)
+			RETURNING id, chat_id, sender_id, body, sent_at, client_message_id, chat_seq
+		)
+		SELECT
+			inserted.id,
+			inserted.chat_id,
+			inserted.sender_id,
+			u.username,
+			u.avatar_url,
+			inserted.body,
+			inserted.sent_at,
+			inserted.client_message_id,
+			inserted.chat_seq
+		FROM inserted
+		JOIN users u ON u.id = inserted.sender_id`,
+		chatID, userID, body, clientMessageID, nextSeq,
+	).Scan(
+		&message.ID,
+		&message.ChatID,
+		&message.SenderID,
+		&message.Username,
+		&message.AvatarURL,
+		&message.Body,
+		&message.SentAt,
+		&message.ClientMessageID,
+		&message.ChatSeq,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return &message, nil
 }
 
 // DeleteOrLeaveChat removes the user from a group or deletes a direct chat entirely.

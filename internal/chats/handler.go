@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -18,10 +19,11 @@ import (
 
 // Querier is the database interface required by the chats handler.
 type Querier interface {
-	ListChats(ctx context.Context, userID uuid.UUID, query string, limit, offset int) ([]Chat, error)
+	ListChats(ctx context.Context, userID uuid.UUID, query string, before *ChatListCursor, limit int) ([]Chat, error)
 	ListChatRequests(ctx context.Context, userID uuid.UUID) ([]Chat, error)
 	GetChat(ctx context.Context, userID, chatID uuid.UUID) (*Chat, error)
 	GetChatStatus(ctx context.Context, chatID uuid.UUID) (string, error)
+	ListChatMemberIDs(ctx context.Context, chatID uuid.UUID) ([]uuid.UUID, error)
 	FindDirectChat(ctx context.Context, userID, otherUserID uuid.UUID) (uuid.UUID, bool, error)
 	CreateChat(ctx context.Context, userID uuid.UUID, isGroup bool, name *string, memberIDs []uuid.UUID) (uuid.UUID, error)
 	IsAddresseeOfChat(ctx context.Context, chatID, userID uuid.UUID) (bool, error)
@@ -29,7 +31,7 @@ type Querier interface {
 	DeclineChatRequest(ctx context.Context, chatID uuid.UUID) error
 	IsMemberOfChat(ctx context.Context, chatID, userID uuid.UUID) (bool, error)
 	ListMessages(ctx context.Context, chatID, userID uuid.UUID, before *time.Time, limit int) ([]Message, *uuid.UUID, error)
-	InsertMessage(ctx context.Context, chatID, userID uuid.UUID, body string) (uuid.UUID, error)
+	InsertMessage(ctx context.Context, chatID, userID uuid.UUID, body string, clientMessageID *string) (*Message, error)
 	DeleteOrLeaveChat(ctx context.Context, chatID, userID uuid.UUID) (string, error)
 }
 
@@ -41,6 +43,8 @@ type Notifier interface {
 type Handler struct {
 	db       Querier
 	notifier Notifier
+	realtime *RealtimeHub
+	bus      EventBus
 }
 
 type SupportChatContext struct {
@@ -68,13 +72,28 @@ type Chat struct {
 	SupportContext *SupportChatContext `json:"support_context,omitempty"`
 }
 
+type ChatListCursor struct {
+	ActivityAt time.Time
+	ChatID     uuid.UUID
+}
+
+type ChatPage struct {
+	Items      []Chat  `json:"items"`
+	Limit      int     `json:"limit"`
+	HasMore    bool    `json:"has_more"`
+	NextBefore *string `json:"next_before,omitempty"`
+}
+
 type Message struct {
-	ID        uuid.UUID `json:"id"`
-	SenderID  uuid.UUID `json:"sender_id"`
-	Username  string    `json:"username"`
-	AvatarURL *string   `json:"avatar_url"`
-	Body      string    `json:"body"`
-	SentAt    time.Time `json:"sent_at"`
+	ID              uuid.UUID `json:"id"`
+	ChatID          uuid.UUID `json:"chat_id"`
+	SenderID        uuid.UUID `json:"sender_id"`
+	Username        string    `json:"username"`
+	AvatarURL       *string   `json:"avatar_url"`
+	Body            string    `json:"body"`
+	SentAt          time.Time `json:"sent_at"`
+	ClientMessageID *string   `json:"client_message_id,omitempty"`
+	ChatSeq         *int64    `json:"chat_seq,omitempty"`
 }
 
 type MessagePage struct {
@@ -87,26 +106,72 @@ type MessagePage struct {
 
 // NewHandler builds a chats handler. Pass chats.NewPgStore(pool) for production.
 func NewHandler(db Querier) *Handler {
-	return &Handler{db: db}
+	return &Handler{db: db, realtime: NewRealtimeHub()}
 }
 
 func NewHandlerWithNotifier(db Querier, notifier Notifier) *Handler {
-	return &Handler{db: db, notifier: notifier}
+	return &Handler{db: db, notifier: notifier, realtime: NewRealtimeHub()}
+}
+
+func NewHandlerWithRealtimeInfra(db Querier, notifier Notifier, realtime *RealtimeHub, bus EventBus) *Handler {
+	if realtime == nil {
+		realtime = NewRealtimeHub()
+	}
+	return &Handler{
+		db:       db,
+		notifier: notifier,
+		realtime: realtime,
+		bus:      bus,
+	}
 }
 
 // ListChats returns one page of the caller's active chats.
 func (h *Handler) ListChats(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.CurrentUserID(r)
-	params := pagination.Parse(r, 20, 50)
 	query := strings.TrimSpace(r.URL.Query().Get("q"))
+	limit := 20
+	if rawLimit := strings.TrimSpace(r.URL.Query().Get("limit")); rawLimit != "" {
+		if parsedLimit, err := strconv.Atoi(rawLimit); err == nil && parsedLimit > 0 {
+			limit = parsedLimit
+		}
+	}
+	if limit > 50 {
+		limit = 50
+	}
 
-	chats, err := h.db.ListChats(r.Context(), userID, query, params.Limit+1, params.Offset)
+	var before *ChatListCursor
+	if beforeRaw := strings.TrimSpace(r.URL.Query().Get("before")); beforeRaw != "" {
+		parsedBefore, err := parseChatListCursor(beforeRaw)
+		if err != nil {
+			response.Error(w, http.StatusBadRequest, "before must be a valid chat cursor")
+			return
+		}
+		before = parsedBefore
+	}
+
+	chats, err := h.db.ListChats(r.Context(), userID, query, before, limit+1)
 	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "could not fetch chats")
 		return
 	}
 
-	response.Success(w, http.StatusOK, pagination.Slice(chats, params))
+	hasMore := len(chats) > limit
+	if hasMore {
+		chats = chats[:limit]
+	}
+
+	var nextBefore *string
+	if hasMore && len(chats) > 0 {
+		cursor := formatChatListCursor(chatActivityAt(chats[len(chats)-1]), chats[len(chats)-1].ID)
+		nextBefore = &cursor
+	}
+
+	response.Success(w, http.StatusOK, ChatPage{
+		Items:      chats,
+		Limit:      limit,
+		HasMore:    hasMore,
+		NextBefore: nextBefore,
+	})
 }
 
 // ListChatRequests returns pending direct-message requests addressed to the current user.
@@ -338,7 +403,7 @@ func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	msgID, err := h.db.InsertMessage(r.Context(), chatID, userID, input.Body)
+	message, err := h.db.InsertMessage(r.Context(), chatID, userID, input.Body, nil)
 	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "could not send message")
 		return
@@ -347,11 +412,16 @@ func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
 	if h.notifier != nil {
 		// Message delivery is the primary action; notification failures should not
 		// turn a successful send into a retried duplicate from the client.
-		_ = h.notifier.NotifyChatMessage(r.Context(), chatID, msgID, userID, input.Body)
-		_ = h.notifier.MarkChatRead(r.Context(), chatID, userID, &msgID, time.Now().UTC())
+		_ = h.notifier.NotifyChatMessage(r.Context(), chatID, message.ID, userID, input.Body)
+		_ = h.notifier.MarkChatRead(r.Context(), chatID, userID, &message.ID, time.Now().UTC())
 	}
 
-	response.Success(w, http.StatusCreated, map[string]any{"id": msgID})
+	if err := h.broadcastMessageCreated(r.Context(), chatID, message); err != nil {
+		response.Error(w, http.StatusInternalServerError, "could not broadcast message")
+		return
+	}
+
+	response.Success(w, http.StatusCreated, map[string]any{"id": message.ID})
 }
 
 // MarkRead records that the caller has caught up with the current thread.
@@ -386,11 +456,50 @@ func (h *Handler) MarkRead(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.notifier.MarkChatRead(r.Context(), chatID, userID, input.LastReadMessageID, time.Now().UTC()); err != nil {
+	readAt := time.Now().UTC()
+	if err := h.notifier.MarkChatRead(r.Context(), chatID, userID, input.LastReadMessageID, readAt); err != nil {
 		response.Error(w, http.StatusInternalServerError, "could not update read state")
 		return
 	}
+
+	if err := h.broadcastReadUpdated(r.Context(), chatID, userID, input.LastReadMessageID, readAt); err != nil {
+		response.Error(w, http.StatusInternalServerError, "could not broadcast read state")
+		return
+	}
 	response.Success(w, http.StatusOK, map[string]bool{"read": true})
+}
+
+func chatActivityAt(chat Chat) time.Time {
+	if chat.LastMessageAt != nil {
+		return chat.LastMessageAt.UTC()
+	}
+	return chat.CreatedAt.UTC()
+}
+
+func parseChatListCursor(raw string) (*ChatListCursor, error) {
+	parts := strings.Split(raw, "|")
+	if len(parts) != 2 {
+		return nil, errors.New("invalid cursor")
+	}
+
+	activityAt, err := time.Parse(time.RFC3339Nano, parts[0])
+	if err != nil {
+		return nil, err
+	}
+
+	chatID, err := uuid.Parse(parts[1])
+	if err != nil {
+		return nil, err
+	}
+
+	return &ChatListCursor{
+		ActivityAt: activityAt.UTC(),
+		ChatID:     chatID,
+	}, nil
+}
+
+func formatChatListCursor(activityAt time.Time, chatID uuid.UUID) string {
+	return activityAt.UTC().Format(time.RFC3339Nano) + "|" + chatID.String()
 }
 
 // DeleteChat deletes a direct chat or removes the caller from a group chat.

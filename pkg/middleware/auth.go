@@ -39,14 +39,23 @@ func (c *pgUserChecker) UserExists(ctx context.Context, userID uuid.UUID) (bool,
 
 // Authenticate validates the bearer token and injects the authenticated user ID into the request context.
 func Authenticate(next http.Handler) http.Handler {
+	return authenticateRequest(next, false)
+}
+
+// AuthenticateWebSocket accepts either a bearer header or access_token query
+// parameter so browser websocket clients can authenticate during the upgrade.
+func AuthenticateWebSocket(next http.Handler) http.Handler {
+	return authenticateRequest(next, true)
+}
+
+func authenticateRequest(next http.Handler, allowQueryToken bool) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		authHeader := r.Header.Get("Authorization")
-		if authHeader == "" || !strings.HasPrefix(authHeader, "Bearer ") {
+		tokenString, ok := extractAccessToken(r, allowQueryToken)
+		if !ok {
 			response.Error(w, http.StatusUnauthorized, "missing or invalid authorization header")
 			return
 		}
 
-		tokenString := strings.TrimPrefix(authHeader, "Bearer ")
 		claims, err := auth.ParseToken(tokenString)
 		if err != nil {
 			response.Error(w, http.StatusUnauthorized, "invalid or expired token")
@@ -56,6 +65,25 @@ func Authenticate(next http.Handler) http.Handler {
 		ctx := context.WithValue(r.Context(), UserIDKey, claims.UserID)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+func extractAccessToken(r *http.Request, allowQueryToken bool) (string, bool) {
+	authHeader := strings.TrimSpace(r.Header.Get("Authorization"))
+	if authHeader != "" && strings.HasPrefix(authHeader, "Bearer ") {
+		token := strings.TrimSpace(strings.TrimPrefix(authHeader, "Bearer "))
+		if token != "" {
+			return token, true
+		}
+	}
+
+	if allowQueryToken {
+		token := strings.TrimSpace(r.URL.Query().Get("access_token"))
+		if token != "" {
+			return token, true
+		}
+	}
+
+	return "", false
 }
 
 // EnsureCurrentUserExists rejects requests authenticated with a token whose
