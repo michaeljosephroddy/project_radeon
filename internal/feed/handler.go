@@ -26,11 +26,21 @@ import (
 
 // Querier is the database interface required by the feed handler.
 type Querier interface {
-	ListFeed(ctx context.Context, before *time.Time, limit int) ([]Post, error)
+	ListHomeFeed(ctx context.Context, viewerID uuid.UUID, before *time.Time, limit int) ([]FeedItem, error)
 	ListUserPosts(ctx context.Context, userID uuid.UUID, before *time.Time, limit int) ([]Post, error)
 	CreatePost(ctx context.Context, userID uuid.UUID, body string, images []PostImage) (uuid.UUID, error)
+	SharePost(ctx context.Context, userID, postID uuid.UUID, commentary string) (uuid.UUID, error)
 	DeletePost(ctx context.Context, postID, userID uuid.UUID) error
+	HideFeedItem(ctx context.Context, userID, itemID uuid.UUID, itemKind FeedItemKind) error
+	UnhideFeedItem(ctx context.Context, userID, itemID uuid.UUID, itemKind FeedItemKind) error
+	ListHiddenFeedItems(ctx context.Context, userID uuid.UUID, before *time.Time, limit int) ([]HiddenFeedItem, error)
+	MuteFeedAuthor(ctx context.Context, userID, authorID uuid.UUID) error
+	LogFeedImpressions(ctx context.Context, userID uuid.UUID, impressions []FeedImpressionInput) error
+	LogFeedEvents(ctx context.Context, userID uuid.UUID, events []FeedEventInput) error
 	ListReactions(ctx context.Context, postID uuid.UUID, limit, offset int) ([]Reaction, error)
+	ToggleFeedItemReaction(ctx context.Context, itemID, userID uuid.UUID, itemKind FeedItemKind, reactionType string) (reacted bool, err error)
+	AddFeedItemComment(ctx context.Context, itemID, userID uuid.UUID, itemKind FeedItemKind, body string, mentions []CommentMention) (*Comment, error)
+	ListFeedItemComments(ctx context.Context, itemID uuid.UUID, itemKind FeedItemKind, after *time.Time, limit int) ([]Comment, error)
 	ToggleReaction(ctx context.Context, postID, userID uuid.UUID, reactionType string) (reacted bool, err error)
 	ResolveMentionUsers(ctx context.Context, userIDs []uuid.UUID) ([]MentionedUser, error)
 	AddComment(ctx context.Context, postID, userID uuid.UUID, body string, mentions []CommentMention) (*Comment, error)
@@ -108,19 +118,37 @@ type MentionedUser struct {
 	Username string
 }
 
-// GetFeed returns the global post feed with author metadata and aggregate counts.
-// Paginate with ?before=<next_cursor> from the previous response.
-func (h *Handler) GetFeed(w http.ResponseWriter, r *http.Request) {
+func isFeedValidationError(err error) bool {
+	return errors.Is(err, ErrInvalidFeedMode) ||
+		errors.Is(err, ErrInvalidFeedItemKind) ||
+		errors.Is(err, ErrInvalidFeedEvent)
+}
+
+func parseFeedItemKind(raw string) (FeedItemKind, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return FeedItemKindPost, nil
+	}
+	itemKind := FeedItemKind(trimmed)
+	if !itemKind.Valid() {
+		return "", ErrInvalidFeedItemKind
+	}
+	return itemKind, nil
+}
+
+// GetHomeFeed returns the unified ranked home feed.
+func (h *Handler) GetHomeFeed(w http.ResponseWriter, r *http.Request) {
+	userID := middleware.CurrentUserID(r)
 	params := pagination.ParseCursor(r, 20, 50)
 
-	posts, err := h.db.ListFeed(r.Context(), params.Before, params.Limit+1)
+	items, err := h.db.ListHomeFeed(r.Context(), userID, params.Before, params.Limit+1)
 	if err != nil {
-		log.Printf("list feed failed: %v", err)
-		response.Error(w, http.StatusInternalServerError, "could not fetch feed")
+		log.Printf("list home feed failed for %s: %v", userID, err)
+		response.Error(w, http.StatusInternalServerError, "could not fetch home feed")
 		return
 	}
 
-	response.Success(w, http.StatusOK, pagination.CursorSlice(posts, params.Limit, func(p Post) time.Time { return p.CreatedAt }))
+	response.Success(w, http.StatusOK, pagination.CursorSlice(items, params.Limit, func(item FeedItem) time.Time { return item.CreatedAt }))
 }
 
 // GetUserPosts returns a single user's posts with the same shape as the main feed.
@@ -186,6 +214,40 @@ func (h *Handler) CreatePost(w http.ResponseWriter, r *http.Request) {
 	}
 
 	response.Success(w, http.StatusCreated, map[string]any{"id": postID})
+}
+
+// SharePost creates a new reshare record for an existing post.
+func (h *Handler) SharePost(w http.ResponseWriter, r *http.Request) {
+	userID := middleware.CurrentUserID(r)
+	postID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		response.Error(w, http.StatusBadRequest, "invalid post id")
+		return
+	}
+
+	var input struct {
+		Commentary string `json:"commentary"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil && !errors.Is(err, io.EOF) {
+		response.Error(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	shareID, err := h.db.SharePost(r.Context(), userID, postID, input.Commentary)
+	if err != nil {
+		if errors.Is(err, ErrFeedFeatureDisabled) {
+			response.Error(w, http.StatusServiceUnavailable, "post sharing is temporarily unavailable")
+			return
+		}
+		if errors.Is(err, ErrNotFound) {
+			response.Error(w, http.StatusNotFound, "post not found")
+			return
+		}
+		response.Error(w, http.StatusInternalServerError, "could not share post")
+		return
+	}
+
+	response.Success(w, http.StatusCreated, map[string]any{"id": shareID})
 }
 
 // UploadPostImage validates and uploads the original image without modifying it.
@@ -308,6 +370,267 @@ func (h *Handler) DeletePost(w http.ResponseWriter, r *http.Request) {
 	}
 
 	response.Success(w, http.StatusOK, map[string]bool{"deleted": true})
+}
+
+// HideFeedItem suppresses a single feed item for the authenticated user.
+func (h *Handler) HideFeedItem(w http.ResponseWriter, r *http.Request) {
+	userID := middleware.CurrentUserID(r)
+	itemID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		response.Error(w, http.StatusBadRequest, "invalid feed item id")
+		return
+	}
+
+	var input struct {
+		ItemKind FeedItemKind `json:"item_kind"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		response.Error(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if input.ItemKind == "" {
+		input.ItemKind = FeedItemKindPost
+	}
+
+	if err := h.db.HideFeedItem(r.Context(), userID, itemID, input.ItemKind); err != nil {
+		if isFeedValidationError(err) {
+			response.Error(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		response.Error(w, http.StatusInternalServerError, "could not hide feed item")
+		return
+	}
+
+	response.Success(w, http.StatusOK, map[string]bool{"hidden": true})
+}
+
+// UnhideFeedItem restores a previously hidden feed item for the authenticated user.
+func (h *Handler) UnhideFeedItem(w http.ResponseWriter, r *http.Request) {
+	userID := middleware.CurrentUserID(r)
+	itemID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		response.Error(w, http.StatusBadRequest, "invalid feed item id")
+		return
+	}
+
+	itemKind, err := parseFeedItemKind(r.URL.Query().Get("item_kind"))
+	if err != nil {
+		response.Error(w, http.StatusBadRequest, "invalid item kind")
+		return
+	}
+
+	if err := h.db.UnhideFeedItem(r.Context(), userID, itemID, itemKind); err != nil {
+		if isFeedValidationError(err) {
+			response.Error(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		response.Error(w, http.StatusInternalServerError, "could not restore feed item")
+		return
+	}
+
+	response.Success(w, http.StatusOK, map[string]bool{"hidden": false})
+}
+
+// GetHiddenFeedItems returns the caller's hidden feed items in reverse hidden order.
+func (h *Handler) GetHiddenFeedItems(w http.ResponseWriter, r *http.Request) {
+	userID := middleware.CurrentUserID(r)
+	params := pagination.ParseCursor(r, 20, 50)
+
+	items, err := h.db.ListHiddenFeedItems(r.Context(), userID, params.Before, params.Limit+1)
+	if err != nil {
+		response.Error(w, http.StatusInternalServerError, "could not fetch hidden feed items")
+		return
+	}
+
+	response.Success(w, http.StatusOK, pagination.CursorSlice(items, params.Limit, func(item HiddenFeedItem) time.Time { return item.HiddenAt }))
+}
+
+// MuteFeedAuthor suppresses future content from a specific author for the caller.
+func (h *Handler) MuteFeedAuthor(w http.ResponseWriter, r *http.Request) {
+	userID := middleware.CurrentUserID(r)
+	authorID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		response.Error(w, http.StatusBadRequest, "invalid author id")
+		return
+	}
+
+	if err := h.db.MuteFeedAuthor(r.Context(), userID, authorID); err != nil {
+		response.Error(w, http.StatusInternalServerError, "could not mute author")
+		return
+	}
+
+	response.Success(w, http.StatusOK, map[string]bool{"muted": true})
+}
+
+// LogFeedImpressions records items that were actually visible in the feed UI.
+func (h *Handler) LogFeedImpressions(w http.ResponseWriter, r *http.Request) {
+	userID := middleware.CurrentUserID(r)
+
+	var input struct {
+		Impressions []FeedImpressionInput `json:"impressions"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		response.Error(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	if err := h.db.LogFeedImpressions(r.Context(), userID, input.Impressions); err != nil {
+		if isFeedValidationError(err) {
+			response.Error(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		response.Error(w, http.StatusInternalServerError, "could not log feed impressions")
+		return
+	}
+
+	response.Success(w, http.StatusOK, map[string]any{"logged": len(input.Impressions)})
+}
+
+// LogFeedEvents records feed interaction events such as likes, shares, hides, and comment opens.
+func (h *Handler) LogFeedEvents(w http.ResponseWriter, r *http.Request) {
+	userID := middleware.CurrentUserID(r)
+
+	var input struct {
+		Events []FeedEventInput `json:"events"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		response.Error(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	if err := h.db.LogFeedEvents(r.Context(), userID, input.Events); err != nil {
+		if isFeedValidationError(err) {
+			response.Error(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		response.Error(w, http.StatusInternalServerError, "could not log feed events")
+		return
+	}
+
+	response.Success(w, http.StatusOK, map[string]any{"logged": len(input.Events)})
+}
+
+// ReactToFeedItem toggles a reaction on either a post item or a reshare item.
+func (h *Handler) ReactToFeedItem(w http.ResponseWriter, r *http.Request) {
+	userID := middleware.CurrentUserID(r)
+	itemID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		response.Error(w, http.StatusBadRequest, "invalid item id")
+		return
+	}
+
+	var input struct {
+		Type     string `json:"type"`
+		ItemKind string `json:"item_kind"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil && !errors.Is(err, io.EOF) {
+		response.Error(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	itemKind, err := parseFeedItemKind(input.ItemKind)
+	if err != nil {
+		response.Error(w, http.StatusBadRequest, "invalid item kind")
+		return
+	}
+	if strings.TrimSpace(input.Type) == "" {
+		input.Type = "like"
+	}
+
+	reacted, err := h.db.ToggleFeedItemReaction(r.Context(), itemID, userID, itemKind, input.Type)
+	if err != nil {
+		if errors.Is(err, ErrInvalidFeedItemKind) {
+			response.Error(w, http.StatusBadRequest, "invalid item kind")
+			return
+		}
+		response.Error(w, http.StatusInternalServerError, "could not update reaction")
+		return
+	}
+
+	response.Success(w, http.StatusOK, map[string]bool{"reacted": reacted})
+}
+
+// AddFeedItemComment validates and inserts a new comment on a post or reshare thread.
+func (h *Handler) AddFeedItemComment(w http.ResponseWriter, r *http.Request) {
+	userID := middleware.CurrentUserID(r)
+	itemID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		response.Error(w, http.StatusBadRequest, "invalid item id")
+		return
+	}
+
+	var input struct {
+		Body           string      `json:"body"`
+		ItemKind       string      `json:"item_kind"`
+		MentionUserIDs []uuid.UUID `json:"mention_user_ids"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		response.Error(w, http.StatusBadRequest, "body is required")
+		return
+	}
+	input.Body = strings.TrimSpace(input.Body)
+	if input.Body == "" {
+		response.Error(w, http.StatusBadRequest, "body is required")
+		return
+	}
+
+	itemKind, err := parseFeedItemKind(input.ItemKind)
+	if err != nil {
+		response.Error(w, http.StatusBadRequest, "invalid item kind")
+		return
+	}
+
+	resolvedMentions, err := h.resolveCommentMentions(r.Context(), input.Body, input.MentionUserIDs, userID)
+	if err != nil {
+		response.Error(w, http.StatusInternalServerError, "could not validate mentions")
+		return
+	}
+
+	comment, err := h.db.AddFeedItemComment(r.Context(), itemID, userID, itemKind, input.Body, resolvedMentions)
+	if err != nil {
+		if errors.Is(err, ErrInvalidFeedItemKind) {
+			response.Error(w, http.StatusBadRequest, "invalid item kind")
+			return
+		}
+		response.Error(w, http.StatusInternalServerError, "could not add comment")
+		return
+	}
+
+	if h.notifier != nil && len(resolvedMentions) > 0 && itemKind == FeedItemKindPost {
+		mentionedUserIDs := make([]uuid.UUID, 0, len(resolvedMentions))
+		for _, mention := range resolvedMentions {
+			mentionedUserIDs = append(mentionedUserIDs, mention.UserID)
+		}
+		_ = h.notifier.NotifyCommentMentions(r.Context(), itemID, comment.ID, userID, mentionedUserIDs, input.Body)
+	}
+
+	response.Success(w, http.StatusCreated, comment)
+}
+
+// GetFeedItemComments returns a page of comments for a post or reshare thread.
+func (h *Handler) GetFeedItemComments(w http.ResponseWriter, r *http.Request) {
+	itemID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		response.Error(w, http.StatusBadRequest, "invalid item id")
+		return
+	}
+	itemKind, err := parseFeedItemKind(r.URL.Query().Get("item_kind"))
+	if err != nil {
+		response.Error(w, http.StatusBadRequest, "invalid item kind")
+		return
+	}
+
+	params := pagination.ParseCursor(r, 20, 50)
+	comments, err := h.db.ListFeedItemComments(r.Context(), itemID, itemKind, params.After, params.Limit+1)
+	if err != nil {
+		if errors.Is(err, ErrInvalidFeedItemKind) {
+			response.Error(w, http.StatusBadRequest, "invalid item kind")
+			return
+		}
+		response.Error(w, http.StatusInternalServerError, "could not fetch comments")
+		return
+	}
+
+	response.Success(w, http.StatusOK, pagination.CursorSlice(comments, params.Limit, func(c Comment) time.Time { return c.CreatedAt }))
 }
 
 // GetReactions returns a paginated list of reactions for a post with reacting user details.

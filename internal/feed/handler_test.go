@@ -22,20 +22,36 @@ import (
 )
 
 type mockQuerier struct {
-	listFeed            func(ctx context.Context, before *time.Time, limit int) ([]Post, error)
-	listUserPosts       func(ctx context.Context, userID uuid.UUID, before *time.Time, limit int) ([]Post, error)
-	createPost          func(ctx context.Context, userID uuid.UUID, body string, images []PostImage) (uuid.UUID, error)
-	deletePost          func(ctx context.Context, postID, userID uuid.UUID) error
-	listReactions       func(ctx context.Context, postID uuid.UUID, limit, offset int) ([]Reaction, error)
-	toggleReaction      func(ctx context.Context, postID, userID uuid.UUID, reactionType string) (bool, error)
-	resolveMentionUsers func(ctx context.Context, userIDs []uuid.UUID) ([]MentionedUser, error)
-	addComment          func(ctx context.Context, postID, userID uuid.UUID, body string, mentions []CommentMention) (*Comment, error)
-	listComments        func(ctx context.Context, postID uuid.UUID, after *time.Time, limit int) ([]Comment, error)
+	listHomeFeed           func(ctx context.Context, viewerID uuid.UUID, before *time.Time, limit int) ([]FeedItem, error)
+	listHiddenFeedItems    func(ctx context.Context, userID uuid.UUID, before *time.Time, limit int) ([]HiddenFeedItem, error)
+	listUserPosts          func(ctx context.Context, userID uuid.UUID, before *time.Time, limit int) ([]Post, error)
+	createPost             func(ctx context.Context, userID uuid.UUID, body string, images []PostImage) (uuid.UUID, error)
+	sharePost              func(ctx context.Context, userID, postID uuid.UUID, commentary string) (uuid.UUID, error)
+	deletePost             func(ctx context.Context, postID, userID uuid.UUID) error
+	hideFeedItem           func(ctx context.Context, userID, itemID uuid.UUID, itemKind FeedItemKind) error
+	unhideFeedItem         func(ctx context.Context, userID, itemID uuid.UUID, itemKind FeedItemKind) error
+	muteFeedAuthor         func(ctx context.Context, userID, authorID uuid.UUID) error
+	logFeedImpressions     func(ctx context.Context, userID uuid.UUID, impressions []FeedImpressionInput) error
+	logFeedEvents          func(ctx context.Context, userID uuid.UUID, events []FeedEventInput) error
+	listReactions          func(ctx context.Context, postID uuid.UUID, limit, offset int) ([]Reaction, error)
+	toggleFeedItemReaction func(ctx context.Context, itemID, userID uuid.UUID, itemKind FeedItemKind, reactionType string) (bool, error)
+	toggleReaction         func(ctx context.Context, postID, userID uuid.UUID, reactionType string) (bool, error)
+	resolveMentionUsers    func(ctx context.Context, userIDs []uuid.UUID) ([]MentionedUser, error)
+	addFeedItemComment     func(ctx context.Context, itemID, userID uuid.UUID, itemKind FeedItemKind, body string, mentions []CommentMention) (*Comment, error)
+	addComment             func(ctx context.Context, postID, userID uuid.UUID, body string, mentions []CommentMention) (*Comment, error)
+	listFeedItemComments   func(ctx context.Context, itemID uuid.UUID, itemKind FeedItemKind, after *time.Time, limit int) ([]Comment, error)
+	listComments           func(ctx context.Context, postID uuid.UUID, after *time.Time, limit int) ([]Comment, error)
 }
 
-func (m *mockQuerier) ListFeed(ctx context.Context, before *time.Time, limit int) ([]Post, error) {
-	if m.listFeed != nil {
-		return m.listFeed(ctx, before, limit)
+func (m *mockQuerier) ListHomeFeed(ctx context.Context, viewerID uuid.UUID, before *time.Time, limit int) ([]FeedItem, error) {
+	if m.listHomeFeed != nil {
+		return m.listHomeFeed(ctx, viewerID, before, limit)
+	}
+	return nil, nil
+}
+func (m *mockQuerier) ListHiddenFeedItems(ctx context.Context, userID uuid.UUID, before *time.Time, limit int) ([]HiddenFeedItem, error) {
+	if m.listHiddenFeedItems != nil {
+		return m.listHiddenFeedItems(ctx, userID, before, limit)
 	}
 	return nil, nil
 }
@@ -51,9 +67,45 @@ func (m *mockQuerier) CreatePost(ctx context.Context, userID uuid.UUID, body str
 	}
 	return uuid.New(), nil
 }
+func (m *mockQuerier) SharePost(ctx context.Context, userID, postID uuid.UUID, commentary string) (uuid.UUID, error) {
+	if m.sharePost != nil {
+		return m.sharePost(ctx, userID, postID, commentary)
+	}
+	return uuid.New(), nil
+}
 func (m *mockQuerier) DeletePost(ctx context.Context, postID, userID uuid.UUID) error {
 	if m.deletePost != nil {
 		return m.deletePost(ctx, postID, userID)
+	}
+	return nil
+}
+func (m *mockQuerier) HideFeedItem(ctx context.Context, userID, itemID uuid.UUID, itemKind FeedItemKind) error {
+	if m.hideFeedItem != nil {
+		return m.hideFeedItem(ctx, userID, itemID, itemKind)
+	}
+	return nil
+}
+func (m *mockQuerier) UnhideFeedItem(ctx context.Context, userID, itemID uuid.UUID, itemKind FeedItemKind) error {
+	if m.unhideFeedItem != nil {
+		return m.unhideFeedItem(ctx, userID, itemID, itemKind)
+	}
+	return nil
+}
+func (m *mockQuerier) MuteFeedAuthor(ctx context.Context, userID, authorID uuid.UUID) error {
+	if m.muteFeedAuthor != nil {
+		return m.muteFeedAuthor(ctx, userID, authorID)
+	}
+	return nil
+}
+func (m *mockQuerier) LogFeedImpressions(ctx context.Context, userID uuid.UUID, impressions []FeedImpressionInput) error {
+	if m.logFeedImpressions != nil {
+		return m.logFeedImpressions(ctx, userID, impressions)
+	}
+	return nil
+}
+func (m *mockQuerier) LogFeedEvents(ctx context.Context, userID uuid.UUID, events []FeedEventInput) error {
+	if m.logFeedEvents != nil {
+		return m.logFeedEvents(ctx, userID, events)
 	}
 	return nil
 }
@@ -62,6 +114,12 @@ func (m *mockQuerier) ListReactions(ctx context.Context, postID uuid.UUID, limit
 		return m.listReactions(ctx, postID, limit, offset)
 	}
 	return nil, nil
+}
+func (m *mockQuerier) ToggleFeedItemReaction(ctx context.Context, itemID, userID uuid.UUID, itemKind FeedItemKind, reactionType string) (bool, error) {
+	if m.toggleFeedItemReaction != nil {
+		return m.toggleFeedItemReaction(ctx, itemID, userID, itemKind, reactionType)
+	}
+	return true, nil
 }
 func (m *mockQuerier) ToggleReaction(ctx context.Context, postID, userID uuid.UUID, reactionType string) (bool, error) {
 	if m.toggleReaction != nil {
@@ -75,11 +133,23 @@ func (m *mockQuerier) ResolveMentionUsers(ctx context.Context, userIDs []uuid.UU
 	}
 	return nil, nil
 }
+func (m *mockQuerier) AddFeedItemComment(ctx context.Context, itemID, userID uuid.UUID, itemKind FeedItemKind, body string, mentions []CommentMention) (*Comment, error) {
+	if m.addFeedItemComment != nil {
+		return m.addFeedItemComment(ctx, itemID, userID, itemKind, body, mentions)
+	}
+	return &Comment{ID: uuid.New(), UserID: userID, Body: body, Mentions: mentions, CreatedAt: time.Now()}, nil
+}
 func (m *mockQuerier) AddComment(ctx context.Context, postID, userID uuid.UUID, body string, mentions []CommentMention) (*Comment, error) {
 	if m.addComment != nil {
 		return m.addComment(ctx, postID, userID, body, mentions)
 	}
 	return &Comment{ID: uuid.New(), UserID: userID, Body: body, Mentions: mentions, CreatedAt: time.Now()}, nil
+}
+func (m *mockQuerier) ListFeedItemComments(ctx context.Context, itemID uuid.UUID, itemKind FeedItemKind, after *time.Time, limit int) ([]Comment, error) {
+	if m.listFeedItemComments != nil {
+		return m.listFeedItemComments(ctx, itemID, itemKind, after, limit)
+	}
+	return nil, nil
 }
 func (m *mockQuerier) ListComments(ctx context.Context, postID uuid.UUID, after *time.Time, limit int) ([]Comment, error) {
 	if m.listComments != nil {
@@ -114,34 +184,23 @@ func withURLParam(r *http.Request, key, value string) *http.Request {
 	return r.WithContext(context.WithValue(r.Context(), chi.RouteCtxKey, rctx))
 }
 
-// ── GetFeed ───────────────────────────────────────────────────────────────────
-
-func TestGetFeedSuccess(t *testing.T) {
+func TestGetHomeFeedSuccess(t *testing.T) {
 	h := NewHandler(&mockQuerier{
-		listFeed: func(_ context.Context, _ *time.Time, _ int) ([]Post, error) {
-			return []Post{{ID: fixedPost, Body: "hello", CreatedAt: time.Now()}}, nil
+		listHomeFeed: func(_ context.Context, viewerID uuid.UUID, _ *time.Time, _ int) ([]FeedItem, error) {
+			if viewerID != fixedUser {
+				t.Fatalf("viewerID = %s, want %s", viewerID, fixedUser)
+			}
+			return []FeedItem{{ID: fixedPost, Kind: FeedItemKindPost, CreatedAt: time.Now()}}, nil
 		},
 	}, &mockUploader{})
-	req := httptest.NewRequest(http.MethodGet, "/feed", nil)
+	req := httptest.NewRequest(http.MethodGet, "/feed/home", nil)
+	req = withUserID(req, fixedUser)
 	rec := httptest.NewRecorder()
 
-	h.GetFeed(rec, req)
+	h.GetHomeFeed(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
-	}
-}
-
-func TestGetFeedDBError(t *testing.T) {
-	h := NewHandler(&mockQuerier{
-		listFeed: func(_ context.Context, _ *time.Time, _ int) ([]Post, error) {
-			return nil, errors.New("db error")
-		},
-	}, &mockUploader{})
-	rec := httptest.NewRecorder()
-	h.GetFeed(rec, httptest.NewRequest(http.MethodGet, "/feed", nil))
-	if rec.Code != http.StatusInternalServerError {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusInternalServerError)
 	}
 }
 
@@ -246,6 +305,67 @@ func TestCreatePostDBError(t *testing.T) {
 	}
 }
 
+func TestSharePostRejectsInvalidUUID(t *testing.T) {
+	h := NewHandler(&mockQuerier{}, &mockUploader{})
+	req := httptest.NewRequest(http.MethodPost, "/posts/bad/share", strings.NewReader(`{"commentary":"worth reading"}`))
+	req = withUserID(req, fixedUser)
+	req = withURLParam(req, "id", "bad")
+	rec := httptest.NewRecorder()
+
+	h.SharePost(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+}
+
+func TestSharePostSuccess(t *testing.T) {
+	var gotCommentary string
+	h := NewHandler(&mockQuerier{
+		sharePost: func(_ context.Context, userID, postID uuid.UUID, commentary string) (uuid.UUID, error) {
+			if userID != fixedUser {
+				t.Fatalf("userID = %s, want %s", userID, fixedUser)
+			}
+			if postID != fixedPost {
+				t.Fatalf("postID = %s, want %s", postID, fixedPost)
+			}
+			gotCommentary = commentary
+			return uuid.New(), nil
+		},
+	}, &mockUploader{})
+	req := httptest.NewRequest(http.MethodPost, "/posts/share", strings.NewReader(`{"commentary":" worth reading "}`))
+	req = withUserID(req, fixedUser)
+	req = withURLParam(req, "id", fixedPost.String())
+	rec := httptest.NewRecorder()
+
+	h.SharePost(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusCreated)
+	}
+	if gotCommentary != " worth reading " {
+		t.Fatalf("commentary = %q, want preserved input", gotCommentary)
+	}
+}
+
+func TestSharePostNotFound(t *testing.T) {
+	h := NewHandler(&mockQuerier{
+		sharePost: func(_ context.Context, _, _ uuid.UUID, _ string) (uuid.UUID, error) {
+			return uuid.Nil, ErrNotFound
+		},
+	}, &mockUploader{})
+	req := httptest.NewRequest(http.MethodPost, "/posts/share", strings.NewReader(`{}`))
+	req = withUserID(req, fixedUser)
+	req = withURLParam(req, "id", fixedPost.String())
+	rec := httptest.NewRecorder()
+
+	h.SharePost(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNotFound)
+	}
+}
+
 func TestUploadPostImageSuccess(t *testing.T) {
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
@@ -328,6 +448,95 @@ func TestDeletePostSuccess(t *testing.T) {
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+}
+
+func TestHideFeedItemRejectsInvalidKind(t *testing.T) {
+	h := NewHandler(&mockQuerier{
+		hideFeedItem: func(_ context.Context, _, _ uuid.UUID, itemKind FeedItemKind) error {
+			if itemKind != FeedItemKind("mystery") {
+				t.Fatalf("itemKind = %q, want mystery", itemKind)
+			}
+			return ErrInvalidFeedItemKind
+		},
+	}, &mockUploader{})
+	req := httptest.NewRequest(http.MethodPost, "/feed/items/hide", strings.NewReader(`{"item_kind":"mystery"}`))
+	req = withUserID(req, fixedUser)
+	req = withURLParam(req, "id", fixedPost.String())
+	rec := httptest.NewRecorder()
+
+	h.HideFeedItem(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+}
+
+func TestMuteFeedAuthorSuccess(t *testing.T) {
+	var gotAuthorID uuid.UUID
+	h := NewHandler(&mockQuerier{
+		muteFeedAuthor: func(_ context.Context, userID, authorID uuid.UUID) error {
+			if userID != fixedUser {
+				t.Fatalf("userID = %s, want %s", userID, fixedUser)
+			}
+			gotAuthorID = authorID
+			return nil
+		},
+	}, &mockUploader{})
+	req := httptest.NewRequest(http.MethodPost, "/feed/authors/mute", nil)
+	req = withUserID(req, fixedUser)
+	req = withURLParam(req, "id", fixedPost.String())
+	rec := httptest.NewRecorder()
+
+	h.MuteFeedAuthor(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if gotAuthorID != fixedPost {
+		t.Fatalf("authorID = %s, want %s", gotAuthorID, fixedPost)
+	}
+}
+
+func TestLogFeedImpressionsSuccess(t *testing.T) {
+	var gotCount int
+	h := NewHandler(&mockQuerier{
+		logFeedImpressions: func(_ context.Context, userID uuid.UUID, impressions []FeedImpressionInput) error {
+			if userID != fixedUser {
+				t.Fatalf("userID = %s, want %s", userID, fixedUser)
+			}
+			gotCount = len(impressions)
+			return nil
+		},
+	}, &mockUploader{})
+	req := httptest.NewRequest(http.MethodPost, "/feed/impressions", strings.NewReader(`{"impressions":[{"item_id":"`+fixedPost.String()+`","item_kind":"post","feed_mode":"home","session_id":"abc","position":0,"served_at":"2026-04-27T12:00:00Z","viewed_at":"2026-04-27T12:00:01Z","view_ms":1200}]}`))
+	req = withUserID(req, fixedUser)
+	rec := httptest.NewRecorder()
+
+	h.LogFeedImpressions(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if gotCount != 1 {
+		t.Fatalf("logged count = %d, want 1", gotCount)
+	}
+}
+
+func TestLogFeedEventsRejectsInvalidEvent(t *testing.T) {
+	h := NewHandler(&mockQuerier{
+		logFeedEvents: func(_ context.Context, _ uuid.UUID, _ []FeedEventInput) error {
+			return ErrInvalidFeedEvent
+		},
+	}, &mockUploader{})
+	req := httptest.NewRequest(http.MethodPost, "/feed/events", strings.NewReader(`{"events":[{"item_id":"`+fixedPost.String()+`","item_kind":"post","feed_mode":"home","event_type":"mystery"}]}`))
+	req = withUserID(req, fixedUser)
+	rec := httptest.NewRecorder()
+
+	h.LogFeedEvents(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
 	}
 }
 
