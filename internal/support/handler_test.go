@@ -15,19 +15,32 @@ import (
 )
 
 type mockQuerier struct {
-	getSupportProfile          func(ctx context.Context, userID uuid.UUID) (*SupportProfile, error)
-	updateSupportProfile       func(ctx context.Context, userID uuid.UUID, available bool) (*SupportProfile, error)
-	countOpenSupportRequests   func(ctx context.Context, userID uuid.UUID) (int, error)
-	createSupportRequest       func(ctx context.Context, userID uuid.UUID, reqType string, message *string, urgency string, priorityVisibility bool, priorityExpiresAt *time.Time) (*SupportRequest, error)
-	getSupportRequest          func(ctx context.Context, viewerID, requestID uuid.UUID) (*SupportRequest, error)
-	closeSupportRequest        func(ctx context.Context, requestID, userID uuid.UUID) error
-	listMySupportRequests      func(ctx context.Context, userID uuid.UUID, before *time.Time, limit int) ([]SupportRequest, error)
-	listVisibleSupportRequests func(ctx context.Context, userID uuid.UUID, before *time.Time, limit int) ([]SupportRequest, error)
-	fetchSupportSummary        func(ctx context.Context, viewerID uuid.UUID) (int, int, error)
-	getSupportRequestState     func(ctx context.Context, requestID uuid.UUID) (uuid.UUID, string, error)
-	createSupportResponse      func(ctx context.Context, requestID, userID uuid.UUID, responseType string, message *string, scheduledFor *time.Time) (*CreateSupportResponseResult, error)
-	getSupportRequestOwner     func(ctx context.Context, requestID uuid.UUID) (uuid.UUID, error)
-	listSupportResponses       func(ctx context.Context, requestID uuid.UUID, limit, offset int) ([]SupportResponse, error)
+	getSupportProfile             func(ctx context.Context, userID uuid.UUID) (*SupportProfile, error)
+	updateSupportProfile          func(ctx context.Context, userID uuid.UUID, available bool) (*SupportProfile, error)
+	getSupportHome                func(ctx context.Context, userID uuid.UUID) (*SupportHomePayload, error)
+	getSupportResponderProfile    func(ctx context.Context, userID uuid.UUID) (*SupportResponderProfile, error)
+	updateSupportResponderProfile func(ctx context.Context, userID uuid.UUID, input UpdateSupportResponderProfileInput) (*SupportResponderProfile, error)
+	countOpenSupportRequests      func(ctx context.Context, userID uuid.UUID) (int, error)
+	createSupportRequest          func(ctx context.Context, userID uuid.UUID, reqType string, message *string, urgency string, priorityVisibility bool, priorityExpiresAt *time.Time) (*SupportRequest, error)
+	createImmediateSupportRequest func(ctx context.Context, userID uuid.UUID, reqType string, message *string, urgency string, privacyLevel string, priorityVisibility bool, priorityExpiresAt *time.Time) (*SupportRequest, error)
+	createCommunitySupportRequest func(ctx context.Context, userID uuid.UUID, reqType string, message *string, urgency string, privacyLevel string, priorityVisibility bool, priorityExpiresAt *time.Time) (*SupportRequest, error)
+	routeSupportRequest           func(ctx context.Context, requestID uuid.UUID) error
+	acceptSupportOffer            func(ctx context.Context, responderID, offerID uuid.UUID) (*SupportSession, error)
+	declineSupportOffer           func(ctx context.Context, responderID, offerID uuid.UUID) error
+	getSupportRequest             func(ctx context.Context, viewerID, requestID uuid.UUID) (*SupportRequest, error)
+	closeSupportRequest           func(ctx context.Context, requestID, userID uuid.UUID) error
+	listMySupportRequests         func(ctx context.Context, userID uuid.UUID, before *time.Time, limit int) ([]SupportRequest, error)
+	listVisibleSupportRequests    func(ctx context.Context, userID uuid.UUID, before *time.Time, limit int) ([]SupportRequest, error)
+	listRespondedSupportRequests  func(ctx context.Context, userID uuid.UUID, before *time.Time, limit int) ([]SupportRequest, error)
+	listResponderQueue            func(ctx context.Context, userID uuid.UUID, before *time.Time, limit int) ([]SupportOffer, error)
+	listSupportSessions           func(ctx context.Context, userID uuid.UUID, before *time.Time, limit int) ([]SupportSession, error)
+	closeSupportSession           func(ctx context.Context, userID, sessionID uuid.UUID, outcome string) (*SupportSession, error)
+	sweepExpiredSupportOffers     func(ctx context.Context) error
+	fetchSupportSummary           func(ctx context.Context, viewerID uuid.UUID) (int, int, error)
+	getSupportRequestState        func(ctx context.Context, requestID uuid.UUID) (uuid.UUID, string, error)
+	createSupportResponse         func(ctx context.Context, requestID, userID uuid.UUID, responseType string, message *string, scheduledFor *time.Time) (*CreateSupportResponseResult, error)
+	getSupportRequestOwner        func(ctx context.Context, requestID uuid.UUID) (uuid.UUID, error)
+	listSupportResponses          func(ctx context.Context, requestID uuid.UUID, limit, offset int) ([]SupportResponse, error)
 }
 
 func (m *mockQuerier) GetSupportProfile(ctx context.Context, userID uuid.UUID) (*SupportProfile, error) {
@@ -42,6 +55,24 @@ func (m *mockQuerier) UpdateSupportProfile(ctx context.Context, userID uuid.UUID
 	}
 	return &SupportProfile{IsAvailableToSupport: available}, nil
 }
+func (m *mockQuerier) GetSupportHome(ctx context.Context, userID uuid.UUID) (*SupportHomePayload, error) {
+	if m.getSupportHome != nil {
+		return m.getSupportHome(ctx, userID)
+	}
+	return &SupportHomePayload{}, nil
+}
+func (m *mockQuerier) GetSupportResponderProfile(ctx context.Context, userID uuid.UUID) (*SupportResponderProfile, error) {
+	if m.getSupportResponderProfile != nil {
+		return m.getSupportResponderProfile(ctx, userID)
+	}
+	return &SupportResponderProfile{UserID: userID}, nil
+}
+func (m *mockQuerier) UpdateSupportResponderProfile(ctx context.Context, userID uuid.UUID, input UpdateSupportResponderProfileInput) (*SupportResponderProfile, error) {
+	if m.updateSupportResponderProfile != nil {
+		return m.updateSupportResponderProfile(ctx, userID, input)
+	}
+	return &SupportResponderProfile{UserID: userID, MaxConcurrentSessions: input.MaxConcurrentSessions}, nil
+}
 func (m *mockQuerier) CountOpenSupportRequests(ctx context.Context, userID uuid.UUID) (int, error) {
 	if m.countOpenSupportRequests != nil {
 		return m.countOpenSupportRequests(ctx, userID)
@@ -53,6 +84,36 @@ func (m *mockQuerier) CreateSupportRequest(ctx context.Context, userID uuid.UUID
 		return m.createSupportRequest(ctx, userID, reqType, message, urgency, priorityVisibility, priorityExpiresAt)
 	}
 	return &SupportRequest{ID: uuid.New(), RequesterID: userID}, nil
+}
+func (m *mockQuerier) CreateImmediateSupportRequest(ctx context.Context, userID uuid.UUID, reqType string, message *string, urgency string, privacyLevel string, priorityVisibility bool, priorityExpiresAt *time.Time) (*SupportRequest, error) {
+	if m.createImmediateSupportRequest != nil {
+		return m.createImmediateSupportRequest(ctx, userID, reqType, message, urgency, privacyLevel, priorityVisibility, priorityExpiresAt)
+	}
+	return &SupportRequest{ID: uuid.New(), RequesterID: userID, Channel: SupportChannelImmediate}, nil
+}
+func (m *mockQuerier) CreateCommunitySupportRequest(ctx context.Context, userID uuid.UUID, reqType string, message *string, urgency string, privacyLevel string, priorityVisibility bool, priorityExpiresAt *time.Time) (*SupportRequest, error) {
+	if m.createCommunitySupportRequest != nil {
+		return m.createCommunitySupportRequest(ctx, userID, reqType, message, urgency, privacyLevel, priorityVisibility, priorityExpiresAt)
+	}
+	return &SupportRequest{ID: uuid.New(), RequesterID: userID, Channel: SupportChannelCommunity}, nil
+}
+func (m *mockQuerier) RouteSupportRequest(ctx context.Context, requestID uuid.UUID) error {
+	if m.routeSupportRequest != nil {
+		return m.routeSupportRequest(ctx, requestID)
+	}
+	return nil
+}
+func (m *mockQuerier) AcceptSupportOffer(ctx context.Context, responderID, offerID uuid.UUID) (*SupportSession, error) {
+	if m.acceptSupportOffer != nil {
+		return m.acceptSupportOffer(ctx, responderID, offerID)
+	}
+	return &SupportSession{ID: offerID, ResponderID: responderID}, nil
+}
+func (m *mockQuerier) DeclineSupportOffer(ctx context.Context, responderID, offerID uuid.UUID) error {
+	if m.declineSupportOffer != nil {
+		return m.declineSupportOffer(ctx, responderID, offerID)
+	}
+	return nil
 }
 func (m *mockQuerier) GetSupportRequest(ctx context.Context, viewerID, requestID uuid.UUID) (*SupportRequest, error) {
 	if m.getSupportRequest != nil {
@@ -77,6 +138,36 @@ func (m *mockQuerier) ListVisibleSupportRequests(ctx context.Context, userID uui
 		return m.listVisibleSupportRequests(ctx, userID, before, limit)
 	}
 	return nil, nil
+}
+func (m *mockQuerier) ListRespondedSupportRequests(ctx context.Context, userID uuid.UUID, before *time.Time, limit int) ([]SupportRequest, error) {
+	if m.listRespondedSupportRequests != nil {
+		return m.listRespondedSupportRequests(ctx, userID, before, limit)
+	}
+	return nil, nil
+}
+func (m *mockQuerier) ListResponderQueue(ctx context.Context, userID uuid.UUID, before *time.Time, limit int) ([]SupportOffer, error) {
+	if m.listResponderQueue != nil {
+		return m.listResponderQueue(ctx, userID, before, limit)
+	}
+	return nil, nil
+}
+func (m *mockQuerier) ListSupportSessions(ctx context.Context, userID uuid.UUID, before *time.Time, limit int) ([]SupportSession, error) {
+	if m.listSupportSessions != nil {
+		return m.listSupportSessions(ctx, userID, before, limit)
+	}
+	return nil, nil
+}
+func (m *mockQuerier) CloseSupportSession(ctx context.Context, userID, sessionID uuid.UUID, outcome string) (*SupportSession, error) {
+	if m.closeSupportSession != nil {
+		return m.closeSupportSession(ctx, userID, sessionID, outcome)
+	}
+	return &SupportSession{ID: sessionID, Status: SupportSessionCompleted}, nil
+}
+func (m *mockQuerier) SweepExpiredSupportOffers(ctx context.Context) error {
+	if m.sweepExpiredSupportOffers != nil {
+		return m.sweepExpiredSupportOffers(ctx)
+	}
+	return nil
 }
 func (m *mockQuerier) FetchSupportSummary(ctx context.Context, viewerID uuid.UUID) (int, int, error) {
 	if m.fetchSupportSummary != nil {
@@ -356,7 +447,6 @@ func TestCreateSupportResponseRequiresAvailability(t *testing.T) {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusForbidden)
 	}
 }
-
 
 func TestCreateSupportResponseSuccess(t *testing.T) {
 	h := NewHandler(&mockQuerier{

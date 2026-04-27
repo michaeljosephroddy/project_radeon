@@ -64,6 +64,28 @@ func (s *cachedStore) UpdateSupportProfile(ctx context.Context, userID uuid.UUID
 	return profile, nil
 }
 
+func (s *cachedStore) GetSupportHome(ctx context.Context, userID uuid.UUID) (*SupportHomePayload, error) {
+	return s.inner.GetSupportHome(ctx, userID)
+}
+
+func (s *cachedStore) GetSupportResponderProfile(ctx context.Context, userID uuid.UUID) (*SupportResponderProfile, error) {
+	return s.inner.GetSupportResponderProfile(ctx, userID)
+}
+
+func (s *cachedStore) UpdateSupportResponderProfile(ctx context.Context, userID uuid.UUID, input UpdateSupportResponderProfileInput) (*SupportResponderProfile, error) {
+	profile, err := s.inner.UpdateSupportResponderProfile(ctx, userID, input)
+	if err != nil {
+		return nil, err
+	}
+
+	_ = s.cache.BumpVersions(ctx,
+		s.profileVersionKey(userID),
+		s.summaryVersionKey(),
+		s.viewerVisibleVersionKey(userID),
+	)
+	return profile, nil
+}
+
 func (s *cachedStore) CountOpenSupportRequests(ctx context.Context, userID uuid.UUID) (int, error) {
 	return s.inner.CountOpenSupportRequests(ctx, userID)
 }
@@ -81,6 +103,40 @@ func (s *cachedStore) CreateSupportRequest(ctx context.Context, userID uuid.UUID
 		s.requestVersionKey(request.ID),
 	)
 	return request, nil
+}
+
+func (s *cachedStore) CreateImmediateSupportRequest(ctx context.Context, userID uuid.UUID, reqType string, message *string, urgency string, privacyLevel string, priorityVisibility bool, priorityExpiresAt *time.Time) (*SupportRequest, error) {
+	request, err := s.inner.CreateImmediateSupportRequest(ctx, userID, reqType, message, urgency, privacyLevel, priorityVisibility, priorityExpiresAt)
+	if err != nil {
+		return nil, err
+	}
+
+	_ = s.cache.BumpVersions(ctx,
+		s.myRequestsVersionKey(userID),
+		s.visibleVersionKey(),
+		s.summaryVersionKey(),
+		s.requestVersionKey(request.ID),
+	)
+	return request, nil
+}
+
+func (s *cachedStore) CreateCommunitySupportRequest(ctx context.Context, userID uuid.UUID, reqType string, message *string, urgency string, privacyLevel string, priorityVisibility bool, priorityExpiresAt *time.Time) (*SupportRequest, error) {
+	request, err := s.inner.CreateCommunitySupportRequest(ctx, userID, reqType, message, urgency, privacyLevel, priorityVisibility, priorityExpiresAt)
+	if err != nil {
+		return nil, err
+	}
+
+	_ = s.cache.BumpVersions(ctx,
+		s.myRequestsVersionKey(userID),
+		s.visibleVersionKey(),
+		s.summaryVersionKey(),
+		s.requestVersionKey(request.ID),
+	)
+	return request, nil
+}
+
+func (s *cachedStore) RouteSupportRequest(ctx context.Context, requestID uuid.UUID) error {
+	return s.inner.RouteSupportRequest(ctx, requestID)
 }
 
 func (s *cachedStore) GetSupportRequest(ctx context.Context, viewerID, requestID uuid.UUID) (*SupportRequest, error) {
@@ -189,6 +245,91 @@ func (s *cachedStore) ListVisibleSupportRequests(ctx context.Context, userID uui
 	}
 
 	return requests, nil
+}
+
+func (s *cachedStore) ListRespondedSupportRequests(ctx context.Context, userID uuid.UUID, before *time.Time, limit int) ([]SupportRequest, error) {
+	globalVersion, err := s.cache.GetVersion(ctx, s.visibleVersionKey())
+	if err != nil {
+		return s.inner.ListRespondedSupportRequests(ctx, userID, before, limit)
+	}
+	viewerVersion, err := s.cache.GetVersion(ctx, s.viewerVisibleVersionKey(userID))
+	if err != nil {
+		return s.inner.ListRespondedSupportRequests(ctx, userID, before, limit)
+	}
+
+	key := s.cache.Key(
+		"support",
+		"responded",
+		"global_v", strconv.FormatInt(globalVersion, 10),
+		"viewer_v", strconv.FormatInt(viewerVersion, 10),
+		"user", userID.String(),
+		"before", supportTimePart(before),
+		"limit", strconv.Itoa(limit),
+	)
+
+	var requests []SupportRequest
+	if err := s.cache.ReadThrough(ctx, key, supportListTTL, &requests, func(ctx context.Context, dest any) error {
+		loaded, err := s.inner.ListRespondedSupportRequests(ctx, userID, before, limit)
+		if err != nil {
+			return err
+		}
+		*dest.(*[]SupportRequest) = loaded
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+
+	return requests, nil
+}
+
+func (s *cachedStore) ListResponderQueue(ctx context.Context, userID uuid.UUID, before *time.Time, limit int) ([]SupportOffer, error) {
+	return s.inner.ListResponderQueue(ctx, userID, before, limit)
+}
+
+func (s *cachedStore) ListSupportSessions(ctx context.Context, userID uuid.UUID, before *time.Time, limit int) ([]SupportSession, error) {
+	return s.inner.ListSupportSessions(ctx, userID, before, limit)
+}
+
+func (s *cachedStore) CloseSupportSession(ctx context.Context, userID, sessionID uuid.UUID, outcome string) (*SupportSession, error) {
+	session, err := s.inner.CloseSupportSession(ctx, userID, sessionID, outcome)
+	if err != nil {
+		return nil, err
+	}
+
+	_ = s.cache.BumpVersions(ctx,
+		s.summaryVersionKey(),
+		s.viewerVisibleVersionKey(userID),
+	)
+	return session, nil
+}
+
+func (s *cachedStore) SweepExpiredSupportOffers(ctx context.Context) error {
+	return s.inner.SweepExpiredSupportOffers(ctx)
+}
+
+func (s *cachedStore) AcceptSupportOffer(ctx context.Context, responderID, offerID uuid.UUID) (*SupportSession, error) {
+	session, err := s.inner.AcceptSupportOffer(ctx, responderID, offerID)
+	if err != nil {
+		return nil, err
+	}
+
+	_ = s.cache.BumpVersions(ctx,
+		s.viewerVisibleVersionKey(responderID),
+		s.summaryVersionKey(),
+	)
+	return session, nil
+}
+
+func (s *cachedStore) DeclineSupportOffer(ctx context.Context, responderID, offerID uuid.UUID) error {
+	if err := s.inner.DeclineSupportOffer(ctx, responderID, offerID); err != nil {
+		return err
+	}
+
+	_ = s.cache.BumpVersions(ctx,
+		s.viewerVisibleVersionKey(responderID),
+		s.summaryVersionKey(),
+	)
+	return nil
 }
 
 func (s *cachedStore) FetchSupportSummary(ctx context.Context, viewerID uuid.UUID) (int, int, error) {

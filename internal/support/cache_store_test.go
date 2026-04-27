@@ -21,12 +21,36 @@ func (s *stubQuerier) UpdateSupportProfile(context.Context, uuid.UUID, bool) (*S
 	return nil, nil
 }
 
+func (s *stubQuerier) GetSupportHome(context.Context, uuid.UUID) (*SupportHomePayload, error) {
+	return &SupportHomePayload{}, nil
+}
+
+func (s *stubQuerier) GetSupportResponderProfile(context.Context, uuid.UUID) (*SupportResponderProfile, error) {
+	return &SupportResponderProfile{}, nil
+}
+
+func (s *stubQuerier) UpdateSupportResponderProfile(context.Context, uuid.UUID, UpdateSupportResponderProfileInput) (*SupportResponderProfile, error) {
+	return &SupportResponderProfile{}, nil
+}
+
 func (s *stubQuerier) CountOpenSupportRequests(context.Context, uuid.UUID) (int, error) {
 	return 0, nil
 }
 
 func (s *stubQuerier) CreateSupportRequest(context.Context, uuid.UUID, string, *string, string, bool, *time.Time) (*SupportRequest, error) {
 	return nil, nil
+}
+
+func (s *stubQuerier) CreateImmediateSupportRequest(context.Context, uuid.UUID, string, *string, string, string, bool, *time.Time) (*SupportRequest, error) {
+	return nil, nil
+}
+
+func (s *stubQuerier) CreateCommunitySupportRequest(context.Context, uuid.UUID, string, *string, string, string, bool, *time.Time) (*SupportRequest, error) {
+	return nil, nil
+}
+
+func (s *stubQuerier) RouteSupportRequest(context.Context, uuid.UUID) error {
+	return nil
 }
 
 func (s *stubQuerier) GetSupportRequest(_ context.Context, viewerID, requestID uuid.UUID) (*SupportRequest, error) {
@@ -53,6 +77,34 @@ func (s *stubQuerier) ListMySupportRequests(context.Context, uuid.UUID, *time.Ti
 
 func (s *stubQuerier) ListVisibleSupportRequests(context.Context, uuid.UUID, *time.Time, int) ([]SupportRequest, error) {
 	return nil, nil
+}
+
+func (s *stubQuerier) ListRespondedSupportRequests(context.Context, uuid.UUID, *time.Time, int) ([]SupportRequest, error) {
+	return nil, nil
+}
+
+func (s *stubQuerier) ListResponderQueue(context.Context, uuid.UUID, *time.Time, int) ([]SupportOffer, error) {
+	return nil, nil
+}
+
+func (s *stubQuerier) ListSupportSessions(context.Context, uuid.UUID, *time.Time, int) ([]SupportSession, error) {
+	return nil, nil
+}
+
+func (s *stubQuerier) CloseSupportSession(context.Context, uuid.UUID, uuid.UUID, string) (*SupportSession, error) {
+	return &SupportSession{}, nil
+}
+
+func (s *stubQuerier) AcceptSupportOffer(context.Context, uuid.UUID, uuid.UUID) (*SupportSession, error) {
+	return &SupportSession{}, nil
+}
+
+func (s *stubQuerier) DeclineSupportOffer(context.Context, uuid.UUID, uuid.UUID) error {
+	return nil
+}
+
+func (s *stubQuerier) SweepExpiredSupportOffers(context.Context) error {
+	return nil
 }
 
 func (s *stubQuerier) FetchSupportSummary(context.Context, uuid.UUID) (int, int, error) {

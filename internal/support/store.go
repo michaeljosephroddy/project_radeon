@@ -57,7 +57,7 @@ func (s *pgStore) CountOpenSupportRequests(ctx context.Context, userID uuid.UUID
 		`SELECT COUNT(*)
 		FROM support_requests
 		WHERE requester_id = $1
-			AND status = 'open'`,
+			AND status IN ('open', 'matched')`,
 		userID,
 	).Scan(&count)
 	return count, err
@@ -173,6 +173,11 @@ func (s *pgStore) ListMySupportRequests(ctx context.Context, userID uuid.UUID, b
 			sr.id, sr.requester_id, u.username, u.avatar_url, u.city,
 			sr.type, sr.message, sr.urgency, sr.status,
 			sr.response_count, sr.created_at, sr.priority_visibility, sr.priority_expires_at,
+			sr.channel,
+			sr.routing_status,
+			sr.desired_response_window,
+			sr.privacy_level,
+			sr.matched_session_id,
 			false AS has_responded,
 			true AS is_own_request,
 			sr.created_at AS sort_at
@@ -188,7 +193,25 @@ func (s *pgStore) ListMySupportRequests(ctx context.Context, userID uuid.UUID, b
 		return nil, err
 	}
 	defer rows.Close()
-	return scanSupportRequests(rows)
+
+	var requests []SupportRequest
+	for rows.Next() {
+		var req SupportRequest
+		if err := rows.Scan(
+			&req.ID, &req.RequesterID, &req.Username, &req.AvatarURL, &req.City,
+			&req.Type, &req.Message, &req.Urgency, &req.Status, &req.ResponseCount,
+			&req.CreatedAt, &req.PriorityVisibility, &req.PriorityExpiresAt,
+			&req.Channel, &req.RoutingStatus, &req.DesiredResponseWindow, &req.PrivacyLevel, &req.MatchedSessionID,
+			&req.HasResponded, &req.IsOwnRequest, &req.SortAt,
+		); err != nil {
+			return nil, err
+		}
+		if req.SortAt.IsZero() {
+			req.SortAt = req.CreatedAt
+		}
+		requests = append(requests, req)
+	}
+	return requests, rows.Err()
 }
 
 func (s *pgStore) ListVisibleSupportRequests(ctx context.Context, userID uuid.UUID, before *time.Time, limit int) ([]SupportRequest, error) {
@@ -248,6 +271,7 @@ func (s *pgStore) ListVisibleSupportRequests(ctx context.Context, userID uuid.UU
 			FROM support_requests sr
 			JOIN users u ON u.id = sr.requester_id
 			WHERE sr.status = 'open'
+			  AND COALESCE(sr.channel, 'community') = 'community'
 			  AND sr.requester_id != $1
 			  AND ($2::timestamptz IS NULL OR sr.created_at < $2)
 		)
@@ -324,6 +348,68 @@ func (s *pgStore) ListVisibleSupportRequests(ctx context.Context, userID uuid.UU
 			&req.Type, &req.Message, &req.Urgency, &req.Status, &req.ResponseCount,
 			&req.CreatedAt, &req.PriorityVisibility, &req.PriorityExpiresAt, &req.HasResponded, &req.IsOwnRequest, &req.SortAt,
 			&score, &isPriority,
+		); err != nil {
+			return nil, err
+		}
+		requests = append(requests, req)
+	}
+	return requests, rows.Err()
+}
+
+func (s *pgStore) ListRespondedSupportRequests(ctx context.Context, userID uuid.UUID, before *time.Time, limit int) ([]SupportRequest, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT
+			sr.id,
+			sr.requester_id,
+			u.username,
+			u.avatar_url,
+			u.city,
+			sr.type,
+			sr.message,
+			sr.urgency,
+			sr.status,
+			sr.response_count,
+			sr.created_at,
+			sr.priority_visibility,
+			sr.priority_expires_at,
+			sr.channel,
+			sr.routing_status,
+			sr.desired_response_window,
+			sr.privacy_level,
+			sr.matched_session_id,
+			true AS has_responded,
+			false AS is_own_request,
+			COALESCE(sr.closed_at, sr.created_at) AS sort_at
+		FROM support_requests sr
+		JOIN users u ON u.id = sr.requester_id
+		WHERE sr.requester_id != $1
+		  AND sr.status = 'closed'
+		  AND COALESCE(sr.channel, 'community') = 'community'
+		  AND EXISTS (
+			SELECT 1
+			FROM support_responses rsp
+			WHERE rsp.support_request_id = sr.id
+			  AND rsp.responder_id = $1
+		  )
+		  AND ($2::timestamptz IS NULL OR COALESCE(sr.closed_at, sr.created_at) < $2)
+		ORDER BY COALESCE(sr.closed_at, sr.created_at) DESC, sr.id DESC
+		LIMIT $3`,
+		userID, before, limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var requests []SupportRequest
+	for rows.Next() {
+		var req SupportRequest
+		if err := rows.Scan(
+			&req.ID, &req.RequesterID, &req.Username, &req.AvatarURL, &req.City,
+			&req.Type, &req.Message, &req.Urgency, &req.Status, &req.ResponseCount,
+			&req.CreatedAt, &req.PriorityVisibility, &req.PriorityExpiresAt,
+			&req.Channel, &req.RoutingStatus, &req.DesiredResponseWindow, &req.PrivacyLevel, &req.MatchedSessionID,
+			&req.HasResponded, &req.IsOwnRequest, &req.SortAt,
 		); err != nil {
 			return nil, err
 		}
