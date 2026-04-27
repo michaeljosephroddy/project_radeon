@@ -6,6 +6,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/project_radeon/api/pkg/cache"
 )
 
 type Store struct {
@@ -13,6 +15,11 @@ type Store struct {
 	prefix   string
 	payloads map[string][]byte
 	versions map[string]int64
+}
+
+type subscription struct {
+	messages chan []byte
+	once     sync.Once
 }
 
 func NewStore() *Store {
@@ -61,6 +68,14 @@ func (s *Store) SetJSON(_ context.Context, key string, value any, _ time.Duratio
 	return nil
 }
 
+func (s *Store) PublishJSON(_ context.Context, _ string, _ any) error {
+	return nil
+}
+
+func (s *Store) Subscribe(_ context.Context, _ string) (cache.Subscription, error) {
+	return &subscription{messages: make(chan []byte)}, nil
+}
+
 func (s *Store) GetVersion(_ context.Context, key string) (int64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -101,4 +116,18 @@ func (s *Store) ReadThrough(ctx context.Context, key string, ttl time.Duration, 
 		return err
 	}
 	return s.SetJSON(ctx, key, dest, ttl)
+}
+
+func (s *subscription) Messages() <-chan []byte {
+	return s.messages
+}
+
+func (s *subscription) Close() error {
+	s.once.Do(func() {
+		if s.messages != nil {
+			close(s.messages)
+			s.messages = nil
+		}
+	})
+	return nil
 }
