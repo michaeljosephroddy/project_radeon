@@ -241,7 +241,6 @@ func (s *pgStore) AcceptSupportOffer(ctx context.Context, responderID, offerID u
 	var requesterUsername string
 	var responderUsername string
 	var offerStatus SupportOfferStatus
-	var requestStatus string
 	var expiresAt time.Time
 	err = tx.QueryRow(ctx,
 		`SELECT
@@ -250,7 +249,6 @@ func (s *pgStore) AcceptSupportOffer(ctx context.Context, responderID, offerID u
 			requester.username,
 			responder.username,
 			so.status,
-			sr.status,
 			so.expires_at
 		FROM support_offers so
 		JOIN support_requests sr ON sr.id = so.support_request_id
@@ -267,7 +265,6 @@ func (s *pgStore) AcceptSupportOffer(ctx context.Context, responderID, offerID u
 		&requesterUsername,
 		&responderUsername,
 		&offerStatus,
-		&requestStatus,
 		&expiresAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -276,8 +273,43 @@ func (s *pgStore) AcceptSupportOffer(ctx context.Context, responderID, offerID u
 	if err != nil {
 		return nil, err
 	}
-	if offerStatus != SupportOfferPending || requestStatus != "open" || !expiresAt.After(time.Now()) {
+	if offerStatus != SupportOfferPending || !expiresAt.After(time.Now()) {
+		return nil, ErrConflict
+	}
+
+	// Lock the parent request so only one responder can turn a pending offer into a live session.
+	var requestStatus string
+	err = tx.QueryRow(ctx,
+		`SELECT status
+		FROM support_requests
+		WHERE id = $1
+		  AND channel = 'immediate'
+		FOR UPDATE`,
+		requestID,
+	).Scan(&requestStatus)
+	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	if requestStatus != "open" {
+		return nil, ErrConflict
+	}
+
+	var hasSession bool
+	if err := tx.QueryRow(ctx,
+		`SELECT EXISTS(
+			SELECT 1
+			FROM support_sessions
+			WHERE support_request_id = $1
+		)`,
+		requestID,
+	).Scan(&hasSession); err != nil {
+		return nil, err
+	}
+	if hasSession {
+		return nil, ErrConflict
 	}
 
 	var sessionID uuid.UUID
@@ -408,6 +440,83 @@ func (s *pgStore) AcceptSupportOffer(ctx context.Context, responderID, offerID u
 		CreatedAt:         createdAt,
 		SortAt:            createdAt,
 	}, nil
+}
+
+func (s *pgStore) ConvertImmediateRequestToCommunity(ctx context.Context, requestID, userID uuid.UUID) (*SupportRequest, error) {
+	ready, err := s.supportRoutingTablesReady(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+
+	var status string
+	var routingStatus SupportRoutingStatus
+	var matchedSessionID *uuid.UUID
+	err = tx.QueryRow(ctx,
+		`SELECT status, routing_status, matched_session_id
+		FROM support_requests
+		WHERE id = $1
+		  AND requester_id = $2
+		  AND channel = 'immediate'
+		FOR UPDATE`,
+		requestID,
+		userID,
+	).Scan(&status, &routingStatus, &matchedSessionID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	if status != "open" || routingStatus == SupportRoutingMatched || matchedSessionID != nil {
+		return nil, ErrConflict
+	}
+
+	if ready {
+		if _, err := tx.Exec(ctx,
+			`UPDATE support_offers
+			SET status = 'closed', closed_at = NOW()
+			WHERE support_request_id = $1
+			  AND status = 'pending'`,
+			requestID,
+		); err != nil {
+			return nil, err
+		}
+	}
+
+	if _, err := tx.Exec(ctx,
+		`UPDATE support_requests
+		SET
+			channel = 'community',
+			routing_status = 'not_applicable',
+			matched_session_id = NULL
+		WHERE id = $1`,
+		requestID,
+	); err != nil {
+		return nil, err
+	}
+
+	if ready {
+		_, _ = tx.Exec(ctx,
+			`INSERT INTO support_events (support_request_id, actor_user_id, event_type, payload)
+			VALUES ($1, $2, $3, $4::jsonb)`,
+			requestID,
+			userID,
+			"support_request.converted_to_community",
+			`{"from":"immediate","to":"community"}`,
+		)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+
+	return s.GetSupportRequest(ctx, userID, requestID)
 }
 
 func (s *pgStore) DeclineSupportOffer(ctx context.Context, responderID, offerID uuid.UUID) error {

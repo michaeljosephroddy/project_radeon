@@ -182,6 +182,22 @@ func (s *cachedStore) CloseSupportRequest(ctx context.Context, requestID, userID
 	return nil
 }
 
+func (s *cachedStore) ConvertImmediateRequestToCommunity(ctx context.Context, requestID, userID uuid.UUID) (*SupportRequest, error) {
+	request, err := s.inner.ConvertImmediateRequestToCommunity(ctx, requestID, userID)
+	if err != nil {
+		return nil, err
+	}
+
+	_ = s.cache.BumpVersions(ctx,
+		s.myRequestsVersionKey(userID),
+		s.visibleVersionKey(),
+		s.summaryVersionKey(),
+		s.viewerVisibleVersionKey(userID),
+		s.requestVersionKey(requestID),
+	)
+	return request, nil
+}
+
 func (s *cachedStore) ListMySupportRequests(ctx context.Context, userID uuid.UUID, before *time.Time, limit int) ([]SupportRequest, error) {
 	version, err := s.cache.GetVersion(ctx, s.myRequestsVersionKey(userID))
 	if err != nil {

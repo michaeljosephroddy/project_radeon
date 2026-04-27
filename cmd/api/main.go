@@ -226,6 +226,7 @@ func main() {
 		r.Post("/support/offers/{offerID}/decline", supportHandler.DeclineSupportOffer)
 		r.Get("/support/requests/{id}", supportHandler.GetSupportRequest)
 		r.Patch("/support/requests/{id}", supportHandler.UpdateSupportRequest)
+		r.Post("/support/requests/{id}/convert-community", supportHandler.ConvertImmediateSupportRequestToCommunity)
 		r.Post("/support/requests/{id}/responses", supportHandler.CreateSupportResponse)
 		r.Get("/support/requests/{id}/responses", supportHandler.ListSupportResponses)
 

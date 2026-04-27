@@ -71,6 +71,10 @@ func (s *stubQuerier) CloseSupportRequest(context.Context, uuid.UUID, uuid.UUID)
 	return nil
 }
 
+func (s *stubQuerier) ConvertImmediateRequestToCommunity(context.Context, uuid.UUID, uuid.UUID) (*SupportRequest, error) {
+	return &SupportRequest{}, nil
+}
+
 func (s *stubQuerier) ListMySupportRequests(context.Context, uuid.UUID, *time.Time, int) ([]SupportRequest, error) {
 	return nil, nil
 }

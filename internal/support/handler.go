@@ -31,6 +31,7 @@ type Querier interface {
 	DeclineSupportOffer(ctx context.Context, responderID, offerID uuid.UUID) error
 	GetSupportRequest(ctx context.Context, viewerID, requestID uuid.UUID) (*SupportRequest, error)
 	CloseSupportRequest(ctx context.Context, requestID, userID uuid.UUID) error
+	ConvertImmediateRequestToCommunity(ctx context.Context, requestID, userID uuid.UUID) (*SupportRequest, error)
 	ListMySupportRequests(ctx context.Context, userID uuid.UUID, before *time.Time, limit int) ([]SupportRequest, error)
 	ListVisibleSupportRequests(ctx context.Context, userID uuid.UUID, before *time.Time, limit int) ([]SupportRequest, error)
 	ListRespondedSupportRequests(ctx context.Context, userID uuid.UUID, before *time.Time, limit int) ([]SupportRequest, error)
@@ -590,11 +591,41 @@ func (h *Handler) AcceptSupportOffer(w http.ResponseWriter, r *http.Request) {
 			response.Error(w, http.StatusNotFound, "support offer not found")
 			return
 		}
+		if errors.Is(err, ErrConflict) {
+			response.Error(w, http.StatusConflict, "support offer is no longer available")
+			return
+		}
 		response.Error(w, http.StatusInternalServerError, "could not accept support offer")
 		return
 	}
 
 	response.Success(w, http.StatusOK, session)
+}
+
+// ConvertImmediateSupportRequestToCommunity reopens an unmatched immediate request on the community board.
+func (h *Handler) ConvertImmediateSupportRequestToCommunity(w http.ResponseWriter, r *http.Request) {
+	userID := middleware.CurrentUserID(r)
+	requestID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		response.Error(w, http.StatusBadRequest, "invalid support request id")
+		return
+	}
+
+	req, err := h.db.ConvertImmediateRequestToCommunity(r.Context(), requestID, userID)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			response.Error(w, http.StatusNotFound, "support request not found")
+			return
+		}
+		if errors.Is(err, ErrConflict) {
+			response.Error(w, http.StatusConflict, "support request can no longer move to community")
+			return
+		}
+		response.Error(w, http.StatusInternalServerError, "could not move support request to community")
+		return
+	}
+
+	response.Success(w, http.StatusOK, req)
 }
 
 // DeclineSupportOffer declines a routed immediate-support offer for the authenticated responder.

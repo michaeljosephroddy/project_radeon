@@ -15,32 +15,33 @@ import (
 )
 
 type mockQuerier struct {
-	getSupportProfile             func(ctx context.Context, userID uuid.UUID) (*SupportProfile, error)
-	updateSupportProfile          func(ctx context.Context, userID uuid.UUID, available bool) (*SupportProfile, error)
-	getSupportHome                func(ctx context.Context, userID uuid.UUID) (*SupportHomePayload, error)
-	getSupportResponderProfile    func(ctx context.Context, userID uuid.UUID) (*SupportResponderProfile, error)
-	updateSupportResponderProfile func(ctx context.Context, userID uuid.UUID, input UpdateSupportResponderProfileInput) (*SupportResponderProfile, error)
-	countOpenSupportRequests      func(ctx context.Context, userID uuid.UUID) (int, error)
-	createSupportRequest          func(ctx context.Context, userID uuid.UUID, reqType string, message *string, urgency string, priorityVisibility bool, priorityExpiresAt *time.Time) (*SupportRequest, error)
-	createImmediateSupportRequest func(ctx context.Context, userID uuid.UUID, reqType string, message *string, urgency string, privacyLevel string, priorityVisibility bool, priorityExpiresAt *time.Time) (*SupportRequest, error)
-	createCommunitySupportRequest func(ctx context.Context, userID uuid.UUID, reqType string, message *string, urgency string, privacyLevel string, priorityVisibility bool, priorityExpiresAt *time.Time) (*SupportRequest, error)
-	routeSupportRequest           func(ctx context.Context, requestID uuid.UUID) error
-	acceptSupportOffer            func(ctx context.Context, responderID, offerID uuid.UUID) (*SupportSession, error)
-	declineSupportOffer           func(ctx context.Context, responderID, offerID uuid.UUID) error
-	getSupportRequest             func(ctx context.Context, viewerID, requestID uuid.UUID) (*SupportRequest, error)
-	closeSupportRequest           func(ctx context.Context, requestID, userID uuid.UUID) error
-	listMySupportRequests         func(ctx context.Context, userID uuid.UUID, before *time.Time, limit int) ([]SupportRequest, error)
-	listVisibleSupportRequests    func(ctx context.Context, userID uuid.UUID, before *time.Time, limit int) ([]SupportRequest, error)
-	listRespondedSupportRequests  func(ctx context.Context, userID uuid.UUID, before *time.Time, limit int) ([]SupportRequest, error)
-	listResponderQueue            func(ctx context.Context, userID uuid.UUID, before *time.Time, limit int) ([]SupportOffer, error)
-	listSupportSessions           func(ctx context.Context, userID uuid.UUID, before *time.Time, limit int) ([]SupportSession, error)
-	closeSupportSession           func(ctx context.Context, userID, sessionID uuid.UUID, outcome string) (*SupportSession, error)
-	sweepExpiredSupportOffers     func(ctx context.Context) error
-	fetchSupportSummary           func(ctx context.Context, viewerID uuid.UUID) (int, int, error)
-	getSupportRequestState        func(ctx context.Context, requestID uuid.UUID) (uuid.UUID, string, error)
-	createSupportResponse         func(ctx context.Context, requestID, userID uuid.UUID, responseType string, message *string, scheduledFor *time.Time) (*CreateSupportResponseResult, error)
-	getSupportRequestOwner        func(ctx context.Context, requestID uuid.UUID) (uuid.UUID, error)
-	listSupportResponses          func(ctx context.Context, requestID uuid.UUID, limit, offset int) ([]SupportResponse, error)
+	getSupportProfile                  func(ctx context.Context, userID uuid.UUID) (*SupportProfile, error)
+	updateSupportProfile               func(ctx context.Context, userID uuid.UUID, available bool) (*SupportProfile, error)
+	getSupportHome                     func(ctx context.Context, userID uuid.UUID) (*SupportHomePayload, error)
+	getSupportResponderProfile         func(ctx context.Context, userID uuid.UUID) (*SupportResponderProfile, error)
+	updateSupportResponderProfile      func(ctx context.Context, userID uuid.UUID, input UpdateSupportResponderProfileInput) (*SupportResponderProfile, error)
+	countOpenSupportRequests           func(ctx context.Context, userID uuid.UUID) (int, error)
+	createSupportRequest               func(ctx context.Context, userID uuid.UUID, reqType string, message *string, urgency string, priorityVisibility bool, priorityExpiresAt *time.Time) (*SupportRequest, error)
+	createImmediateSupportRequest      func(ctx context.Context, userID uuid.UUID, reqType string, message *string, urgency string, privacyLevel string, priorityVisibility bool, priorityExpiresAt *time.Time) (*SupportRequest, error)
+	createCommunitySupportRequest      func(ctx context.Context, userID uuid.UUID, reqType string, message *string, urgency string, privacyLevel string, priorityVisibility bool, priorityExpiresAt *time.Time) (*SupportRequest, error)
+	routeSupportRequest                func(ctx context.Context, requestID uuid.UUID) error
+	acceptSupportOffer                 func(ctx context.Context, responderID, offerID uuid.UUID) (*SupportSession, error)
+	declineSupportOffer                func(ctx context.Context, responderID, offerID uuid.UUID) error
+	getSupportRequest                  func(ctx context.Context, viewerID, requestID uuid.UUID) (*SupportRequest, error)
+	closeSupportRequest                func(ctx context.Context, requestID, userID uuid.UUID) error
+	convertImmediateRequestToCommunity func(ctx context.Context, requestID, userID uuid.UUID) (*SupportRequest, error)
+	listMySupportRequests              func(ctx context.Context, userID uuid.UUID, before *time.Time, limit int) ([]SupportRequest, error)
+	listVisibleSupportRequests         func(ctx context.Context, userID uuid.UUID, before *time.Time, limit int) ([]SupportRequest, error)
+	listRespondedSupportRequests       func(ctx context.Context, userID uuid.UUID, before *time.Time, limit int) ([]SupportRequest, error)
+	listResponderQueue                 func(ctx context.Context, userID uuid.UUID, before *time.Time, limit int) ([]SupportOffer, error)
+	listSupportSessions                func(ctx context.Context, userID uuid.UUID, before *time.Time, limit int) ([]SupportSession, error)
+	closeSupportSession                func(ctx context.Context, userID, sessionID uuid.UUID, outcome string) (*SupportSession, error)
+	sweepExpiredSupportOffers          func(ctx context.Context) error
+	fetchSupportSummary                func(ctx context.Context, viewerID uuid.UUID) (int, int, error)
+	getSupportRequestState             func(ctx context.Context, requestID uuid.UUID) (uuid.UUID, string, error)
+	createSupportResponse              func(ctx context.Context, requestID, userID uuid.UUID, responseType string, message *string, scheduledFor *time.Time) (*CreateSupportResponseResult, error)
+	getSupportRequestOwner             func(ctx context.Context, requestID uuid.UUID) (uuid.UUID, error)
+	listSupportResponses               func(ctx context.Context, requestID uuid.UUID, limit, offset int) ([]SupportResponse, error)
 }
 
 func (m *mockQuerier) GetSupportProfile(ctx context.Context, userID uuid.UUID) (*SupportProfile, error) {
@@ -126,6 +127,12 @@ func (m *mockQuerier) CloseSupportRequest(ctx context.Context, requestID, userID
 		return m.closeSupportRequest(ctx, requestID, userID)
 	}
 	return nil
+}
+func (m *mockQuerier) ConvertImmediateRequestToCommunity(ctx context.Context, requestID, userID uuid.UUID) (*SupportRequest, error) {
+	if m.convertImmediateRequestToCommunity != nil {
+		return m.convertImmediateRequestToCommunity(ctx, requestID, userID)
+	}
+	return &SupportRequest{ID: requestID, RequesterID: userID, Channel: SupportChannelCommunity}, nil
 }
 func (m *mockQuerier) ListMySupportRequests(ctx context.Context, userID uuid.UUID, before *time.Time, limit int) ([]SupportRequest, error) {
 	if m.listMySupportRequests != nil {
@@ -224,6 +231,11 @@ func authedRequest(method, body string) *http.Request {
 func authedRequestWithID(method, body, id string) *http.Request {
 	req := authedRequest(method, body)
 	return withURLParam(req, "id", id)
+}
+
+func authedRequestWithParam(method, body, key, value string) *http.Request {
+	req := authedRequest(method, body)
+	return withURLParam(req, key, value)
 }
 
 // ── GetMySupportProfile ───────────────────────────────────────────────────────
@@ -344,6 +356,49 @@ func TestGetSupportRequestSuccess(t *testing.T) {
 	h.GetSupportRequest(rec, authedRequestWithID(http.MethodGet, "", fixedRequest.String()))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+}
+
+// ── AcceptSupportOffer ────────────────────────────────────────────────────────
+
+func TestAcceptSupportOfferReturnsConflictWhenAlreadyClaimed(t *testing.T) {
+	h := NewHandler(&mockQuerier{
+		acceptSupportOffer: func(_ context.Context, _, _ uuid.UUID) (*SupportSession, error) {
+			return nil, ErrConflict
+		},
+	})
+	rec := httptest.NewRecorder()
+	h.AcceptSupportOffer(rec, authedRequestWithParam(http.MethodPost, "", "offerID", fixedRequest.String()))
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusConflict)
+	}
+}
+
+// ── ConvertImmediateSupportRequestToCommunity ─────────────────────────────────
+
+func TestConvertImmediateSupportRequestToCommunitySuccess(t *testing.T) {
+	h := NewHandler(&mockQuerier{
+		convertImmediateRequestToCommunity: func(_ context.Context, requestID, userID uuid.UUID) (*SupportRequest, error) {
+			return &SupportRequest{ID: requestID, RequesterID: userID, Channel: SupportChannelCommunity, Status: "open"}, nil
+		},
+	})
+	rec := httptest.NewRecorder()
+	h.ConvertImmediateSupportRequestToCommunity(rec, authedRequestWithID(http.MethodPost, "", fixedRequest.String()))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+}
+
+func TestConvertImmediateSupportRequestToCommunityConflict(t *testing.T) {
+	h := NewHandler(&mockQuerier{
+		convertImmediateRequestToCommunity: func(_ context.Context, _, _ uuid.UUID) (*SupportRequest, error) {
+			return nil, ErrConflict
+		},
+	})
+	rec := httptest.NewRecorder()
+	h.ConvertImmediateSupportRequestToCommunity(rec, authedRequestWithID(http.MethodPost, "", fixedRequest.String()))
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusConflict)
 	}
 }
 
