@@ -31,32 +31,12 @@ func NewCachedStore(inner Querier, store appcache.Store) Querier {
 	return &cachedStore{inner: inner, cache: store}
 }
 
-func (s *cachedStore) ListFeed(ctx context.Context, before *time.Time, limit int) ([]Post, error) {
-	version, err := s.cache.GetVersion(ctx, s.feedVersionKey())
-	if err != nil {
-		return s.inner.ListFeed(ctx, before, limit)
-	}
+func (s *cachedStore) ListHomeFeed(ctx context.Context, viewerID uuid.UUID, before *time.Time, limit int) ([]FeedItem, error) {
+	return s.inner.ListHomeFeed(ctx, viewerID, before, limit)
+}
 
-	key := s.cache.Key(
-		"feed",
-		"v", strconv.FormatInt(version, 10),
-		"before", timePart(before),
-		"limit", strconv.Itoa(limit),
-	)
-
-	var posts []Post
-	if err := s.cache.ReadThrough(ctx, key, feedTTL, &posts, func(ctx context.Context, dest any) error {
-		loaded, err := s.inner.ListFeed(ctx, before, limit)
-		if err != nil {
-			return err
-		}
-		*dest.(*[]Post) = loaded
-		return nil
-	}); err != nil {
-		return nil, err
-	}
-
-	return posts, nil
+func (s *cachedStore) ListHiddenFeedItems(ctx context.Context, userID uuid.UUID, before *time.Time, limit int) ([]HiddenFeedItem, error) {
+	return s.inner.ListHiddenFeedItems(ctx, userID, before, limit)
 }
 
 func (s *cachedStore) ListUserPosts(ctx context.Context, userID uuid.UUID, before *time.Time, limit int) ([]Post, error) {
@@ -102,6 +82,20 @@ func (s *cachedStore) CreatePost(ctx context.Context, userID uuid.UUID, body str
 	return postID, nil
 }
 
+func (s *cachedStore) SharePost(ctx context.Context, userID, postID uuid.UUID, commentary string) (uuid.UUID, error) {
+	shareID, err := s.inner.SharePost(ctx, userID, postID, commentary)
+	if err != nil {
+		return uuid.Nil, err
+	}
+
+	_ = s.cache.BumpVersions(ctx,
+		s.feedVersionKey(),
+		s.userPostsVersionKey(userID),
+		s.discoverGlobalVersionKey(),
+	)
+	return shareID, nil
+}
+
 func (s *cachedStore) DeletePost(ctx context.Context, postID, userID uuid.UUID) error {
 	if err := s.inner.DeletePost(ctx, postID, userID); err != nil {
 		return err
@@ -119,6 +113,39 @@ func (s *cachedStore) ListReactions(ctx context.Context, postID uuid.UUID, limit
 	return s.inner.ListReactions(ctx, postID, limit, offset)
 }
 
+func (s *cachedStore) ToggleFeedItemReaction(ctx context.Context, itemID, userID uuid.UUID, itemKind FeedItemKind, reactionType string) (bool, error) {
+	reacted, err := s.inner.ToggleFeedItemReaction(ctx, itemID, userID, itemKind, reactionType)
+	if err != nil {
+		return false, err
+	}
+	if itemKind == FeedItemKindPost {
+		s.bumpFeedVersionsForPost(ctx, itemID)
+		return reacted, nil
+	}
+	_ = s.cache.BumpVersions(ctx, s.feedVersionKey())
+	return reacted, nil
+}
+
+func (s *cachedStore) HideFeedItem(ctx context.Context, userID, itemID uuid.UUID, itemKind FeedItemKind) error {
+	return s.inner.HideFeedItem(ctx, userID, itemID, itemKind)
+}
+
+func (s *cachedStore) UnhideFeedItem(ctx context.Context, userID, itemID uuid.UUID, itemKind FeedItemKind) error {
+	return s.inner.UnhideFeedItem(ctx, userID, itemID, itemKind)
+}
+
+func (s *cachedStore) MuteFeedAuthor(ctx context.Context, userID, authorID uuid.UUID) error {
+	return s.inner.MuteFeedAuthor(ctx, userID, authorID)
+}
+
+func (s *cachedStore) LogFeedImpressions(ctx context.Context, userID uuid.UUID, impressions []FeedImpressionInput) error {
+	return s.inner.LogFeedImpressions(ctx, userID, impressions)
+}
+
+func (s *cachedStore) LogFeedEvents(ctx context.Context, userID uuid.UUID, events []FeedEventInput) error {
+	return s.inner.LogFeedEvents(ctx, userID, events)
+}
+
 func (s *cachedStore) ToggleReaction(ctx context.Context, postID, userID uuid.UUID, reactionType string) (bool, error) {
 	reacted, err := s.inner.ToggleReaction(ctx, postID, userID, reactionType)
 	if err != nil {
@@ -133,6 +160,19 @@ func (s *cachedStore) ResolveMentionUsers(ctx context.Context, userIDs []uuid.UU
 	return s.inner.ResolveMentionUsers(ctx, userIDs)
 }
 
+func (s *cachedStore) AddFeedItemComment(ctx context.Context, itemID, userID uuid.UUID, itemKind FeedItemKind, body string, mentions []CommentMention) (*Comment, error) {
+	comment, err := s.inner.AddFeedItemComment(ctx, itemID, userID, itemKind, body, mentions)
+	if err != nil {
+		return nil, err
+	}
+	if itemKind == FeedItemKindPost {
+		s.bumpFeedVersionsForPost(ctx, itemID)
+		return comment, nil
+	}
+	_ = s.cache.BumpVersions(ctx, s.feedVersionKey())
+	return comment, nil
+}
+
 func (s *cachedStore) AddComment(ctx context.Context, postID, userID uuid.UUID, body string, mentions []CommentMention) (*Comment, error) {
 	comment, err := s.inner.AddComment(ctx, postID, userID, body, mentions)
 	if err != nil {
@@ -145,6 +185,10 @@ func (s *cachedStore) AddComment(ctx context.Context, postID, userID uuid.UUID, 
 
 func (s *cachedStore) ListComments(ctx context.Context, postID uuid.UUID, after *time.Time, limit int) ([]Comment, error) {
 	return s.inner.ListComments(ctx, postID, after, limit)
+}
+
+func (s *cachedStore) ListFeedItemComments(ctx context.Context, itemID uuid.UUID, itemKind FeedItemKind, after *time.Time, limit int) ([]Comment, error) {
+	return s.inner.ListFeedItemComments(ctx, itemID, itemKind, after, limit)
 }
 
 func (s *cachedStore) bumpFeedVersionsForPost(ctx context.Context, postID uuid.UUID) {

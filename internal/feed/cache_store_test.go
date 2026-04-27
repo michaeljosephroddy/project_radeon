@@ -11,9 +11,14 @@ import (
 
 type stubQuerier struct {
 	listUserPostsCalls int
+	sharePostCalls     int
 }
 
-func (s *stubQuerier) ListFeed(context.Context, *time.Time, int) ([]Post, error) {
+func (s *stubQuerier) ListHomeFeed(context.Context, uuid.UUID, *time.Time, int) ([]FeedItem, error) {
+	return nil, nil
+}
+
+func (s *stubQuerier) ListHiddenFeedItems(context.Context, uuid.UUID, *time.Time, int) ([]HiddenFeedItem, error) {
 	return nil, nil
 }
 
@@ -31,12 +36,41 @@ func (s *stubQuerier) CreatePost(context.Context, uuid.UUID, string, []PostImage
 	return uuid.New(), nil
 }
 
+func (s *stubQuerier) SharePost(context.Context, uuid.UUID, uuid.UUID, string) (uuid.UUID, error) {
+	s.sharePostCalls++
+	return uuid.New(), nil
+}
+
 func (s *stubQuerier) DeletePost(context.Context, uuid.UUID, uuid.UUID) error {
+	return nil
+}
+
+func (s *stubQuerier) HideFeedItem(context.Context, uuid.UUID, uuid.UUID, FeedItemKind) error {
+	return nil
+}
+
+func (s *stubQuerier) UnhideFeedItem(context.Context, uuid.UUID, uuid.UUID, FeedItemKind) error {
+	return nil
+}
+
+func (s *stubQuerier) MuteFeedAuthor(context.Context, uuid.UUID, uuid.UUID) error {
+	return nil
+}
+
+func (s *stubQuerier) LogFeedImpressions(context.Context, uuid.UUID, []FeedImpressionInput) error {
+	return nil
+}
+
+func (s *stubQuerier) LogFeedEvents(context.Context, uuid.UUID, []FeedEventInput) error {
 	return nil
 }
 
 func (s *stubQuerier) ListReactions(context.Context, uuid.UUID, int, int) ([]Reaction, error) {
 	return nil, nil
+}
+
+func (s *stubQuerier) ToggleFeedItemReaction(context.Context, uuid.UUID, uuid.UUID, FeedItemKind, string) (bool, error) {
+	return true, nil
 }
 
 func (s *stubQuerier) ToggleReaction(context.Context, uuid.UUID, uuid.UUID, string) (bool, error) {
@@ -51,7 +85,15 @@ func (s *stubQuerier) AddComment(context.Context, uuid.UUID, uuid.UUID, string, 
 	return &Comment{}, nil
 }
 
+func (s *stubQuerier) AddFeedItemComment(context.Context, uuid.UUID, uuid.UUID, FeedItemKind, string, []CommentMention) (*Comment, error) {
+	return &Comment{}, nil
+}
+
 func (s *stubQuerier) ListComments(context.Context, uuid.UUID, *time.Time, int) ([]Comment, error) {
+	return nil, nil
+}
+
+func (s *stubQuerier) ListFeedItemComments(context.Context, uuid.UUID, FeedItemKind, *time.Time, int) ([]Comment, error) {
 	return nil, nil
 }
 
@@ -96,5 +138,31 @@ func TestCachedStoreInvalidatesUserPostsAfterReaction(t *testing.T) {
 	}
 	if !third[0].CreatedAt.After(second[0].CreatedAt) {
 		t.Fatalf("expected invalidated posts to be newer than cached posts")
+	}
+}
+
+func TestCachedStoreInvalidatesUserPostsAfterShare(t *testing.T) {
+	t.Parallel()
+
+	inner := &stubQuerier{}
+	store := cachetest.NewStore()
+	cached := NewCachedStore(inner, store)
+
+	first, err := cached.ListUserPosts(context.Background(), authorID, nil, 20)
+	if err != nil {
+		t.Fatalf("first ListUserPosts: %v", err)
+	}
+	if _, err := cached.SharePost(context.Background(), authorID, uuid.New(), "reshared"); err != nil {
+		t.Fatalf("SharePost: %v", err)
+	}
+	second, err := cached.ListUserPosts(context.Background(), authorID, nil, 20)
+	if err != nil {
+		t.Fatalf("second ListUserPosts: %v", err)
+	}
+	if inner.sharePostCalls != 1 {
+		t.Fatalf("expected SharePost to hit inner store once, got %d", inner.sharePostCalls)
+	}
+	if !second[0].CreatedAt.After(first[0].CreatedAt) {
+		t.Fatalf("expected share invalidation to force a fresh ListUserPosts call")
 	}
 }

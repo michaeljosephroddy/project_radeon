@@ -22,44 +22,6 @@ func NewPgStore(pool *pgxpool.Pool) Querier {
 	return &pgStore{pool: pool}
 }
 
-func (s *pgStore) ListFeed(ctx context.Context, before *time.Time, limit int) ([]Post, error) {
-	rows, err := s.pool.Query(ctx,
-		`SELECT
-			p.id,
-			p.user_id,
-			u.username,
-			u.avatar_url,
-			COALESCE(p.body, ''),
-			p.created_at,
-			COALESCE(cc.cnt, 0) AS comment_count,
-			COALESCE(lc.cnt, 0) AS like_count
-		FROM posts p
-		JOIN users u ON u.id = p.user_id
-		LEFT JOIN LATERAL (
-			SELECT COUNT(*) AS cnt FROM comments WHERE post_id = p.id
-		) cc ON true
-		LEFT JOIN LATERAL (
-			SELECT COUNT(*) AS cnt FROM post_reactions WHERE post_id = p.id AND type = 'like'
-		) lc ON true
-		WHERE ($1::timestamptz IS NULL OR p.created_at < $1)
-		ORDER BY p.created_at DESC
-		LIMIT $2`,
-		before, limit,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	posts, err := scanPosts(rows)
-	if err != nil {
-		return nil, err
-	}
-	if err := s.attachPostImages(ctx, posts); err != nil {
-		return nil, err
-	}
-	return posts, nil
-}
-
 func (s *pgStore) ListUserPosts(ctx context.Context, userID uuid.UUID, before *time.Time, limit int) ([]Post, error) {
 	rows, err := s.pool.Query(ctx,
 		`SELECT
@@ -137,6 +99,9 @@ func (s *pgStore) CreatePost(ctx context.Context, userID uuid.UUID, body string,
 	if err := tx.Commit(ctx); err != nil {
 		return uuid.Nil, err
 	}
+	if err := s.refreshFeedAggregatesForPosts(ctx, []uuid.UUID{id}); err != nil {
+		return uuid.Nil, err
+	}
 	return id, nil
 }
 
@@ -147,6 +112,9 @@ func (s *pgStore) DeletePost(ctx context.Context, postID, userID uuid.UUID) erro
 	}
 	if result.RowsAffected() == 0 {
 		return ErrNotFound
+	}
+	if err := s.refreshAuthorFeedStats(ctx, []uuid.UUID{userID}); err != nil {
+		return err
 	}
 	return nil
 }
@@ -210,6 +178,9 @@ func (s *pgStore) ToggleReaction(ctx context.Context, postID, userID uuid.UUID, 
 		); err != nil {
 			return false, err
 		}
+		if err := s.refreshFeedAggregatesForPosts(ctx, []uuid.UUID{postID}); err != nil {
+			return false, err
+		}
 		return false, nil
 	}
 
@@ -217,6 +188,9 @@ func (s *pgStore) ToggleReaction(ctx context.Context, postID, userID uuid.UUID, 
 		`INSERT INTO post_reactions (post_id, user_id, type) VALUES ($1, $2, $3)`,
 		postID, userID, reactionType,
 	); err != nil {
+		return false, err
+	}
+	if err := s.refreshFeedAggregatesForPosts(ctx, []uuid.UUID{postID}); err != nil {
 		return false, err
 	}
 	return true, nil
@@ -294,6 +268,9 @@ func (s *pgStore) AddComment(ctx context.Context, postID, userID uuid.UUID, body
 	comment.Mentions = mentions
 
 	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	if err := s.refreshFeedAggregatesForPosts(ctx, []uuid.UUID{postID}); err != nil {
 		return nil, err
 	}
 	return &comment, nil

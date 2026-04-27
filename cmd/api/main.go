@@ -153,12 +153,22 @@ func main() {
 		r.Use(middleware.RateLimitUser)
 
 		// Feed
-		r.Get("/feed", feedHandler.GetFeed)
+		r.Get("/feed/home", feedHandler.GetHomeFeed)
+		r.Get("/feed/hidden", feedHandler.GetHiddenFeedItems)
+		r.Post("/feed/items/{id}/react", feedHandler.ReactToFeedItem)
+		r.Post("/feed/items/{id}/comments", feedHandler.AddFeedItemComment)
+		r.Get("/feed/items/{id}/comments", feedHandler.GetFeedItemComments)
+		r.Post("/feed/items/{id}/hide", feedHandler.HideFeedItem)
+		r.Delete("/feed/items/{id}/hide", feedHandler.UnhideFeedItem)
+		r.Post("/feed/authors/{id}/mute", feedHandler.MuteFeedAuthor)
+		r.Post("/feed/impressions", feedHandler.LogFeedImpressions)
+		r.Post("/feed/events", feedHandler.LogFeedEvents)
 
 		// Posts
 		r.Post("/posts", feedHandler.CreatePost)
 		r.Post("/posts/images", feedHandler.UploadPostImage)
 		r.Delete("/posts/{id}", feedHandler.DeletePost)
+		r.Post("/posts/{id}/share", feedHandler.SharePost)
 		r.Post("/posts/{id}/react", feedHandler.ReactToPost)
 		r.Get("/posts/{id}/reactions", feedHandler.GetReactions)
 		r.Post("/posts/{id}/comments", feedHandler.AddComment)
