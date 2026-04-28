@@ -61,9 +61,6 @@ func (s *pgStore) toggleShareReaction(ctx context.Context, shareID, userID uuid.
 		); err != nil {
 			return false, err
 		}
-		if err := s.refreshFeedAggregatesForShares(ctx, []uuid.UUID{shareID}); err != nil {
-			return false, err
-		}
 		return false, nil
 	}
 
@@ -71,9 +68,6 @@ func (s *pgStore) toggleShareReaction(ctx context.Context, shareID, userID uuid.
 		`INSERT INTO share_reactions (share_id, user_id, type) VALUES ($1, $2, $3)`,
 		shareID, userID, reactionType,
 	); err != nil {
-		return false, err
-	}
-	if err := s.refreshFeedAggregatesForShares(ctx, []uuid.UUID{shareID}); err != nil {
 		return false, err
 	}
 	return true, nil
@@ -124,9 +118,6 @@ func (s *pgStore) addShareComment(ctx context.Context, shareID, userID uuid.UUID
 	comment.Mentions = mentions
 
 	if err := tx.Commit(ctx); err != nil {
-		return nil, err
-	}
-	if err := s.refreshFeedAggregatesForShares(ctx, []uuid.UUID{shareID}); err != nil {
 		return nil, err
 	}
 	return &comment, nil

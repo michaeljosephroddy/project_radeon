@@ -23,6 +23,7 @@ type Querier interface {
 	ListChatRequests(ctx context.Context, userID uuid.UUID) ([]Chat, error)
 	GetChat(ctx context.Context, userID, chatID uuid.UUID) (*Chat, error)
 	GetChatStatus(ctx context.Context, chatID uuid.UUID) (string, error)
+	GetChatSummaries(ctx context.Context, chatID uuid.UUID, userIDs []uuid.UUID) (map[uuid.UUID]*Chat, error)
 	GetLatestMessage(ctx context.Context, chatID uuid.UUID) (*Message, error)
 	ListChatMemberIDs(ctx context.Context, chatID uuid.UUID) ([]uuid.UUID, error)
 	FindDirectChat(ctx context.Context, userID, otherUserID uuid.UUID) (uuid.UUID, bool, error)
@@ -391,16 +392,6 @@ func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
 	}
 	if !isMember {
 		response.Error(w, http.StatusForbidden, "not a member of this chat")
-		return
-	}
-
-	status, err := h.db.GetChatStatus(r.Context(), chatID)
-	if err != nil {
-		response.Error(w, http.StatusInternalServerError, "could not fetch chat")
-		return
-	}
-	if status != "active" {
-		response.Error(w, http.StatusConflict, "chat is not open for messaging")
 		return
 	}
 

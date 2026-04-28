@@ -114,3 +114,26 @@ func TestDiscoverVisibleLimitPrefersDisplayLimit(t *testing.T) {
 		t.Fatalf("discoverVisibleLimit(display=0, limit=20) = %d, want 20", got)
 	}
 }
+
+func TestDiscoverRankedWindowLimitBucketsAdjacentPages(t *testing.T) {
+	t.Parallel()
+
+	first := discoverRankedWindowLimit(DiscoverUsersParams{Offset: 20, Limit: 21})
+	second := discoverRankedWindowLimit(DiscoverUsersParams{Offset: 40, Limit: 21})
+	third := discoverRankedWindowLimit(DiscoverUsersParams{Offset: 80, Limit: 21})
+
+	if first != second {
+		t.Fatalf("expected adjacent discover pages to share the same ranked window, got %d and %d", first, second)
+	}
+	if third <= second {
+		t.Fatalf("expected deeper discover pages to expand the ranked window, got %d then %d", second, third)
+	}
+}
+
+func TestDiscoverRankedWindowLimitCapsAtCandidatePoolMaximum(t *testing.T) {
+	t.Parallel()
+
+	if got := discoverRankedWindowLimit(DiscoverUsersParams{Offset: 400, Limit: 51}); got != discoverRankedWindowMax {
+		t.Fatalf("discoverRankedWindowLimit should cap at %d, got %d", discoverRankedWindowMax, got)
+	}
+}

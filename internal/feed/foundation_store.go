@@ -40,13 +40,6 @@ func (s *pgStore) SharePost(ctx context.Context, userID, postID uuid.UUID, comme
 		return uuid.Nil, err
 	}
 
-	if err := s.refreshFeedAggregatesForPosts(ctx, []uuid.UUID{postID}); err != nil {
-		return uuid.Nil, err
-	}
-	if err := s.refreshFeedAggregatesForShares(ctx, []uuid.UUID{shareID}); err != nil {
-		return uuid.Nil, err
-	}
-
 	return shareID, nil
 }
 
@@ -65,10 +58,7 @@ func (s *pgStore) HideFeedItem(ctx context.Context, userID, itemID uuid.UUID, it
 	if err != nil {
 		return err
 	}
-	if itemKind == FeedItemKindPost {
-		return s.refreshFeedAggregatesForPosts(ctx, []uuid.UUID{itemID})
-	}
-	return s.refreshFeedAggregatesForShares(ctx, []uuid.UUID{itemID})
+	return nil
 }
 
 func (s *pgStore) UnhideFeedItem(ctx context.Context, userID, itemID uuid.UUID, itemKind FeedItemKind) error {
@@ -83,10 +73,7 @@ func (s *pgStore) UnhideFeedItem(ctx context.Context, userID, itemID uuid.UUID, 
 	); err != nil {
 		return err
 	}
-	if itemKind == FeedItemKindPost {
-		return s.refreshFeedAggregatesForPosts(ctx, []uuid.UUID{itemID})
-	}
-	return s.refreshFeedAggregatesForShares(ctx, []uuid.UUID{itemID})
+	return nil
 }
 
 func (s *pgStore) MuteFeedAuthor(ctx context.Context, userID, authorID uuid.UUID) error {
@@ -176,19 +163,7 @@ func (s *pgStore) LogFeedImpressions(ctx context.Context, userID uuid.UUID, impr
 		return err
 	}
 
-	postIDs := make([]uuid.UUID, 0, len(impressions))
-	shareIDs := make([]uuid.UUID, 0, len(impressions))
-	for _, impression := range impressions {
-		if impression.ItemKind == FeedItemKindPost {
-			postIDs = append(postIDs, impression.ItemID)
-			continue
-		}
-		shareIDs = append(shareIDs, impression.ItemID)
-	}
-	if err := s.refreshFeedAggregatesForPosts(ctx, postIDs); err != nil {
-		return err
-	}
-	return s.refreshFeedAggregatesForShares(ctx, shareIDs)
+	return nil
 }
 
 func (s *pgStore) LogFeedEvents(ctx context.Context, userID uuid.UUID, events []FeedEventInput) error {

@@ -23,6 +23,15 @@ func NewPgStoreWithConfig(pool *pgxpool.Pool, cfg StoreConfig) Querier {
 }
 
 func (s *pgStore) discoverUsersV2(ctx context.Context, params DiscoverUsersParams) ([]User, error) {
+	now := time.Now().UTC()
+	candidates, err := s.discoverRankedCandidatesV2(ctx, params, shouldApplyDiscoverImpressionSuppression(params), now)
+	if err != nil {
+		return nil, err
+	}
+	return s.discoverUsersPageFromCandidates(ctx, params, candidates, now)
+}
+
+func (s *pgStore) discoverRankedCandidatesV2(ctx context.Context, params DiscoverUsersParams, applyImpressionSuppression bool, now time.Time) ([]discoverCandidate, error) {
 	viewer, err := s.loadDiscoverViewerFeatures(ctx, params.CurrentUserID)
 	if err != nil {
 		return nil, err
@@ -57,7 +66,6 @@ func (s *pgStore) discoverUsersV2(ctx context.Context, params DiscoverUsersParam
 		return nil, nil
 	}
 
-	now := time.Now().UTC()
 	for index := range candidates {
 		candidates[index].Score = scoreDiscoverCandidate(viewer, candidates[index], now)
 	}
@@ -69,7 +77,7 @@ func (s *pgStore) discoverUsersV2(ctx context.Context, params DiscoverUsersParam
 		return candidates[left].Score > candidates[right].Score
 	})
 
-	if shouldApplyDiscoverImpressionSuppression(params) {
+	if applyImpressionSuppression {
 		impressions, err := s.loadRecentDiscoverImpressions(ctx, params.CurrentUserID, candidateIDs(candidates))
 		if err != nil {
 			return nil, err
@@ -81,7 +89,10 @@ func (s *pgStore) discoverUsersV2(ctx context.Context, params DiscoverUsersParam
 	}
 
 	candidates = rerankDiscoverCandidates(candidates)
+	return candidates, nil
+}
 
+func (s *pgStore) discoverUsersPageFromCandidates(ctx context.Context, params DiscoverUsersParams, candidates []discoverCandidate, shownAt time.Time) ([]User, error) {
 	start := params.Offset
 	if start >= len(candidates) {
 		return nil, nil
@@ -101,7 +112,7 @@ func (s *pgStore) discoverUsersV2(ctx context.Context, params DiscoverUsersParam
 		page = page[:visibleLimit]
 	}
 
-	_ = s.recordDiscoverImpressions(ctx, params.CurrentUserID, page, now)
+	_ = s.recordDiscoverImpressions(ctx, params.CurrentUserID, page, shownAt)
 	return users, nil
 }
 

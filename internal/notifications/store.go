@@ -181,10 +181,27 @@ func (s *pgStore) MarkNotificationRead(ctx context.Context, userID, notification
 
 func (s *pgStore) MarkChatRead(ctx context.Context, chatID, userID uuid.UUID, lastReadMessageID *uuid.UUID, readAt time.Time) error {
 	_, err := s.pool.Exec(ctx,
-		`INSERT INTO chat_reads (chat_id, user_id, last_read_message_id, last_read_at)
-		VALUES ($1, $2, $3, $4)
+		`INSERT INTO chat_reads (chat_id, user_id, last_read_message_id, last_read_chat_seq, last_read_at)
+		SELECT
+			ch.id,
+			$2,
+			$3,
+			COALESCE(
+				CASE
+					WHEN $3::uuid IS NULL THEN ch.last_message_seq
+					ELSE msg.chat_seq
+				END,
+				0
+			),
+			$4
+		FROM chats ch
+		LEFT JOIN messages msg
+			ON msg.id = $3
+			AND msg.chat_id = ch.id
+		WHERE ch.id = $1
 		ON CONFLICT (chat_id, user_id) DO UPDATE
 		SET last_read_message_id = COALESCE(EXCLUDED.last_read_message_id, chat_reads.last_read_message_id),
+			last_read_chat_seq = GREATEST(chat_reads.last_read_chat_seq, EXCLUDED.last_read_chat_seq),
 			last_read_at = GREATEST(chat_reads.last_read_at, EXCLUDED.last_read_at)`,
 		chatID, userID, lastReadMessageID, readAt,
 	)

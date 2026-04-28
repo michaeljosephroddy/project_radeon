@@ -32,7 +32,38 @@ func NewCachedStore(inner Querier, store appcache.Store) Querier {
 }
 
 func (s *cachedStore) ListHomeFeed(ctx context.Context, viewerID uuid.UUID, before *time.Time, limit int) ([]FeedItem, error) {
-	return s.inner.ListHomeFeed(ctx, viewerID, before, limit)
+	globalVersion, err := s.cache.GetVersion(ctx, s.feedVersionKey())
+	if err != nil {
+		return s.inner.ListHomeFeed(ctx, viewerID, before, limit)
+	}
+	viewerVersion, err := s.cache.GetVersion(ctx, s.viewerFeedVersionKey(viewerID))
+	if err != nil {
+		return s.inner.ListHomeFeed(ctx, viewerID, before, limit)
+	}
+
+	key := s.cache.Key(
+		"feed",
+		"home",
+		"global_v", strconv.FormatInt(globalVersion, 10),
+		"viewer_v", strconv.FormatInt(viewerVersion, 10),
+		"viewer", viewerID.String(),
+		"before", timePart(before),
+		"limit", strconv.Itoa(limit),
+	)
+
+	var items []FeedItem
+	if err := s.cache.ReadThrough(ctx, key, feedTTL, &items, func(ctx context.Context, dest any) error {
+		loaded, err := s.inner.ListHomeFeed(ctx, viewerID, before, limit)
+		if err != nil {
+			return err
+		}
+		*dest.(*[]FeedItem) = loaded
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+
+	return items, nil
 }
 
 func (s *cachedStore) ListHiddenFeedItems(ctx context.Context, userID uuid.UUID, before *time.Time, limit int) ([]HiddenFeedItem, error) {
@@ -127,15 +158,27 @@ func (s *cachedStore) ToggleFeedItemReaction(ctx context.Context, itemID, userID
 }
 
 func (s *cachedStore) HideFeedItem(ctx context.Context, userID, itemID uuid.UUID, itemKind FeedItemKind) error {
-	return s.inner.HideFeedItem(ctx, userID, itemID, itemKind)
+	if err := s.inner.HideFeedItem(ctx, userID, itemID, itemKind); err != nil {
+		return err
+	}
+	_ = s.cache.BumpVersions(ctx, s.viewerFeedVersionKey(userID))
+	return nil
 }
 
 func (s *cachedStore) UnhideFeedItem(ctx context.Context, userID, itemID uuid.UUID, itemKind FeedItemKind) error {
-	return s.inner.UnhideFeedItem(ctx, userID, itemID, itemKind)
+	if err := s.inner.UnhideFeedItem(ctx, userID, itemID, itemKind); err != nil {
+		return err
+	}
+	_ = s.cache.BumpVersions(ctx, s.viewerFeedVersionKey(userID))
+	return nil
 }
 
 func (s *cachedStore) MuteFeedAuthor(ctx context.Context, userID, authorID uuid.UUID) error {
-	return s.inner.MuteFeedAuthor(ctx, userID, authorID)
+	if err := s.inner.MuteFeedAuthor(ctx, userID, authorID); err != nil {
+		return err
+	}
+	_ = s.cache.BumpVersions(ctx, s.viewerFeedVersionKey(userID))
+	return nil
 }
 
 func (s *cachedStore) LogFeedImpressions(ctx context.Context, userID uuid.UUID, impressions []FeedImpressionInput) error {
@@ -214,6 +257,10 @@ func (s *cachedStore) lookupPostAuthorID(ctx context.Context, postID uuid.UUID) 
 
 func (s *cachedStore) feedVersionKey() string {
 	return s.cache.Key("ver", "feed")
+}
+
+func (s *cachedStore) viewerFeedVersionKey(userID uuid.UUID) string {
+	return s.cache.Key("ver", "discover", "viewer", userID.String())
 }
 
 func (s *cachedStore) userPostsVersionKey(userID uuid.UUID) string {
