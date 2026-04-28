@@ -23,6 +23,7 @@ type Querier interface {
 	ListChatRequests(ctx context.Context, userID uuid.UUID) ([]Chat, error)
 	GetChat(ctx context.Context, userID, chatID uuid.UUID) (*Chat, error)
 	GetChatStatus(ctx context.Context, chatID uuid.UUID) (string, error)
+	GetLatestMessage(ctx context.Context, chatID uuid.UUID) (*Message, error)
 	ListChatMemberIDs(ctx context.Context, chatID uuid.UUID) ([]uuid.UUID, error)
 	FindDirectChat(ctx context.Context, userID, otherUserID uuid.UUID) (uuid.UUID, bool, error)
 	CreateChat(ctx context.Context, userID uuid.UUID, isGroup bool, name *string, memberIDs []uuid.UUID) (uuid.UUID, error)
@@ -90,6 +91,7 @@ type Message struct {
 	SenderID        uuid.UUID `json:"sender_id"`
 	Username        string    `json:"username"`
 	AvatarURL       *string   `json:"avatar_url"`
+	Kind            string    `json:"kind"`
 	Body            string    `json:"body"`
 	SentAt          time.Time `json:"sent_at"`
 	ClientMessageID *string   `json:"client_message_id,omitempty"`
@@ -123,6 +125,19 @@ func NewHandlerWithRealtimeInfra(db Querier, notifier Notifier, realtime *Realti
 		realtime: realtime,
 		bus:      bus,
 	}
+}
+
+// BroadcastChatUpdate pushes the latest message and summary for an existing chat
+// to connected members so open threads refresh without polling.
+func (h *Handler) BroadcastChatUpdate(ctx context.Context, chatID uuid.UUID) error {
+	message, err := h.db.GetLatestMessage(ctx, chatID)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return h.broadcastChatSummary(ctx, chatID)
+		}
+		return err
+	}
+	return h.broadcastMessageCreated(ctx, chatID, message)
 }
 
 // ListChats returns one page of the caller's active chats.
@@ -405,6 +420,10 @@ func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
 
 	message, err := h.db.InsertMessage(r.Context(), chatID, userID, input.Body, nil)
 	if err != nil {
+		if errors.Is(err, ErrConflict) {
+			response.Error(w, http.StatusConflict, "chat is not open for messaging")
+			return
+		}
 		response.Error(w, http.StatusInternalServerError, "could not send message")
 		return
 	}

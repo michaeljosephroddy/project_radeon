@@ -19,6 +19,7 @@ type mockQuerier struct {
 	listChatRequests   func(ctx context.Context, userID uuid.UUID) ([]Chat, error)
 	getChat            func(ctx context.Context, userID, chatID uuid.UUID) (*Chat, error)
 	getChatStatus      func(ctx context.Context, chatID uuid.UUID) (string, error)
+	getLatestMessage   func(ctx context.Context, chatID uuid.UUID) (*Message, error)
 	listChatMemberIDs  func(ctx context.Context, chatID uuid.UUID) ([]uuid.UUID, error)
 	findDirectChat     func(ctx context.Context, userID, otherUserID uuid.UUID) (uuid.UUID, bool, error)
 	createChat         func(ctx context.Context, userID uuid.UUID, isGroup bool, name *string, memberIDs []uuid.UUID) (uuid.UUID, error)
@@ -54,6 +55,20 @@ func (m *mockQuerier) GetChatStatus(ctx context.Context, chatID uuid.UUID) (stri
 		return m.getChatStatus(ctx, chatID)
 	}
 	return "active", nil
+}
+func (m *mockQuerier) GetLatestMessage(ctx context.Context, chatID uuid.UUID) (*Message, error) {
+	if m.getLatestMessage != nil {
+		return m.getLatestMessage(ctx, chatID)
+	}
+	return &Message{
+		ID:       uuid.MustParse("00000000-0000-0000-0000-000000000099"),
+		ChatID:   chatID,
+		SenderID: fixedUser,
+		Username: "tester",
+		Kind:     "user",
+		Body:     "latest",
+		SentAt:   time.Now().UTC(),
+	}, nil
 }
 func (m *mockQuerier) ListChatMemberIDs(ctx context.Context, chatID uuid.UUID) ([]uuid.UUID, error) {
 	if m.listChatMemberIDs != nil {
@@ -501,6 +516,23 @@ func TestSendMessageSuccess(t *testing.T) {
 
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusCreated)
+	}
+}
+
+func TestSendMessageClosedDuringInsert(t *testing.T) {
+	h := NewHandler(&mockQuerier{
+		insertMessage: func(_ context.Context, _, _ uuid.UUID, _ string, _ *string) (*Message, error) {
+			return nil, ErrConflict
+		},
+	})
+	req := withUserID(httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"body":"hello"}`)), fixedUser)
+	req = withURLParam(req, "id", fixedChat.String())
+	rec := httptest.NewRecorder()
+
+	h.SendMessage(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusConflict)
 	}
 }
 

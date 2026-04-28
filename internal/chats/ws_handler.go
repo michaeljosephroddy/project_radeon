@@ -249,6 +249,13 @@ func (h *Handler) handleRealtimeSendMessage(ctx context.Context, connection *Rea
 
 	message, err := h.db.InsertMessage(ctx, command.ChatID, connection.UserID, body, &clientMessageID)
 	if err != nil {
+		if errors.Is(err, ErrConflict) {
+			return h.emitUserEvent(ctx, connection.UserID, "chat.message.failed", MessageFailedEnvelope{
+				ChatID:          command.ChatID,
+				ClientMessageID: clientMessageID,
+				Error:           "chat is not open for messaging",
+			})
+		}
 		return err
 	}
 
@@ -370,6 +377,29 @@ func (h *Handler) broadcastMessageCreated(ctx context.Context, chatID uuid.UUID,
 		}
 
 		if err := h.emitCreatedEvent(ctx, memberID, payload); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (h *Handler) broadcastChatSummary(ctx context.Context, chatID uuid.UUID) error {
+	if h.realtime == nil {
+		return nil
+	}
+
+	memberIDs, err := h.db.ListChatMemberIDs(ctx, chatID)
+	if err != nil {
+		return err
+	}
+
+	for _, memberID := range memberIDs {
+		summary, err := h.db.GetChat(ctx, memberID, chatID)
+		if err != nil && !errors.Is(err, ErrNotFound) {
+			return err
+		}
+		if err := h.emitSummaryEvent(ctx, memberID, summary); err != nil {
 			return err
 		}
 	}

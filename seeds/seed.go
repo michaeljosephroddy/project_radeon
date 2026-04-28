@@ -70,8 +70,6 @@ type seededUser struct {
 	LastActiveAt       time.Time
 	SubscriptionTier   string
 	SubscriptionStatus string
-	IsAvailableSupport bool
-	SupportUpdatedAt   *time.Time
 	Lat                float64
 	Lng                float64
 	CurrentLat         float64
@@ -101,18 +99,20 @@ type seededMeetup struct {
 }
 
 type supportRequestRow struct {
-	ID            uuid.UUID
-	RequesterID   uuid.UUID
-	Type          string
-	City          *string
-	Status        string
-	MatchedUserID *uuid.UUID
-	Urgency       string
-	Priority      bool
-	PriorityUntil *time.Time
-	CreatedAt     time.Time
-	ExpiresAt     time.Time
-	ClosedAt      *time.Time
+	ID                  uuid.UUID
+	RequesterID         uuid.UUID
+	Type                string
+	City                *string
+	Channel             string
+	Status              string
+	Urgency             string
+	PrivacyLevel        string
+	AcceptedResponderID *uuid.UUID
+	AcceptedResponseID  *uuid.UUID
+	CreatedAt           time.Time
+	AcceptedAt          *time.Time
+	ClosedAt            *time.Time
+	ChatID              *uuid.UUID
 }
 
 func pick[T any](items []T) T {
@@ -163,10 +163,16 @@ func seed(ctx context.Context, pool *pgxpool.Pool) error {
 
 	fmt.Println("→ clearing existing data…")
 	if _, err := tx.Exec(ctx, `
-		TRUNCATE messages, chat_members, chats,
+		TRUNCATE chat_reads,
+			messages, chat_members, chats,
 			support_responses, support_requests,
+			share_comment_mentions, share_comments, share_reactions, share_quality_features,
+			post_shares, feed_hidden_posts, feed_muted_authors, feed_impressions, feed_events,
+			post_stats_daily, post_quality_features, author_feed_stats,
 			event_waitlist, event_hosts, meetup_attendees, meetups,
-			post_reactions, comments, post_images, posts,
+			post_reactions, comment_mentions, comments, post_images, posts,
+			discover_dismissals, discover_impressions,
+			notification_deliveries, notifications, notification_preferences, user_devices,
 			user_interests, friendships, users
 		RESTART IDENTITY CASCADE
 	`); err != nil {
@@ -223,7 +229,8 @@ func seed(ctx context.Context, pool *pgxpool.Pool) error {
 	if err != nil {
 		return err
 	}
-	if err := insertSupportResponses(ctx, tx, supportRequests, users); err != nil {
+	supportRequests, err = insertSupportResponses(ctx, tx, supportRequests, users)
+	if err != nil {
 		return err
 	}
 	if err := insertDirectChats(ctx, tx, users, acceptedFriendIDs); err != nil {
@@ -371,7 +378,6 @@ func buildUsers(interestNames []string) []seededUser {
 	testCity := cities[0]
 	testLat, testLng := jitterCoords(testCity)
 	testCurrentAt := now.Add(-2 * time.Hour)
-	testSupportUpdated := now.Add(-36 * time.Hour)
 	testBirthDate := buildBirthDate(34)
 	testSoberSince := now.AddDate(-3, -4, 0)
 	testInterests := normalizeInterestSelection(interestNames, []string{"Coffee", "Running", "Meetups", "Volunteering"}, 4)
@@ -392,8 +398,6 @@ func buildUsers(interestNames []string) []seededUser {
 		LastActiveAt:       now.Add(-90 * time.Minute),
 		SubscriptionTier:   "plus",
 		SubscriptionStatus: "active",
-		IsAvailableSupport: true,
-		SupportUpdatedAt:   &testSupportUpdated,
 		Lat:                testLat,
 		Lng:                testLng,
 		CurrentLat:         testLat,
@@ -432,13 +436,6 @@ func buildUsers(interestNames []string) []seededUser {
 			lastActiveAt = createdAt.Add(time.Duration(rng.Intn(240)+24) * time.Hour)
 		}
 		interests := chooseInterests(interestNames, city.Flavors, 3+rng.Intn(3))
-		availableToSupport := now.Sub(soberSince) >= 120*24*time.Hour && rng.Intn(100) < 52
-		var supportUpdated *time.Time
-		if availableToSupport {
-			value := now.Add(-time.Duration(rng.Intn(20*24)+12) * time.Hour)
-			supportUpdated = &value
-		}
-
 		subscriptionTier := "free"
 		subscriptionStatus := "inactive"
 		if rng.Intn(100) < 18 {
@@ -466,8 +463,6 @@ func buildUsers(interestNames []string) []seededUser {
 			LastActiveAt:       lastActiveAt,
 			SubscriptionTier:   subscriptionTier,
 			SubscriptionStatus: subscriptionStatus,
-			IsAvailableSupport: availableToSupport,
-			SupportUpdatedAt:   supportUpdated,
 			Lat:                lat,
 			Lng:                lng,
 			CurrentLat:         lat,
@@ -702,7 +697,6 @@ func insertUsers(ctx context.Context, tx pgx.Tx, users []seededUser, passwordHas
 				id, username, email, password_hash,
 				city, country, bio, gender, birth_date, sober_since,
 				subscription_tier, subscription_status,
-				is_available_to_support, support_updated_at,
 				lat, lng, current_lat, current_lng, current_city, location_updated_at,
 				discover_lat, discover_lng, sobriety_band, profile_completeness, last_active_at, created_at
 			)
@@ -710,14 +704,12 @@ func insertUsers(ctx context.Context, tx pgx.Tx, users []seededUser, passwordHas
 				$1, $2, $3, $4,
 				$5, $6, $7, $8, $9, $10,
 				$11, $12,
-				$13, $14,
-				$15, $16, $17, $18, $19, $20,
-				$21, $22, $23, $24, $25, $26
+				$13, $14, $15, $16, $17, $18,
+				$19, $20, $21, $22, $23, $24
 			)`,
 			user.ID, user.Username, user.Email, passwordHash,
 			user.City, user.Country, user.Bio, user.Gender, user.BirthDate, user.SoberSince,
 			user.SubscriptionTier, user.SubscriptionStatus,
-			user.IsAvailableSupport, user.SupportUpdatedAt,
 			user.Lat, user.Lng, user.CurrentLat, user.CurrentLng, user.CurrentCity, user.LocationUpdatedAt,
 			user.DiscoverLat, user.DiscoverLng, sobrietyBand, 7, user.LastActiveAt, user.CreatedAt,
 		); err != nil {
@@ -1365,17 +1357,12 @@ func insertMeetupAttendees(ctx context.Context, tx pgx.Tx, meetups []seededMeetu
 }
 
 func insertSupportRequests(ctx context.Context, tx pgx.Tx, users []seededUser, acceptedFriendIDs map[uuid.UUID]struct{}) ([]supportRequestRow, error) {
-	type choices struct {
-		city string
-		ids  []uuid.UUID
-	}
-
 	acceptedFriends := make([]uuid.UUID, 0, len(acceptedFriendIDs))
 	for id := range acceptedFriendIDs {
 		acceptedFriends = append(acceptedFriends, id)
 	}
 
-	communityTypes := []string{"need_to_talk", "need_distraction", "need_encouragement", "need_in_person_help"}
+	supportTypes := []string{"need_to_talk", "need_distraction", "need_encouragement", "need_in_person_help"}
 	requestMessages := []string{
 		"Having a rough evening and trying not to isolate. Could use a check-in.",
 		"Feeling very in my head today and need a distraction before I spiral.",
@@ -1392,47 +1379,49 @@ func insertSupportRequests(ctx context.Context, tx pgx.Tx, users []seededUser, a
 	requests := make([]supportRequestRow, 0, 36)
 	now := time.Now().UTC()
 
-	urgencies := []string{"when_you_can", "soon", "right_now"}
-
-	makeRequest := func(requesterID uuid.UUID, requestType string, city *string, status string, matchedUserID *uuid.UUID) supportRequestRow {
+	makeRequest := func(requesterID uuid.UUID, requestType string, city *string, channel string, status string, acceptedResponderID *uuid.UUID) supportRequestRow {
 		createdAt := now.Add(-time.Duration(rng.Intn(10*24)+2) * time.Hour)
-		expiresAt := createdAt.Add(time.Duration(24+rng.Intn(36)) * time.Hour)
+		urgency := "soon"
+		if channel == "immediate" {
+			urgency = "right_now"
+		} else if rng.Intn(3) == 0 {
+			urgency = "when_you_can"
+		}
+
+		var acceptedAt *time.Time
 		var closedAt *time.Time
-		urgency := urgencies[rng.Intn(len(urgencies))]
-		priority := status == "open" && (urgency == "right_now" || rng.Intn(6) == 0)
-		var priorityUntil *time.Time
-		if priority {
-			value := createdAt.Add(time.Duration(3+rng.Intn(8)) * time.Hour)
-			if value.Before(now) && status == "open" {
-				value = now.Add(time.Duration(2+rng.Intn(4)) * time.Hour)
-			}
-			priorityUntil = &value
+		if status == "active" || status == "closed" {
+			value := createdAt.Add(time.Duration(rng.Intn(4)+1) * time.Hour)
+			acceptedAt = &value
 		}
-		if status == "closed" {
-			value := createdAt.Add(time.Duration(rng.Intn(16)+2) * time.Hour)
+		if status == "closed" && acceptedAt != nil {
+			value := acceptedAt.Add(time.Duration(rng.Intn(12)+1) * time.Hour)
 			closedAt = &value
-			priority = false
-			priorityUntil = nil
 		}
+
 		return supportRequestRow{
-			ID:            uuid.New(),
-			RequesterID:   requesterID,
-			Type:          requestType,
-			City:          city,
-			Status:        status,
-			MatchedUserID: matchedUserID,
-			Urgency:       urgency,
-			Priority:      priority,
-			PriorityUntil: priorityUntil,
-			CreatedAt:     createdAt,
-			ExpiresAt:     expiresAt,
-			ClosedAt:      closedAt,
+			ID:                  uuid.New(),
+			RequesterID:         requesterID,
+			Type:                requestType,
+			City:                city,
+			Channel:             channel,
+			Status:              status,
+			Urgency:             urgency,
+			PrivacyLevel:        "standard",
+			AcceptedResponderID: acceptedResponderID,
+			CreatedAt:           createdAt,
+			AcceptedAt:          acceptedAt,
+			ClosedAt:            closedAt,
 		}
 	}
 
-	for index := 0; index < 14; index++ {
+	for index := 0; index < 10; index++ {
 		requester := users[rng.Intn(len(users)-1)+1]
-		requests = append(requests, makeRequest(requester.ID, pick(communityTypes), nil, "open", nil))
+		channel := "community"
+		if index%3 == 0 {
+			channel = "immediate"
+		}
+		requests = append(requests, makeRequest(requester.ID, pick(supportTypes), nil, channel, "open", nil))
 	}
 
 	for _, city := range []string{"Portlaoise", "Dublin", "Carlow", "Cork", "Galway", "Kilkenny", "Athlone", "New York"} {
@@ -1444,56 +1433,72 @@ func insertSupportRequests(ctx context.Context, tx pgx.Tx, users []seededUser, a
 			}
 		}
 		requester := candidates[rng.Intn(len(candidates))]
-		requests = append(requests, makeRequest(requester.ID, pick(communityTypes), &cityValue, "open", nil))
+		channel := "community"
+		if city == "Dublin" || city == "New York" {
+			channel = "immediate"
+		}
+		requests = append(requests, makeRequest(requester.ID, pick(supportTypes), &cityValue, channel, "open", nil))
 	}
 
 	for index := 0; index < 8; index++ {
 		requesterID := acceptedFriends[index%len(acceptedFriends)]
-		requests = append(requests, makeRequest(requesterID, pick(communityTypes), nil, "open", nil))
+		channel := "community"
+		if index%4 == 0 {
+			channel = "immediate"
+		}
+		requests = append(requests, makeRequest(requesterID, pick(supportTypes), nil, channel, "open", nil))
 	}
 
 	for index := 0; index < 4; index++ {
 		requester := users[rng.Intn(len(users)-1)+1]
-		matchedUserID := availableSupportUserID(users, requester.ID)
-		requests = append(requests, makeRequest(requester.ID, pick(communityTypes), nil, "matched", &matchedUserID))
+		acceptedResponderID := availableSupportUserID(users, requester.ID)
+		channel := "community"
+		if index%2 == 0 {
+			channel = "immediate"
+		}
+		requests = append(requests, makeRequest(requester.ID, pick(supportTypes), nil, channel, "active", &acceptedResponderID))
 	}
 
 	for index := 0; index < 2; index++ {
 		requesterID := acceptedFriends[(index+8)%len(acceptedFriends)]
-		matchedUserID := availableSupportUserID(users, requesterID)
-		requests = append(requests, makeRequest(requesterID, pick(communityTypes), nil, "matched", &matchedUserID))
+		acceptedResponderID := availableSupportUserID(users, requesterID)
+		requests = append(requests, makeRequest(requesterID, pick(supportTypes), nil, "immediate", "active", &acceptedResponderID))
 	}
 
 	for index := 0; index < 4; index++ {
 		requester := users[rng.Intn(len(users)-1)+1]
-		requests = append(requests, makeRequest(requester.ID, pick(communityTypes), nil, "closed", nil))
+		acceptedResponderID := availableSupportUserID(users, requester.ID)
+		channel := "community"
+		if index%2 == 1 {
+			channel = "immediate"
+		}
+		requests = append(requests, makeRequest(requester.ID, pick(supportTypes), nil, channel, "closed", &acceptedResponderID))
 	}
 
 	portlaoise := "Portlaoise"
 	testRequest := supportRequestRow{
-		ID:            uuid.New(),
-		RequesterID:   users[0].ID,
-		Type:          "need_to_talk",
-		City:          &portlaoise,
-		Status:        "open",
-		Urgency:       "right_now",
-		Priority:      true,
-		PriorityUntil: ptrTime(now.Add(5 * time.Hour)),
-		CreatedAt:     now.Add(-6 * time.Hour),
-		ExpiresAt:     now.Add(40 * time.Hour),
+		ID:           uuid.New(),
+		RequesterID:  users[0].ID,
+		Type:         "need_to_talk",
+		City:         &portlaoise,
+		Channel:      "immediate",
+		Status:       "open",
+		Urgency:      "right_now",
+		PrivacyLevel: "standard",
+		CreatedAt:    now.Add(-6 * time.Hour),
 	}
 	requests = append(requests, testRequest)
 
 	for index, request := range requests {
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO support_requests (
-				id, requester_id, type, message, city, status, matched_user_id,
-				expires_at, created_at, closed_at, priority_visibility, priority_expires_at, urgency
+				id, requester_id, type, message, city, status, channel, urgency,
+				privacy_level, accepted_responder_id, accepted_at, closed_at, chat_id, created_at
 			)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
 			request.ID, request.RequesterID, request.Type, requestMessages[index%len(requestMessages)],
-			request.City, request.Status, request.MatchedUserID, request.ExpiresAt, request.CreatedAt, request.ClosedAt,
-			request.Priority, request.PriorityUntil, request.Urgency,
+			request.City, request.Status, request.Channel, request.Urgency, request.PrivacyLevel,
+			request.AcceptedResponderID, request.AcceptedAt, request.ClosedAt, request.ChatID, request.CreatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("insert support request %d: %w", index, err)
 		}
@@ -1505,7 +1510,7 @@ func insertSupportRequests(ctx context.Context, tx pgx.Tx, users []seededUser, a
 func availableSupportUserID(users []seededUser, exclude uuid.UUID) uuid.UUID {
 	var candidates []uuid.UUID
 	for _, user := range users {
-		if user.ID == exclude || !user.IsAvailableSupport {
+		if user.ID == exclude {
 			continue
 		}
 		candidates = append(candidates, user.ID)
@@ -1513,7 +1518,7 @@ func availableSupportUserID(users []seededUser, exclude uuid.UUID) uuid.UUID {
 	return candidates[rng.Intn(len(candidates))]
 }
 
-func insertSupportResponses(ctx context.Context, tx pgx.Tx, requests []supportRequestRow, users []seededUser) error {
+func insertSupportResponses(ctx context.Context, tx pgx.Tx, requests []supportRequestRow, users []seededUser) ([]supportRequestRow, error) {
 	responseTypes := []string{"can_chat", "check_in_later", "can_meet"}
 	responseBodies := []string{
 		"I have time now if you want to chat.",
@@ -1524,42 +1529,89 @@ func insertSupportResponses(ctx context.Context, tx pgx.Tx, requests []supportRe
 		"I've had days like that. Here if you want company.",
 	}
 
-	available := make([]seededUser, 0)
-	for _, user := range users {
-		if user.IsAvailableSupport {
-			available = append(available, user)
-		}
-	}
+	available := make([]seededUser, 0, len(users))
+	available = append(available, users...)
 
 	seen := make(map[[3]string]struct{})
-	for _, request := range requests {
-		if request.Status != "open" {
-			continue
-		}
-		responseCount := 2 + rng.Intn(5)
-		for created := 0; created < responseCount; {
-			responder := available[rng.Intn(len(available))]
-			if responder.ID == request.RequesterID {
+	for index := range requests {
+		request := &requests[index]
+		switch request.Status {
+		case "open":
+			responseCount := 2 + rng.Intn(5)
+			for created := 0; created < responseCount; {
+				responder := available[rng.Intn(len(available))]
+				if responder.ID == request.RequesterID {
+					continue
+				}
+				responseType := pick(responseTypes)
+				key := [3]string{request.ID.String(), responder.ID.String(), responseType}
+				if _, exists := seen[key]; exists {
+					continue
+				}
+				seen[key] = struct{}{}
+				createdAt := request.CreatedAt.Add(time.Duration(rng.Intn(14)+1) * time.Hour)
+				if _, err := tx.Exec(ctx, `
+					INSERT INTO support_responses (id, support_request_id, responder_id, response_type, message, status, created_at)
+					VALUES ($1, $2, $3, $4, $5, 'pending', $6)`,
+					uuid.New(), request.ID, responder.ID, responseType, pick(responseBodies), createdAt,
+				); err != nil {
+					return nil, fmt.Errorf("insert support response for %s: %w", request.ID, err)
+				}
+				created++
+			}
+		case "active", "closed":
+			if request.AcceptedResponderID == nil {
 				continue
 			}
-			responseType := pick(responseTypes)
-			key := [3]string{request.ID.String(), responder.ID.String(), responseType}
-			if _, exists := seen[key]; exists {
-				continue
+
+			acceptedResponseID := uuid.New()
+			acceptedCreatedAt := request.CreatedAt.Add(45 * time.Minute)
+			if request.AcceptedAt != nil {
+				acceptedCreatedAt = *request.AcceptedAt
 			}
-			seen[key] = struct{}{}
-			createdAt := request.CreatedAt.Add(time.Duration(rng.Intn(14)+1) * time.Hour)
 			if _, err := tx.Exec(ctx, `
-				INSERT INTO support_responses (id, support_request_id, responder_id, response_type, message, created_at)
-				VALUES ($1, $2, $3, $4, $5, $6)`,
-				uuid.New(), request.ID, responder.ID, responseType, pick(responseBodies), createdAt,
+				INSERT INTO support_responses (id, support_request_id, responder_id, response_type, message, status, created_at)
+				VALUES ($1, $2, $3, 'can_chat', $4, 'accepted', $5)`,
+				acceptedResponseID, request.ID, *request.AcceptedResponderID, pick(responseBodies), acceptedCreatedAt,
 			); err != nil {
-				return fmt.Errorf("insert support response for %s: %w", request.ID, err)
+				return nil, fmt.Errorf("insert accepted support response for %s: %w", request.ID, err)
 			}
-			created++
+			request.AcceptedResponseID = &acceptedResponseID
+
+			if _, err := tx.Exec(ctx,
+				`UPDATE support_requests
+				SET accepted_response_id = $2
+				WHERE id = $1`,
+				request.ID, acceptedResponseID,
+			); err != nil {
+				return nil, fmt.Errorf("update accepted response for %s: %w", request.ID, err)
+			}
+
+			responseCount := 1 + rng.Intn(3)
+			for created := 0; created < responseCount; {
+				responder := available[rng.Intn(len(available))]
+				if responder.ID == request.RequesterID || responder.ID == *request.AcceptedResponderID {
+					continue
+				}
+				responseType := pick(responseTypes)
+				key := [3]string{request.ID.String(), responder.ID.String(), responseType}
+				if _, exists := seen[key]; exists {
+					continue
+				}
+				seen[key] = struct{}{}
+				createdAt := acceptedCreatedAt.Add(time.Duration(created+1) * 12 * time.Minute)
+				if _, err := tx.Exec(ctx, `
+					INSERT INTO support_responses (id, support_request_id, responder_id, response_type, message, status, created_at)
+					VALUES ($1, $2, $3, $4, $5, 'not_selected', $6)`,
+					uuid.New(), request.ID, responder.ID, responseType, pick(responseBodies), createdAt,
+				); err != nil {
+					return nil, fmt.Errorf("insert alternate support response for %s: %w", request.ID, err)
+				}
+				created++
+			}
 		}
 	}
-	return nil
+	return requests, nil
 }
 
 func insertDirectChats(ctx context.Context, tx pgx.Tx, users []seededUser, acceptedFriendIDs map[uuid.UUID]struct{}) error {
@@ -1660,27 +1712,31 @@ func insertSupportChats(ctx context.Context, tx pgx.Tx, requests []supportReques
 
 	created := 0
 	for _, request := range requests {
-		if request.Status != "matched" || request.MatchedUserID == nil || created >= 4 {
+		if (request.Status != "active" && request.Status != "closed") || request.AcceptedResponderID == nil || request.AcceptedResponseID == nil || created >= 6 {
 			continue
 		}
 
 		chatID := uuid.New()
+		chatStatus := "active"
+		if request.Status == "closed" {
+			chatStatus = "closed"
+		}
 		if _, err := tx.Exec(ctx,
-			`INSERT INTO chats (id, is_group, status, support_request_id, created_at) VALUES ($1, false, 'active', $2, $3)`,
-			chatID, request.ID, request.CreatedAt.Add(30*time.Minute),
+			`INSERT INTO chats (id, is_group, status, support_request_id, created_at) VALUES ($1, false, $2, $3, $4)`,
+			chatID, chatStatus, request.ID, request.CreatedAt.Add(30*time.Minute),
 		); err != nil {
 			return fmt.Errorf("insert support chat: %w", err)
 		}
 		if _, err := tx.Exec(ctx,
 			`INSERT INTO chat_members (chat_id, user_id, role) VALUES ($1, $2, 'requester'), ($1, $3, 'addressee')`,
-			chatID, request.RequesterID, *request.MatchedUserID,
+			chatID, request.RequesterID, *request.AcceptedResponderID,
 		); err != nil {
 			return fmt.Errorf("insert support chat members: %w", err)
 		}
 		for messageIndex := 0; messageIndex < 8; messageIndex++ {
 			senderID := request.RequesterID
 			if messageIndex%2 == 0 {
-				senderID = *request.MatchedUserID
+				senderID = *request.AcceptedResponderID
 			}
 			sentAt := request.CreatedAt.Add(time.Duration(messageIndex+1) * 18 * time.Minute)
 			if _, err := tx.Exec(ctx,
@@ -1691,14 +1747,21 @@ func insertSupportChats(ctx context.Context, tx pgx.Tx, requests []supportReques
 			}
 		}
 
-		if _, err := tx.Exec(ctx, `
-			INSERT INTO support_responses (id, support_request_id, responder_id, response_type, message, chat_id, created_at)
-			VALUES ($1, $2, $3, 'can_chat', $4, $5, $6)
-			ON CONFLICT (support_request_id, responder_id, response_type) DO UPDATE
-			SET chat_id = EXCLUDED.chat_id`,
-			uuid.New(), request.ID, *request.MatchedUserID, "Opened a direct support chat.", chatID, request.CreatedAt.Add(20*time.Minute),
+		if _, err := tx.Exec(ctx,
+			`UPDATE support_responses
+			SET chat_id = $2
+			WHERE id = $1`,
+			*request.AcceptedResponseID, chatID,
 		); err != nil {
-			return fmt.Errorf("insert matched support response: %w", err)
+			return fmt.Errorf("attach support chat to response: %w", err)
+		}
+		if _, err := tx.Exec(ctx,
+			`UPDATE support_requests
+			SET chat_id = $2
+			WHERE id = $1`,
+			request.ID, chatID,
+		); err != nil {
+			return fmt.Errorf("attach support chat to request: %w", err)
 		}
 		created++
 	}
@@ -1786,11 +1849,17 @@ func refreshMeetupState(ctx context.Context, tx pgx.Tx) error {
 func refreshSupportResponseCounts(ctx context.Context, tx pgx.Tx) error {
 	if _, err := tx.Exec(ctx, `
 		UPDATE support_requests sr
-		SET response_count = (
-			SELECT COUNT(*)
-			FROM support_responses rsp
-			WHERE rsp.support_request_id = sr.id
-		)
+		SET
+			response_count = (
+				SELECT COUNT(*)
+				FROM support_responses rsp
+				WHERE rsp.support_request_id = sr.id
+			),
+			last_response_at = (
+				SELECT MAX(rsp.created_at)
+				FROM support_responses rsp
+				WHERE rsp.support_request_id = sr.id
+			)
 	`); err != nil {
 		return fmt.Errorf("refresh support counts: %w", err)
 	}

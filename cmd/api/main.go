@@ -105,7 +105,7 @@ func main() {
 	friendsHandler := friends.NewHandler(friendsStore)
 	feedHandler = feed.NewHandlerWithNotifier(feedStore, notificationsService, uploader)
 	meetupsHandler = meetups.NewHandler(meetupsStore, uploader)
-	supportHandler := support.NewHandler(supportStore)
+	supportHandler := support.NewHandlerWithChatBroadcaster(supportStore, chatsHandler)
 
 	r := chi.NewRouter()
 
@@ -208,27 +208,15 @@ func main() {
 		r.Get("/meetups/{id}/waitlist", meetupsHandler.GetWaitlist)
 
 		// Support
-		r.Get("/support/me", supportHandler.GetMySupportProfile)
-		r.Patch("/support/me", supportHandler.UpdateMySupportProfile)
-		r.Get("/support/home", supportHandler.GetSupportHome)
-		r.Get("/support/responders/me", supportHandler.GetMyResponderProfile)
-		r.Patch("/support/responders/me", supportHandler.UpdateMyResponderProfile)
-		r.Post("/support/requests", supportHandler.CreateSupportRequest)
 		r.Post("/support/requests/immediate", supportHandler.CreateImmediateSupportRequest)
 		r.Post("/support/requests/community", supportHandler.CreateCommunitySupportRequest)
 		r.Get("/support/requests", supportHandler.ListSupportRequests)
 		r.Get("/support/requests/mine", supportHandler.ListMySupportRequests)
-		r.Get("/support/requests/responded", supportHandler.ListRespondedSupportRequests)
-		r.Get("/support/queue", supportHandler.ListResponderQueue)
-		r.Get("/support/sessions", supportHandler.ListSupportSessions)
-		r.Post("/support/sessions/{sessionID}/close", supportHandler.CloseSupportSession)
-		r.Post("/support/offers/{offerID}/accept", supportHandler.AcceptSupportOffer)
-		r.Post("/support/offers/{offerID}/decline", supportHandler.DeclineSupportOffer)
 		r.Get("/support/requests/{id}", supportHandler.GetSupportRequest)
 		r.Patch("/support/requests/{id}", supportHandler.UpdateSupportRequest)
-		r.Post("/support/requests/{id}/convert-community", supportHandler.ConvertImmediateSupportRequestToCommunity)
 		r.Post("/support/requests/{id}/responses", supportHandler.CreateSupportResponse)
 		r.Get("/support/requests/{id}/responses", supportHandler.ListSupportResponses)
+		r.Post("/support/requests/{id}/responses/{responseId}/accept", supportHandler.AcceptSupportResponse)
 
 		// Chats
 		r.Get("/chats", chatsHandler.ListChats)
@@ -284,7 +272,6 @@ func main() {
 	}()
 
 	go notifications.RunWorker(workerCtx, log.Default(), notificationsService, 15*time.Second, 25)
-	go support.RunRoutingWorker(workerCtx, log.Default(), supportStore, support.SupportRoutingSweepInterval())
 	if err := chatsRealtimeBus.Start(workerCtx, chatsRealtimeHub); err != nil {
 		log.Fatalf("chat realtime bus failed: %v", err)
 	}
