@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 	"github.com/project_radeon/api/pkg/middleware"
+	"github.com/project_radeon/api/pkg/observability"
 )
 
 const (
@@ -127,7 +129,7 @@ func (h *Handler) handleRealtimeCommand(ctx context.Context, connection *Realtim
 		if err := decodeCommandPayload(command.Data, &payload); err != nil {
 			return err
 		}
-		return h.handleRealtimeResume(connection, payload)
+		return h.handleRealtimeResume(ctx, connection, payload)
 	case "subscribe_chat":
 		var payload SubscribeChatCommand
 		if err := decodeCommandPayload(command.Data, &payload); err != nil {
@@ -213,9 +215,16 @@ func writeRealtimePing(socket *websocket.Conn) error {
 }
 
 func (h *Handler) handleRealtimeSendMessage(ctx context.Context, connection *RealtimeConnection, command SendMessageCommand) error {
+	start := time.Now()
+	var observedErr error
+	defer func() {
+		observability.ObserveDuration("realtime.command.send_message", time.Since(start), observedErr)
+	}()
+
 	body := strings.TrimSpace(command.Body)
 	clientMessageID := strings.TrimSpace(command.ClientMessageID)
 	if command.ChatID == uuid.Nil || body == "" || clientMessageID == "" {
+		observedErr = fmt.Errorf("invalid send_message payload")
 		return h.emitUserEvent(ctx, connection.UserID, "chat.message.failed", MessageFailedEnvelope{
 			ChatID:          command.ChatID,
 			ClientMessageID: clientMessageID,
@@ -225,9 +234,11 @@ func (h *Handler) handleRealtimeSendMessage(ctx context.Context, connection *Rea
 
 	isMember, err := h.db.IsMemberOfChat(ctx, command.ChatID, connection.UserID)
 	if err != nil {
+		observedErr = err
 		return err
 	}
 	if !isMember {
+		observedErr = fmt.Errorf("user is not a member of chat")
 		return h.emitUserEvent(ctx, connection.UserID, "chat.message.failed", MessageFailedEnvelope{
 			ChatID:          command.ChatID,
 			ClientMessageID: clientMessageID,
@@ -235,27 +246,17 @@ func (h *Handler) handleRealtimeSendMessage(ctx context.Context, connection *Rea
 		})
 	}
 
-	status, err := h.db.GetChatStatus(ctx, command.ChatID)
-	if err != nil {
-		return err
-	}
-	if status != "active" {
-		return h.emitUserEvent(ctx, connection.UserID, "chat.message.failed", MessageFailedEnvelope{
-			ChatID:          command.ChatID,
-			ClientMessageID: clientMessageID,
-			Error:           "chat is not open for messaging",
-		})
-	}
-
 	message, err := h.db.InsertMessage(ctx, command.ChatID, connection.UserID, body, &clientMessageID)
 	if err != nil {
 		if errors.Is(err, ErrConflict) {
+			observedErr = err
 			return h.emitUserEvent(ctx, connection.UserID, "chat.message.failed", MessageFailedEnvelope{
 				ChatID:          command.ChatID,
 				ClientMessageID: clientMessageID,
 				Error:           "chat is not open for messaging",
 			})
 		}
+		observedErr = err
 		return err
 	}
 
@@ -266,6 +267,7 @@ func (h *Handler) handleRealtimeSendMessage(ctx context.Context, connection *Rea
 
 	senderSummary, err := h.db.GetChat(ctx, connection.UserID, command.ChatID)
 	if err != nil && !errors.Is(err, ErrNotFound) {
+		observedErr = err
 		return err
 	}
 
@@ -275,18 +277,28 @@ func (h *Handler) handleRealtimeSendMessage(ctx context.Context, connection *Rea
 		Message:         *message,
 		Summary:         senderSummary,
 	}); err != nil {
+		observedErr = err
 		return err
 	}
 
-	return h.broadcastMessageCreated(ctx, command.ChatID, message)
+	observedErr = h.broadcastMessageCreated(ctx, command.ChatID, message)
+	return observedErr
 }
 
-func (h *Handler) handleRealtimeResume(connection *RealtimeConnection, command ResumeCommand) error {
+func (h *Handler) handleRealtimeResume(ctx context.Context, connection *RealtimeConnection, command ResumeCommand) error {
 	lastCursor := ""
 	if command.LastCursor != nil {
 		lastCursor = strings.TrimSpace(*command.LastCursor)
 	}
 	events, ok := h.realtime.ReplaySince(connection.UserID, lastCursor)
+	if !ok && h.bus != nil {
+		replayed, replayOK, err := h.bus.ReplayUserEventsSince(ctx, connection.UserID, lastCursor)
+		if err != nil {
+			return err
+		}
+		events = replayed
+		ok = replayOK
+	}
 	if !ok {
 		return h.enqueueServerEvent(connection, "system.resync_required", resyncRequiredPayload{
 			Reason: "resume cursor unavailable",
@@ -359,24 +371,34 @@ func (h *Handler) broadcastMessageCreated(ctx context.Context, chatID uuid.UUID,
 		return nil
 	}
 
+	start := time.Now()
+	var observedErr error
+	defer func() {
+		observability.ObserveDuration("realtime.broadcast.message_created", time.Since(start), observedErr)
+	}()
+
 	memberIDs, err := h.db.ListChatMemberIDs(ctx, chatID)
 	if err != nil {
+		observedErr = err
+		return err
+	}
+	observability.IncrementCounter("realtime.broadcast.message_created.members", int64(len(memberIDs)))
+
+	summaries, err := h.db.GetChatSummaries(ctx, chatID, memberIDs)
+	if err != nil {
+		observedErr = err
 		return err
 	}
 
 	for _, memberID := range memberIDs {
-		summary, err := h.db.GetChat(ctx, memberID, chatID)
-		if err != nil && !errors.Is(err, ErrNotFound) {
-			return err
-		}
-
 		payload := MessageEnvelope{
 			ChatID:  chatID,
 			Message: *message,
-			Summary: summary,
+			Summary: summaries[memberID],
 		}
 
 		if err := h.emitCreatedEvent(ctx, memberID, payload); err != nil {
+			observedErr = err
 			return err
 		}
 	}
@@ -389,17 +411,27 @@ func (h *Handler) broadcastChatSummary(ctx context.Context, chatID uuid.UUID) er
 		return nil
 	}
 
+	start := time.Now()
+	var observedErr error
+	defer func() {
+		observability.ObserveDuration("realtime.broadcast.chat_summary", time.Since(start), observedErr)
+	}()
+
 	memberIDs, err := h.db.ListChatMemberIDs(ctx, chatID)
 	if err != nil {
+		observedErr = err
+		return err
+	}
+
+	summaries, err := h.db.GetChatSummaries(ctx, chatID, memberIDs)
+	if err != nil {
+		observedErr = err
 		return err
 	}
 
 	for _, memberID := range memberIDs {
-		summary, err := h.db.GetChat(ctx, memberID, chatID)
-		if err != nil && !errors.Is(err, ErrNotFound) {
-			return err
-		}
-		if err := h.emitSummaryEvent(ctx, memberID, summary); err != nil {
+		if err := h.emitSummaryEvent(ctx, memberID, summaries[memberID]); err != nil {
+			observedErr = err
 			return err
 		}
 	}
@@ -412,8 +444,15 @@ func (h *Handler) broadcastReadUpdated(ctx context.Context, chatID, userID uuid.
 		return nil
 	}
 
+	start := time.Now()
+	var observedErr error
+	defer func() {
+		observability.ObserveDuration("realtime.broadcast.read_updated", time.Since(start), observedErr)
+	}()
+
 	memberIDs, err := h.db.ListChatMemberIDs(ctx, chatID)
 	if err != nil {
+		observedErr = err
 		return err
 	}
 
@@ -429,14 +468,17 @@ func (h *Handler) broadcastReadUpdated(ctx context.Context, chatID, userID uuid.
 			continue
 		}
 		if err := h.emitReadEvent(ctx, memberID, readPayload); err != nil {
+			observedErr = err
 			return err
 		}
 	}
 
 	currentUserSummary, err := h.db.GetChat(ctx, userID, chatID)
 	if err == nil {
-		return h.emitSummaryEvent(ctx, userID, currentUserSummary)
+		observedErr = h.emitSummaryEvent(ctx, userID, currentUserSummary)
+		return observedErr
 	} else if !errors.Is(err, ErrNotFound) {
+		observedErr = err
 		return err
 	}
 

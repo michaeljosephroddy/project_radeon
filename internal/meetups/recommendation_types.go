@@ -10,6 +10,7 @@ import (
 )
 
 const recommendedPipelineVersion = "v2"
+const recommendedRankedWindowPages = 4
 
 type recommendedSource string
 
@@ -70,6 +71,33 @@ func recommendedCandidatePoolLimits(pageLimit int) candidatePoolLimits {
 		total = 480
 	}
 	return candidatePoolLimits{PerSource: perSource, Total: total}
+}
+
+func recommendedRankedWindowLimit(limit int, cursor string) int {
+	if limit < 1 {
+		limit = 20
+	}
+
+	decoded := decodeRecommendedCursor(cursor)
+	total := limit
+	if decoded.LastOffset > 0 {
+		total = decoded.LastOffset + limit
+	}
+
+	windowSize := limit * recommendedRankedWindowPages
+	limits := recommendedCandidatePoolLimits(limit)
+	if windowSize < limits.PerSource {
+		windowSize = limits.PerSource
+	}
+	if windowSize > limits.Total {
+		windowSize = limits.Total
+	}
+	if total > limits.Total {
+		return limits.Total
+	}
+
+	windows := (total + windowSize - 1) / windowSize
+	return windows * windowSize
 }
 
 func encodeRecommendedCursor(lastID uuid.UUID, lastOffset int) *string {

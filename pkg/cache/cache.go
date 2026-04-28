@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/project_radeon/api/pkg/observability"
 	"github.com/redis/go-redis/v9"
 	"golang.org/x/sync/singleflight"
 )
@@ -121,16 +122,23 @@ func (c *Client) GetJSON(ctx context.Context, key string, dest any) (bool, error
 		return false, nil
 	}
 
+	start := time.Now()
 	payload, err := c.redis.Get(ctx, key).Bytes()
 	if err != nil {
 		if err == redis.Nil {
+			observability.IncrementCounter("cache.get_json.miss", 1)
+			observability.ObserveDuration("cache.get_json", time.Since(start), nil)
 			return false, nil
 		}
+		observability.ObserveDuration("cache.get_json", time.Since(start), err)
 		return false, err
 	}
 	if err := json.Unmarshal(payload, dest); err != nil {
+		observability.ObserveDuration("cache.get_json", time.Since(start), err)
 		return false, err
 	}
+	observability.IncrementCounter("cache.get_json.hit", 1)
+	observability.ObserveDuration("cache.get_json", time.Since(start), nil)
 	return true, nil
 }
 
@@ -144,7 +152,10 @@ func (c *Client) SetJSON(ctx context.Context, key string, value any, ttl time.Du
 		return err
 	}
 
-	return c.redis.Set(ctx, key, payload, c.WithJitter(ttl)).Err()
+	start := time.Now()
+	err = c.redis.Set(ctx, key, payload, c.WithJitter(ttl)).Err()
+	observability.ObserveDuration("cache.set_json", time.Since(start), err)
+	return err
 }
 
 func (c *Client) GetVersion(ctx context.Context, key string) (int64, error) {
@@ -152,16 +163,23 @@ func (c *Client) GetVersion(ctx context.Context, key string) (int64, error) {
 		return missingVersion, nil
 	}
 
+	start := time.Now()
 	version, err := c.redis.Get(ctx, key).Int64()
 	if err != nil {
 		if err == redis.Nil {
+			observability.IncrementCounter("cache.get_version.miss", 1)
+			observability.ObserveDuration("cache.get_version", time.Since(start), nil)
 			return missingVersion, nil
 		}
+		observability.ObserveDuration("cache.get_version", time.Since(start), err)
 		return missingVersion, err
 	}
 	if version < missingVersion {
+		observability.ObserveDuration("cache.get_version", time.Since(start), nil)
 		return missingVersion, nil
 	}
+	observability.IncrementCounter("cache.get_version.hit", 1)
+	observability.ObserveDuration("cache.get_version", time.Since(start), nil)
 	return version, nil
 }
 
@@ -170,6 +188,7 @@ func (c *Client) BumpVersions(ctx context.Context, keys ...string) error {
 		return nil
 	}
 
+	start := time.Now()
 	pipe := c.redis.Pipeline()
 	for _, key := range keys {
 		if strings.TrimSpace(key) == "" {
@@ -178,6 +197,7 @@ func (c *Client) BumpVersions(ctx context.Context, keys ...string) error {
 		pipe.Incr(ctx, key)
 	}
 	_, err := pipe.Exec(ctx)
+	observability.ObserveDuration("cache.bump_versions", time.Since(start), err)
 	return err
 }
 
@@ -205,13 +225,17 @@ func (c *Client) ReadThrough(ctx context.Context, key string, ttl time.Duration,
 		return loader(ctx, dest)
 	}
 
+	start := time.Now()
 	found, err := c.GetJSON(ctx, key, dest)
 	if err == nil && found {
+		observability.IncrementCounter("cache.read_through.hit", 1)
+		observability.ObserveDuration("cache.read_through", time.Since(start), nil)
 		return nil
 	}
 	if err != nil {
 		log.Printf("cache get failed for %s: %v", key, err)
 	}
+	observability.IncrementCounter("cache.read_through.miss", 1)
 
 	result, err, _ := c.group.Do(key, func() (any, error) {
 		loaded := cloneDestination(dest)
@@ -229,6 +253,7 @@ func (c *Client) ReadThrough(ctx context.Context, key string, ttl time.Duration,
 		return payload, nil
 	})
 	if err != nil {
+		observability.ObserveDuration("cache.read_through", time.Since(start), err)
 		return err
 	}
 
@@ -237,7 +262,9 @@ func (c *Client) ReadThrough(ctx context.Context, key string, ttl time.Duration,
 		return fmt.Errorf("cache load for %s returned unexpected payload type %T", key, result)
 	}
 
-	return json.Unmarshal(payload, dest)
+	err = json.Unmarshal(payload, dest)
+	observability.ObserveDuration("cache.read_through", time.Since(start), err)
+	return err
 }
 
 func cloneDestination(dest any) any {

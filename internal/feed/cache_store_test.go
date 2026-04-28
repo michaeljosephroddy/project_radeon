@@ -10,12 +10,23 @@ import (
 )
 
 type stubQuerier struct {
+	listHomeFeedCalls  int
 	listUserPostsCalls int
 	sharePostCalls     int
 }
 
-func (s *stubQuerier) ListHomeFeed(context.Context, uuid.UUID, *time.Time, int) ([]FeedItem, error) {
-	return nil, nil
+func (s *stubQuerier) ListHomeFeed(_ context.Context, viewerID uuid.UUID, _ *time.Time, limit int) ([]FeedItem, error) {
+	s.listHomeFeedCalls++
+	return []FeedItem{{
+		ID:        uuid.New(),
+		Kind:      FeedItemKindPost,
+		CreatedAt: time.Unix(int64(s.listHomeFeedCalls), 0).UTC(),
+		Author: FeedActor{
+			UserID:   viewerID,
+			Username: "viewer",
+		},
+		LikeCount: limit,
+	}}, nil
 }
 
 func (s *stubQuerier) ListHiddenFeedItems(context.Context, uuid.UUID, *time.Time, int) ([]HiddenFeedItem, error) {
@@ -164,5 +175,83 @@ func TestCachedStoreInvalidatesUserPostsAfterShare(t *testing.T) {
 	}
 	if !second[0].CreatedAt.After(first[0].CreatedAt) {
 		t.Fatalf("expected share invalidation to force a fresh ListUserPosts call")
+	}
+}
+
+func TestCachedStoreCachesHomeFeedByViewer(t *testing.T) {
+	t.Parallel()
+
+	viewerID := uuid.New()
+	inner := &stubQuerier{}
+	store := cachetest.NewStore()
+	cached := NewCachedStore(inner, store)
+
+	first, err := cached.ListHomeFeed(context.Background(), viewerID, nil, 20)
+	if err != nil {
+		t.Fatalf("first ListHomeFeed: %v", err)
+	}
+	second, err := cached.ListHomeFeed(context.Background(), viewerID, nil, 20)
+	if err != nil {
+		t.Fatalf("second ListHomeFeed: %v", err)
+	}
+	if inner.listHomeFeedCalls != 1 {
+		t.Fatalf("expected one underlying ListHomeFeed call after cache hit, got %d", inner.listHomeFeedCalls)
+	}
+	if !first[0].CreatedAt.Equal(second[0].CreatedAt) {
+		t.Fatalf("expected cached home feed items to be identical before invalidation")
+	}
+}
+
+func TestCachedStoreInvalidatesHomeFeedAfterHide(t *testing.T) {
+	t.Parallel()
+
+	viewerID := uuid.New()
+	inner := &stubQuerier{}
+	store := cachetest.NewStore()
+	cached := NewCachedStore(inner, store)
+
+	first, err := cached.ListHomeFeed(context.Background(), viewerID, nil, 20)
+	if err != nil {
+		t.Fatalf("first ListHomeFeed: %v", err)
+	}
+	if err := cached.HideFeedItem(context.Background(), viewerID, uuid.New(), FeedItemKindPost); err != nil {
+		t.Fatalf("HideFeedItem: %v", err)
+	}
+	second, err := cached.ListHomeFeed(context.Background(), viewerID, nil, 20)
+	if err != nil {
+		t.Fatalf("second ListHomeFeed: %v", err)
+	}
+	if inner.listHomeFeedCalls != 2 {
+		t.Fatalf("expected home feed invalidation to force a fresh ListHomeFeed call, got %d", inner.listHomeFeedCalls)
+	}
+	if !second[0].CreatedAt.After(first[0].CreatedAt) {
+		t.Fatalf("expected invalidated home feed to be newer than cached feed")
+	}
+}
+
+func TestCachedStoreInvalidatesHomeFeedAfterSharedViewerVersionBump(t *testing.T) {
+	t.Parallel()
+
+	viewerID := uuid.New()
+	inner := &stubQuerier{}
+	store := cachetest.NewStore()
+	cached := NewCachedStore(inner, store)
+
+	first, err := cached.ListHomeFeed(context.Background(), viewerID, nil, 20)
+	if err != nil {
+		t.Fatalf("first ListHomeFeed: %v", err)
+	}
+	if err := store.BumpVersions(context.Background(), store.Key("ver", "discover", "viewer", viewerID.String())); err != nil {
+		t.Fatalf("BumpVersions: %v", err)
+	}
+	second, err := cached.ListHomeFeed(context.Background(), viewerID, nil, 20)
+	if err != nil {
+		t.Fatalf("second ListHomeFeed: %v", err)
+	}
+	if inner.listHomeFeedCalls != 2 {
+		t.Fatalf("expected shared viewer-version invalidation to force a fresh ListHomeFeed call, got %d", inner.listHomeFeedCalls)
+	}
+	if !second[0].CreatedAt.After(first[0].CreatedAt) {
+		t.Fatalf("expected invalidated home feed to be newer than cached feed")
 	}
 }

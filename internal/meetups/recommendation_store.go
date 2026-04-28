@@ -11,6 +11,18 @@ import (
 )
 
 func (s *pgStore) discoverRecommendedMeetups(ctx context.Context, userID uuid.UUID, params DiscoverMeetupsParams, viewer viewerContext) (*CursorPage[Meetup], error) {
+	ranked, err := s.rankRecommendedMeetups(ctx, userID, params, viewer, time.Now().UTC())
+	if err != nil {
+		return nil, err
+	}
+	page := sliceRecommendedMeetups(ranked, params.Limit, params.Cursor)
+	if len(page.Items) > 0 {
+		s.decorateMeetups(page.Items, viewer)
+	}
+	return page, nil
+}
+
+func (s *pgStore) rankRecommendedMeetups(ctx context.Context, userID uuid.UUID, params DiscoverMeetupsParams, viewer viewerContext, now time.Time) ([]recommendedCandidate, error) {
 	dateFrom, dateTo := resolveDateWindow(params)
 	limits := recommendedCandidatePoolLimits(params.Limit)
 	candidates, err := s.loadRecommendedCandidates(ctx, userID, params, viewer, dateFrom, dateTo, limits)
@@ -22,11 +34,7 @@ func (s *pgStore) discoverRecommendedMeetups(ctx context.Context, userID uuid.UU
 		return nil, err
 	}
 	ranked := hydrateRecommendedCandidates(candidates, features, viewer)
-	page := sliceRecommendedMeetups(rankRecommendedCandidates(ranked, viewer, time.Now().UTC()), params.Limit, params.Cursor)
-	if len(page.Items) > 0 {
-		s.decorateMeetups(page.Items, viewer)
-	}
-	return page, nil
+	return rankRecommendedCandidates(ranked, viewer, now), nil
 }
 
 func (s *pgStore) loadRecommendedCandidates(ctx context.Context, userID uuid.UUID, params DiscoverMeetupsParams, viewer viewerContext, dateFrom, dateTo *time.Time, limits candidatePoolLimits) ([]Meetup, error) {

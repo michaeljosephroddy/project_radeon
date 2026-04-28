@@ -30,6 +30,7 @@ import (
 	"github.com/project_radeon/api/pkg/cache"
 	"github.com/project_radeon/api/pkg/database"
 	"github.com/project_radeon/api/pkg/middleware"
+	"github.com/project_radeon/api/pkg/observability"
 	"github.com/project_radeon/api/pkg/response"
 	"github.com/project_radeon/api/pkg/storage"
 )
@@ -112,7 +113,8 @@ func main() {
 	r.Use(chimiddleware.Logger)
 	r.Use(chimiddleware.Recoverer)
 	r.Use(chimiddleware.RequestID)
-	r.Use(middleware.RateLimitIP)
+	r.Use(observability.Middleware)
+	r.Use(middleware.RateLimitIPWithStore(cacheStore))
 	r.Use(cors.Handler(cors.Options{
 		AllowedOrigins:   []string{"*"},
 		AllowedMethods:   []string{"GET", "POST", "PATCH", "DELETE", "OPTIONS"},
@@ -129,11 +131,12 @@ func main() {
 		}
 		response.Success(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
+	r.Get("/debug/observability", observability.Handler(db, cacheStore.Enabled()))
 
 	r.Group(func(r chi.Router) {
 		r.Use(middleware.AuthenticateWebSocket)
 		r.Use(middleware.EnsureCurrentUserExists(userChecker))
-		r.Use(middleware.RateLimitUser)
+		r.Use(middleware.RateLimitUserWithStore(cacheStore))
 
 		r.Get("/chats/ws", chatsHandler.ConnectRealtime)
 	})
@@ -150,7 +153,7 @@ func main() {
 	apiRouter.Group(func(r chi.Router) {
 		r.Use(middleware.Authenticate)
 		r.Use(middleware.EnsureCurrentUserExists(userChecker))
-		r.Use(middleware.RateLimitUser)
+		r.Use(middleware.RateLimitUserWithStore(cacheStore))
 
 		// Feed
 		r.Get("/feed/home", feedHandler.GetHomeFeed)
@@ -272,6 +275,13 @@ func main() {
 	}()
 
 	go notifications.RunWorker(workerCtx, log.Default(), notificationsService, 15*time.Second, 25)
+	go feed.RunAggregateRefreshWorker(
+		workerCtx,
+		log.Default(),
+		db,
+		time.Duration(parseIntEnvWithDefault("FEED_AGGREGATE_WORKER_POLL_MS", 2000))*time.Millisecond,
+		parseIntEnvWithDefault("FEED_AGGREGATE_WORKER_BATCH_SIZE", 200),
+	)
 	if err := chatsRealtimeBus.Start(workerCtx, chatsRealtimeHub); err != nil {
 		log.Fatalf("chat realtime bus failed: %v", err)
 	}
@@ -301,14 +311,18 @@ func parseBoolEnvWithDefault(key string, fallback bool) bool {
 }
 
 func parseIntEnv(key string) int {
+	return parseIntEnvWithDefault(key, 0)
+}
+
+func parseIntEnvWithDefault(key string, fallback int) int {
 	value := strings.TrimSpace(os.Getenv(key))
 	if value == "" {
-		return 0
+		return fallback
 	}
 
 	parsed, err := strconv.Atoi(value)
 	if err != nil {
-		return 0
+		return fallback
 	}
 	return parsed
 }

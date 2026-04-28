@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/project_radeon/api/pkg/observability"
 )
 
 const realtimeWriteBufferSize = 16
@@ -54,6 +55,7 @@ func (h *RealtimeHub) Register(userID uuid.UUID) *RealtimeConnection {
 		h.connections[userID] = userConnections
 	}
 	userConnections[connection.ID] = connection
+	observability.AddGauge("realtime.connections.active", 1)
 	return connection
 }
 
@@ -74,6 +76,7 @@ func (h *RealtimeHub) Unregister(connection *RealtimeConnection) {
 	if len(userConnections) == 0 {
 		delete(h.connections, connection.UserID)
 	}
+	observability.AddGauge("realtime.connections.active", -1)
 }
 
 func (h *RealtimeHub) UserConnections(userID uuid.UUID) []*RealtimeConnection {
@@ -112,8 +115,10 @@ func (h *RealtimeHub) DeliverUserEvent(userID uuid.UUID, event ServerEvent) {
 	for _, connection := range connections {
 		select {
 		case connection.Send <- event:
+			observability.IncrementCounter("realtime.events.delivered", 1)
 		default:
 			// Slow consumers will recover via resume/resync instead of blocking fanout.
+			observability.IncrementCounter("realtime.events.dropped", 1)
 		}
 	}
 }

@@ -19,6 +19,8 @@ const (
 const (
 	discoverDismissalCooldown  = 14 * 24 * time.Hour
 	discoverImpressionCooldown = 45 * time.Minute
+	discoverRankedWindowPages  = 4
+	discoverRankedWindowMax    = 300
 )
 
 type discoverViewerFeatures struct {
@@ -116,6 +118,32 @@ func discoverCandidatePoolLimit(params DiscoverUsersParams) int {
 		target = 300
 	}
 	return target
+}
+
+func discoverRankedWindowLimit(params DiscoverUsersParams) int {
+	limit := params.Limit
+	if limit < 1 {
+		limit = 1
+	}
+
+	windowSize := limit * discoverRankedWindowPages
+	if windowSize < 100 {
+		windowSize = 100
+	}
+	if windowSize > discoverRankedWindowMax {
+		windowSize = discoverRankedWindowMax
+	}
+
+	total := params.Offset + limit
+	if total < limit {
+		total = limit
+	}
+	if total > discoverRankedWindowMax {
+		return discoverRankedWindowMax
+	}
+
+	windows := (total + windowSize - 1) / windowSize
+	return windows * windowSize
 }
 
 func discoverVisibleLimit(params DiscoverUsersParams) int {

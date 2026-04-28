@@ -123,6 +123,10 @@ func (s *cachedStore) DiscoverUsers(ctx context.Context, params DiscoverUsersPar
 		ttl = discoverSearchTTL
 	}
 
+	if store, ok := s.inner.(*pgStore); ok && store.discoverPipelineV2 && s.shouldUseDiscoverRankedWindowCache(params) {
+		return s.discoverUsersFromRankedWindowCache(ctx, store, params, viewerVersion, globalVersion, ttl)
+	}
+
 	key := s.cache.Key(
 		"user",
 		"discover",
@@ -158,6 +162,48 @@ func (s *cachedStore) DiscoverUsers(ctx context.Context, params DiscoverUsersPar
 	}
 
 	return users, nil
+}
+
+func (s *cachedStore) discoverUsersFromRankedWindowCache(ctx context.Context, store *pgStore, params DiscoverUsersParams, viewerVersion, globalVersion int64, ttl time.Duration) ([]User, error) {
+	rankLimit := discoverRankedWindowLimit(params)
+	key := s.cache.Key(
+		"user",
+		"discover",
+		"pipeline", s.discoverPipelinePart(),
+		"viewer_v", strconv.FormatInt(viewerVersion, 10),
+		"global_v", strconv.FormatInt(globalVersion, 10),
+		"viewer", params.CurrentUserID.String(),
+		"city", encodePart(params.City),
+		"query", encodePart(params.Query),
+		"gender", encodePart(params.Gender),
+		"sobriety", encodePart(params.Sobriety),
+		"age_min", intPart(params.AgeMin),
+		"age_max", intPart(params.AgeMax),
+		"distance_km", intPart(params.DistanceKm),
+		"interests", stringSlicePart(params.Interests),
+		"lat", floatPart(params.Lat),
+		"lng", floatPart(params.Lng),
+		"ranked_limit", strconv.Itoa(rankLimit),
+	)
+
+	var ranked []discoverCandidate
+	if err := s.cache.ReadThrough(ctx, key, ttl, &ranked, func(ctx context.Context, dest any) error {
+		rankedParams := params
+		rankedParams.Offset = 0
+		rankedParams.DisplayLimit = rankLimit
+		rankedParams.Limit = rankLimit
+
+		loaded, err := store.discoverRankedCandidatesV2(ctx, rankedParams, false, time.Now().UTC())
+		if err != nil {
+			return err
+		}
+		*dest.(*[]discoverCandidate) = loaded
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+
+	return store.discoverUsersPageFromCandidates(ctx, params, ranked, time.Now().UTC())
 }
 
 func (s *cachedStore) CountDiscoverUsers(ctx context.Context, params DiscoverUsersParams) (int, error) {
@@ -243,6 +289,10 @@ func (s *cachedStore) discoverPipelinePart() string {
 		return "v2"
 	}
 	return "legacy"
+}
+
+func (s *cachedStore) shouldUseDiscoverRankedWindowCache(params DiscoverUsersParams) bool {
+	return !shouldApplyDiscoverImpressionSuppression(params) && params.Offset > 0 && params.Limit > 0
 }
 
 func encodePart(value string) string {

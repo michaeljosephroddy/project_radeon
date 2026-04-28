@@ -19,6 +19,7 @@ type mockQuerier struct {
 	listChatRequests   func(ctx context.Context, userID uuid.UUID) ([]Chat, error)
 	getChat            func(ctx context.Context, userID, chatID uuid.UUID) (*Chat, error)
 	getChatStatus      func(ctx context.Context, chatID uuid.UUID) (string, error)
+	getChatSummaries   func(ctx context.Context, chatID uuid.UUID, userIDs []uuid.UUID) (map[uuid.UUID]*Chat, error)
 	getLatestMessage   func(ctx context.Context, chatID uuid.UUID) (*Message, error)
 	listChatMemberIDs  func(ctx context.Context, chatID uuid.UUID) ([]uuid.UUID, error)
 	findDirectChat     func(ctx context.Context, userID, otherUserID uuid.UUID) (uuid.UUID, bool, error)
@@ -55,6 +56,16 @@ func (m *mockQuerier) GetChatStatus(ctx context.Context, chatID uuid.UUID) (stri
 		return m.getChatStatus(ctx, chatID)
 	}
 	return "active", nil
+}
+func (m *mockQuerier) GetChatSummaries(ctx context.Context, chatID uuid.UUID, userIDs []uuid.UUID) (map[uuid.UUID]*Chat, error) {
+	if m.getChatSummaries != nil {
+		return m.getChatSummaries(ctx, chatID, userIDs)
+	}
+	summaries := make(map[uuid.UUID]*Chat, len(userIDs))
+	for _, userID := range userIDs {
+		summaries[userID] = &Chat{ID: chatID, Status: "active"}
+	}
+	return summaries, nil
 }
 func (m *mockQuerier) GetLatestMessage(ctx context.Context, chatID uuid.UUID) (*Message, error) {
 	if m.getLatestMessage != nil {

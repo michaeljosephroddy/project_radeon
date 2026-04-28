@@ -172,32 +172,32 @@ func (s *pgStore) CloseSupportRequest(ctx context.Context, requestID, userID uui
 	chatRows.Close()
 
 	for _, chatID := range chatIDs {
-		var nextSeq int64
-		if err := tx.QueryRow(ctx,
-			`SELECT COALESCE(MAX(chat_seq), 0) + 1
-			FROM messages
-			WHERE chat_id = $1`,
-			chatID,
-		).Scan(&nextSeq); err != nil {
-			return nil, err
-		}
-
 		if _, err := tx.Exec(ctx,
-			`INSERT INTO messages (chat_id, sender_id, kind, body, chat_seq)
-			VALUES ($1, $2, 'system', $3, $4)`,
+			`WITH updated_chat AS (
+				UPDATE chats
+				SET
+					next_message_seq = next_message_seq + 1,
+					last_message_seq = next_message_seq,
+					last_message_body = $3,
+					last_message_at = NOW(),
+					last_message_sender_id = $2,
+					status = 'closed'
+				WHERE id = $1
+				RETURNING next_message_seq - 1 AS assigned_seq, last_message_at
+			),
+			inserted AS (
+				INSERT INTO messages (chat_id, sender_id, kind, body, chat_seq, sent_at)
+				SELECT $1, $2, 'system', $3, assigned_seq, last_message_at
+				FROM updated_chat
+				RETURNING id, chat_id
+			)
+			UPDATE chats ch
+			SET last_message_id = inserted.id
+			FROM inserted
+			WHERE ch.id = inserted.chat_id`,
 			chatID,
 			userID,
 			supportChatClosedMessage,
-			nextSeq,
-		); err != nil {
-			return nil, err
-		}
-
-		if _, err := tx.Exec(ctx,
-			`UPDATE chats
-			SET status = 'closed'
-			WHERE id = $1`,
-			chatID,
 		); err != nil {
 			return nil, err
 		}

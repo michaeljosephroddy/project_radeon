@@ -3,6 +3,7 @@ package chats
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -163,6 +164,109 @@ func TestConnectRealtimeSendMessageAck(t *testing.T) {
 	}
 	if payload.Summary == nil || payload.Summary.ID != fixedChat {
 		t.Fatalf("summary = %+v, want chat summary for %s", payload.Summary, fixedChat)
+	}
+}
+
+func TestHandleRealtimeResumeFallsBackToSharedReplay(t *testing.T) {
+	hub := NewRealtimeHub()
+	connection := &RealtimeConnection{
+		ID:            uuid.New(),
+		UserID:        fixedUser,
+		Send:          make(chan ServerEvent, 4),
+		ConnectedAt:   time.Now().UTC(),
+		subscriptions: make(map[uuid.UUID]struct{}),
+	}
+	replayedEvent, err := newServerEvent("chat.summary.updated", Chat{
+		ID:        fixedChat,
+		CreatedAt: time.Now().UTC(),
+		Status:    "active",
+	})
+	if err != nil {
+		t.Fatalf("new server event: %v", err)
+	}
+
+	bus := &stubEventBus{
+		replayEvents: []ServerEvent{replayedEvent},
+		replayOK:     true,
+	}
+	handler := NewHandlerWithRealtimeInfra(&mockQuerier{}, nil, hub, bus)
+
+	if err := handler.handleRealtimeResume(context.Background(), connection, ResumeCommand{LastCursor: stringPtr("missing-local-cursor")}); err != nil {
+		t.Fatalf("handleRealtimeResume: %v", err)
+	}
+
+	select {
+	case event := <-connection.Send:
+		if event.Type != replayedEvent.Type || event.Cursor != replayedEvent.Cursor {
+			t.Fatalf("unexpected replayed event: %+v", event)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("expected replayed event to be enqueued")
+	}
+}
+
+func TestHandleRealtimeResumeEmitsResyncWhenReplayUnavailable(t *testing.T) {
+	hub := NewRealtimeHub()
+	connection := &RealtimeConnection{
+		ID:            uuid.New(),
+		UserID:        fixedUser,
+		Send:          make(chan ServerEvent, 2),
+		ConnectedAt:   time.Now().UTC(),
+		subscriptions: make(map[uuid.UUID]struct{}),
+	}
+	handler := NewHandlerWithRealtimeInfra(&mockQuerier{}, nil, hub, &stubEventBus{})
+
+	if err := handler.handleRealtimeResume(context.Background(), connection, ResumeCommand{LastCursor: stringPtr("unknown-cursor")}); err != nil {
+		t.Fatalf("handleRealtimeResume: %v", err)
+	}
+
+	select {
+	case event := <-connection.Send:
+		if event.Type != "system.resync_required" {
+			t.Fatalf("event type = %q, want %q", event.Type, "system.resync_required")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("expected resync event to be enqueued")
+	}
+}
+
+type stubEventBus struct {
+	replayEvents []ServerEvent
+	replayOK     bool
+	replayErr    error
+}
+
+func (s *stubEventBus) PublishUserEvent(context.Context, uuid.UUID, ServerEvent) error {
+	return nil
+}
+
+func (s *stubEventBus) Start(context.Context, *RealtimeHub) error {
+	return nil
+}
+
+func (s *stubEventBus) ReplayUserEventsSince(context.Context, uuid.UUID, string) ([]ServerEvent, bool, error) {
+	if s.replayErr != nil {
+		return nil, false, s.replayErr
+	}
+	if !s.replayOK {
+		return nil, false, nil
+	}
+	return s.replayEvents, true, nil
+}
+
+func TestHandleRealtimeResumePropagatesReplayError(t *testing.T) {
+	hub := NewRealtimeHub()
+	connection := &RealtimeConnection{
+		ID:            uuid.New(),
+		UserID:        fixedUser,
+		Send:          make(chan ServerEvent, 1),
+		ConnectedAt:   time.Now().UTC(),
+		subscriptions: make(map[uuid.UUID]struct{}),
+	}
+	handler := NewHandlerWithRealtimeInfra(&mockQuerier{}, nil, hub, &stubEventBus{replayErr: errors.New("boom")})
+
+	if err := handler.handleRealtimeResume(context.Background(), connection, ResumeCommand{LastCursor: stringPtr("unknown-cursor")}); err == nil {
+		t.Fatal("expected replay error to be returned")
 	}
 }
 

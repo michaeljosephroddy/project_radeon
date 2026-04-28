@@ -116,3 +116,38 @@ func TestSliceRecommendedMeetupsUsesStableLastSeenCursor(t *testing.T) {
 		t.Fatalf("expected stable cursor to continue after last seen meetup")
 	}
 }
+
+func TestRecommendedRankedWindowLimitBucketsAdjacentPages(t *testing.T) {
+	t.Parallel()
+
+	first := recommendedRankedWindowLimit(20, "")
+	secondCursor := encodeRecommendedCursor(uuid.New(), 20)
+	thirdCursor := encodeRecommendedCursor(uuid.New(), 40)
+	deeperCursor := encodeRecommendedCursor(uuid.New(), 140)
+
+	second := recommendedRankedWindowLimit(20, *secondCursor)
+	third := recommendedRankedWindowLimit(20, *thirdCursor)
+	deeper := recommendedRankedWindowLimit(20, *deeperCursor)
+
+	if first != second || second != third {
+		t.Fatalf("expected adjacent recommended meetup pages to share a ranked window, got %d, %d, %d", first, second, third)
+	}
+	if deeper <= third {
+		t.Fatalf("expected deeper recommended meetup pages to expand the ranked window, got %d then %d", third, deeper)
+	}
+}
+
+func TestRecommendedRankedWindowLimitCapsAtCandidatePoolMaximum(t *testing.T) {
+	t.Parallel()
+
+	cursor := encodeRecommendedCursor(uuid.New(), 600)
+	if cursor == nil {
+		t.Fatal("expected cursor to encode")
+	}
+
+	got := recommendedRankedWindowLimit(50, *cursor)
+	want := recommendedCandidatePoolLimits(50).Total
+	if got != want {
+		t.Fatalf("recommendedRankedWindowLimit should cap at %d, got %d", want, got)
+	}
+}

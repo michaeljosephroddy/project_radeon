@@ -99,9 +99,6 @@ func (s *pgStore) CreatePost(ctx context.Context, userID uuid.UUID, body string,
 	if err := tx.Commit(ctx); err != nil {
 		return uuid.Nil, err
 	}
-	if err := s.refreshFeedAggregatesForPosts(ctx, []uuid.UUID{id}); err != nil {
-		return uuid.Nil, err
-	}
 	return id, nil
 }
 
@@ -112,9 +109,6 @@ func (s *pgStore) DeletePost(ctx context.Context, postID, userID uuid.UUID) erro
 	}
 	if result.RowsAffected() == 0 {
 		return ErrNotFound
-	}
-	if err := s.refreshAuthorFeedStats(ctx, []uuid.UUID{userID}); err != nil {
-		return err
 	}
 	return nil
 }
@@ -178,9 +172,6 @@ func (s *pgStore) ToggleReaction(ctx context.Context, postID, userID uuid.UUID, 
 		); err != nil {
 			return false, err
 		}
-		if err := s.refreshFeedAggregatesForPosts(ctx, []uuid.UUID{postID}); err != nil {
-			return false, err
-		}
 		return false, nil
 	}
 
@@ -188,9 +179,6 @@ func (s *pgStore) ToggleReaction(ctx context.Context, postID, userID uuid.UUID, 
 		`INSERT INTO post_reactions (post_id, user_id, type) VALUES ($1, $2, $3)`,
 		postID, userID, reactionType,
 	); err != nil {
-		return false, err
-	}
-	if err := s.refreshFeedAggregatesForPosts(ctx, []uuid.UUID{postID}); err != nil {
 		return false, err
 	}
 	return true, nil
@@ -268,9 +256,6 @@ func (s *pgStore) AddComment(ctx context.Context, postID, userID uuid.UUID, body
 	comment.Mentions = mentions
 
 	if err := tx.Commit(ctx); err != nil {
-		return nil, err
-	}
-	if err := s.refreshFeedAggregatesForPosts(ctx, []uuid.UUID{postID}); err != nil {
 		return nil, err
 	}
 	return &comment, nil

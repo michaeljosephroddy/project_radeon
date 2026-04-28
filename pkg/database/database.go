@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/project_radeon/api/pkg/observability"
 )
 
 // Connect opens the PostgreSQL connection pool and verifies it with an initial ping.
@@ -23,6 +24,7 @@ func Connect() (*pgxpool.Pool, error) {
 
 	config.MaxConns = 25
 	config.MinConns = 5
+	config.ConnConfig.Tracer = observability.NewPGXTracer()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

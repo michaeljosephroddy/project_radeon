@@ -3,7 +3,6 @@ package chats
 import (
 	"context"
 	"errors"
-	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -19,10 +18,6 @@ var (
 
 type pgStore struct {
 	pool *pgxpool.Pool
-
-	messageSchemaOnce           sync.Once
-	messageSchemaRealtimeFields bool
-	messageSchemaErr            error
 }
 
 const chatSelectColumns = `SELECT
@@ -32,9 +27,9 @@ const chatSelectColumns = `SELECT
 			other.username,
 			other.avatar_url,
 			ch.created_at,
-			m.body AS last_message,
-			m.sent_at AS last_message_at,
-			COALESCE(unread.unread_count, 0) AS unread_count,
+			ch.last_message_body AS last_message,
+			ch.last_message_at AS last_message_at,
+			GREATEST(COALESCE(ch.last_message_seq, 0) - COALESCE(cr.last_read_chat_seq, 0), 0)::int AS unread_count,
 			ch.status,
 			sr.id AS support_request_id,
 			sr.type AS support_request_type,
@@ -76,6 +71,9 @@ func (s *pgStore) ListChats(ctx context.Context, userID uuid.UUID, query string,
 		JOIN chat_members cm
 			ON cm.chat_id = ch.id
 			AND cm.user_id = $1
+		LEFT JOIN chat_reads cr
+			ON cr.chat_id = ch.id
+			AND cr.user_id = $1
 		LEFT JOIN LATERAL (
 			SELECT
 				u.username,
@@ -86,25 +84,6 @@ func (s *pgStore) ListChats(ctx context.Context, userID uuid.UUID, query string,
 				AND cm2.user_id != $1
 			LIMIT 1
 		) other ON NOT ch.is_group
-		LEFT JOIN LATERAL (
-			SELECT
-				body,
-				sent_at
-			FROM messages
-			WHERE chat_id = ch.id
-			ORDER BY sent_at DESC
-			LIMIT 1
-		) m ON true
-		LEFT JOIN LATERAL (
-			SELECT COUNT(*) AS unread_count
-			FROM messages unread
-			LEFT JOIN chat_reads cr
-				ON cr.chat_id = ch.id
-				AND cr.user_id = $1
-			WHERE unread.chat_id = ch.id
-				AND unread.sender_id <> $1
-				AND (cr.last_read_at IS NULL OR unread.sent_at > cr.last_read_at)
-		) unread ON true
 		LEFT JOIN support_requests sr ON sr.id = ch.support_request_id
 		LEFT JOIN users requester ON requester.id = sr.requester_id
 		LEFT JOIN LATERAL (
@@ -131,13 +110,13 @@ func (s *pgStore) ListChats(ctx context.Context, userID uuid.UUID, query string,
 			)
 			AND (
 				$3::timestamptz IS NULL
-				OR COALESCE(m.sent_at, ch.created_at) < $3
+				OR COALESCE(ch.last_message_at, ch.created_at) < $3
 				OR (
-					COALESCE(m.sent_at, ch.created_at) = $3
+					COALESCE(ch.last_message_at, ch.created_at) = $3
 					AND ch.id < $4
 				)
 			)
-		ORDER BY COALESCE(m.sent_at, ch.created_at) DESC, ch.id DESC
+		ORDER BY COALESCE(ch.last_message_at, ch.created_at) DESC, ch.id DESC
 		LIMIT $5`,
 		userID, query, beforeActivityAt, beforeChatID, limit,
 	)
@@ -156,6 +135,9 @@ func (s *pgStore) ListChatRequests(ctx context.Context, userID uuid.UUID) ([]Cha
 			ON cm.chat_id = ch.id
 			AND cm.user_id = $1
 			AND cm.role = 'addressee'
+		LEFT JOIN chat_reads cr
+			ON cr.chat_id = ch.id
+			AND cr.user_id = $1
 		LEFT JOIN LATERAL (
 			SELECT
 				u.username,
@@ -166,25 +148,6 @@ func (s *pgStore) ListChatRequests(ctx context.Context, userID uuid.UUID) ([]Cha
 				AND cm2.user_id != $1
 			LIMIT 1
 		) other ON NOT ch.is_group
-		LEFT JOIN LATERAL (
-			SELECT
-				body,
-				sent_at
-			FROM messages
-			WHERE chat_id = ch.id
-			ORDER BY sent_at DESC
-			LIMIT 1
-		) m ON true
-		LEFT JOIN LATERAL (
-			SELECT COUNT(*) AS unread_count
-			FROM messages unread
-			LEFT JOIN chat_reads cr
-				ON cr.chat_id = ch.id
-				AND cr.user_id = $1
-			WHERE unread.chat_id = ch.id
-				AND unread.sender_id <> $1
-				AND (cr.last_read_at IS NULL OR unread.sent_at > cr.last_read_at)
-		) unread ON true
 		LEFT JOIN support_requests sr ON sr.id = ch.support_request_id
 		LEFT JOIN users requester ON requester.id = sr.requester_id
 		LEFT JOIN LATERAL (
@@ -212,6 +175,9 @@ func (s *pgStore) GetChat(ctx context.Context, userID, chatID uuid.UUID) (*Chat,
 		JOIN chat_members cm
 			ON cm.chat_id = ch.id
 			AND cm.user_id = $1
+		LEFT JOIN chat_reads cr
+			ON cr.chat_id = ch.id
+			AND cr.user_id = $1
 		LEFT JOIN LATERAL (
 			SELECT
 				u.username,
@@ -222,25 +188,6 @@ func (s *pgStore) GetChat(ctx context.Context, userID, chatID uuid.UUID) (*Chat,
 				AND cm2.user_id != $1
 			LIMIT 1
 		) other ON NOT ch.is_group
-		LEFT JOIN LATERAL (
-			SELECT
-				body,
-				sent_at
-			FROM messages
-			WHERE chat_id = ch.id
-			ORDER BY sent_at DESC
-			LIMIT 1
-		) m ON true
-		LEFT JOIN LATERAL (
-			SELECT COUNT(*) AS unread_count
-			FROM messages unread
-			LEFT JOIN chat_reads cr
-				ON cr.chat_id = ch.id
-				AND cr.user_id = $1
-			WHERE unread.chat_id = ch.id
-				AND unread.sender_id <> $1
-				AND (cr.last_read_at IS NULL OR unread.sent_at > cr.last_read_at)
-		) unread ON true
 		LEFT JOIN support_requests sr ON sr.id = ch.support_request_id
 		LEFT JOIN users requester ON requester.id = sr.requester_id
 		LEFT JOIN LATERAL (
@@ -267,6 +214,129 @@ func (s *pgStore) GetChat(ctx context.Context, userID, chatID uuid.UUID) (*Chat,
 		return nil, ErrNotFound
 	}
 	return &chats[0], nil
+}
+
+func (s *pgStore) GetChatSummaries(ctx context.Context, chatID uuid.UUID, userIDs []uuid.UUID) (map[uuid.UUID]*Chat, error) {
+	if len(userIDs) == 0 {
+		return map[uuid.UUID]*Chat{}, nil
+	}
+
+	rows, err := s.pool.Query(ctx,
+		`SELECT
+			cm.user_id,
+			ch.id,
+			ch.is_group,
+			ch.name,
+			other.username,
+			other.avatar_url,
+			ch.created_at,
+			ch.last_message_body AS last_message,
+			ch.last_message_at AS last_message_at,
+			GREATEST(COALESCE(ch.last_message_seq, 0) - COALESCE(cr.last_read_chat_seq, 0), 0)::int AS unread_count,
+			ch.status,
+			sr.id AS support_request_id,
+			sr.type AS support_request_type,
+			sr.message AS support_request_message,
+			sr.requester_id,
+			requester.username AS requester_username,
+			latest_support.response_type AS latest_response_type,
+			CASE
+				WHEN sr.id IS NULL THEN NULL
+				WHEN ch.status = 'request' THEN 'pending_requester_acceptance'
+				WHEN ch.status = 'active' THEN 'accepted'
+				WHEN ch.status = 'declined' THEN 'declined'
+				ELSE ch.status
+			END AS support_status,
+			CASE
+				WHEN sr.id IS NULL THEN NULL
+				WHEN ch.status = 'request' THEN sr.requester_id
+				ELSE NULL
+			END AS awaiting_user_id
+		FROM chats ch
+		JOIN chat_members cm
+			ON cm.chat_id = ch.id
+			AND cm.user_id = ANY($1::uuid[])
+		LEFT JOIN chat_reads cr
+			ON cr.chat_id = ch.id
+			AND cr.user_id = cm.user_id
+		LEFT JOIN LATERAL (
+			SELECT
+				u.username,
+				u.avatar_url
+			FROM chat_members cm2
+			JOIN users u ON u.id = cm2.user_id
+			WHERE cm2.chat_id = ch.id
+				AND cm2.user_id <> cm.user_id
+			LIMIT 1
+		) other ON NOT ch.is_group
+		LEFT JOIN support_requests sr ON sr.id = ch.support_request_id
+		LEFT JOIN users requester ON requester.id = sr.requester_id
+		LEFT JOIN LATERAL (
+			SELECT response_type
+			FROM support_responses
+			WHERE chat_id = ch.id
+			ORDER BY created_at DESC
+			LIMIT 1
+		) latest_support ON true
+		WHERE ch.id = $2`,
+		userIDs, chatID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	summaries := make(map[uuid.UUID]*Chat, len(userIDs))
+	for rows.Next() {
+		var viewerID uuid.UUID
+		var ch Chat
+		var supportRequestID *uuid.UUID
+		var requestType *string
+		var requestMessage *string
+		var requesterID *uuid.UUID
+		var requesterUsername *string
+		var latestResponseType *string
+		var supportStatus *string
+		var awaitingUserID *uuid.UUID
+		if err := rows.Scan(
+			&viewerID,
+			&ch.ID,
+			&ch.IsGroup,
+			&ch.Name,
+			&ch.Username,
+			&ch.AvatarURL,
+			&ch.CreatedAt,
+			&ch.LastMessage,
+			&ch.LastMessageAt,
+			&ch.UnreadCount,
+			&ch.Status,
+			&supportRequestID,
+			&requestType,
+			&requestMessage,
+			&requesterID,
+			&requesterUsername,
+			&latestResponseType,
+			&supportStatus,
+			&awaitingUserID,
+		); err != nil {
+			return nil, err
+		}
+		if supportRequestID != nil && requestType != nil && requesterID != nil && requesterUsername != nil && supportStatus != nil {
+			ch.SupportContext = &SupportChatContext{
+				SupportRequestID:   *supportRequestID,
+				RequestType:        *requestType,
+				RequestMessage:     requestMessage,
+				RequesterID:        *requesterID,
+				RequesterUsername:  *requesterUsername,
+				LatestResponseType: latestResponseType,
+				Status:             *supportStatus,
+				AwaitingUserID:     awaitingUserID,
+			}
+		}
+		summary := ch
+		summaries[viewerID] = &summary
+	}
+	return summaries, rows.Err()
 }
 
 func scanChats(rows pgx.Rows) ([]Chat, error) {
@@ -333,11 +403,6 @@ func (s *pgStore) GetChatStatus(ctx context.Context, chatID uuid.UUID) (string, 
 }
 
 func (s *pgStore) GetLatestMessage(ctx context.Context, chatID uuid.UUID) (*Message, error) {
-	realtimeFieldsEnabled, err := s.messageRealtimeFieldsEnabled(ctx)
-	if err != nil {
-		return nil, err
-	}
-
 	query := `SELECT
 			m.id,
 			m.chat_id,
@@ -349,54 +414,25 @@ func (s *pgStore) GetLatestMessage(ctx context.Context, chatID uuid.UUID) (*Mess
 			m.sent_at,
 			m.client_message_id,
 			m.chat_seq
-		FROM messages m
+		FROM chats ch
+		JOIN messages m ON m.id = ch.last_message_id
 		JOIN users u ON u.id = m.sender_id
-		WHERE m.chat_id = $1
-		ORDER BY m.chat_seq DESC, m.sent_at DESC
+		WHERE ch.id = $1
 		LIMIT 1`
-	if !realtimeFieldsEnabled {
-		query = `SELECT
-			m.id,
-			m.chat_id,
-			m.sender_id,
-			u.username,
-			u.avatar_url,
-			m.kind,
-			m.body,
-			m.sent_at
-		FROM messages m
-		JOIN users u ON u.id = m.sender_id
-		WHERE m.chat_id = $1
-		ORDER BY m.sent_at DESC
-		LIMIT 1`
-	}
 
 	var message Message
-	if realtimeFieldsEnabled {
-		err = s.pool.QueryRow(ctx, query, chatID).Scan(
-			&message.ID,
-			&message.ChatID,
-			&message.SenderID,
-			&message.Username,
-			&message.AvatarURL,
-			&message.Kind,
-			&message.Body,
-			&message.SentAt,
-			&message.ClientMessageID,
-			&message.ChatSeq,
-		)
-	} else {
-		err = s.pool.QueryRow(ctx, query, chatID).Scan(
-			&message.ID,
-			&message.ChatID,
-			&message.SenderID,
-			&message.Username,
-			&message.AvatarURL,
-			&message.Kind,
-			&message.Body,
-			&message.SentAt,
-		)
-	}
+	err := s.pool.QueryRow(ctx, query, chatID).Scan(
+		&message.ID,
+		&message.ChatID,
+		&message.SenderID,
+		&message.Username,
+		&message.AvatarURL,
+		&message.Kind,
+		&message.Body,
+		&message.SentAt,
+		&message.ClientMessageID,
+		&message.ChatSeq,
+	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -536,46 +572,7 @@ func (s *pgStore) IsMemberOfChat(ctx context.Context, chatID, userID uuid.UUID) 
 	return is, err
 }
 
-func (s *pgStore) messageRealtimeFieldsEnabled(ctx context.Context) (bool, error) {
-	s.messageSchemaOnce.Do(func() {
-		var clientMessageIDExists bool
-		s.messageSchemaErr = s.pool.QueryRow(ctx,
-			`SELECT EXISTS (
-				SELECT 1
-				FROM information_schema.columns
-				WHERE table_name = 'messages'
-					AND column_name = 'client_message_id'
-			)`,
-		).Scan(&clientMessageIDExists)
-		if s.messageSchemaErr != nil {
-			return
-		}
-
-		var chatSeqExists bool
-		s.messageSchemaErr = s.pool.QueryRow(ctx,
-			`SELECT EXISTS (
-				SELECT 1
-				FROM information_schema.columns
-				WHERE table_name = 'messages'
-					AND column_name = 'chat_seq'
-			)`,
-		).Scan(&chatSeqExists)
-		if s.messageSchemaErr != nil {
-			return
-		}
-
-		s.messageSchemaRealtimeFields = clientMessageIDExists && chatSeqExists
-	})
-
-	return s.messageSchemaRealtimeFields, s.messageSchemaErr
-}
-
 func (s *pgStore) ListMessages(ctx context.Context, chatID, userID uuid.UUID, before *time.Time, limit int) ([]Message, *uuid.UUID, error) {
-	realtimeFieldsEnabled, err := s.messageRealtimeFieldsEnabled(ctx)
-	if err != nil {
-		return nil, nil, err
-	}
-
 	query := `SELECT
 			m.id,
 			m.chat_id,
@@ -593,23 +590,6 @@ func (s *pgStore) ListMessages(ctx context.Context, chatID, userID uuid.UUID, be
 			AND ($2::timestamptz IS NULL OR m.sent_at < $2)
 		ORDER BY m.chat_seq DESC, m.sent_at DESC
 		LIMIT $3`
-	if !realtimeFieldsEnabled {
-		query = `SELECT
-			m.id,
-			m.chat_id,
-			m.sender_id,
-			u.username,
-			u.avatar_url,
-			m.kind,
-			m.body,
-			m.sent_at
-		FROM messages m
-		JOIN users u ON u.id = m.sender_id
-		WHERE m.chat_id = $1
-			AND ($2::timestamptz IS NULL OR m.sent_at < $2)
-		ORDER BY m.sent_at DESC
-		LIMIT $3`
-	}
 
 	rows, err := s.pool.Query(ctx, query, chatID, before, limit)
 	if err != nil {
@@ -620,14 +600,8 @@ func (s *pgStore) ListMessages(ctx context.Context, chatID, userID uuid.UUID, be
 	var msgs []Message
 	for rows.Next() {
 		var m Message
-		if realtimeFieldsEnabled {
-			if err := rows.Scan(&m.ID, &m.ChatID, &m.SenderID, &m.Username, &m.AvatarURL, &m.Kind, &m.Body, &m.SentAt, &m.ClientMessageID, &m.ChatSeq); err != nil {
-				return nil, nil, err
-			}
-		} else {
-			if err := rows.Scan(&m.ID, &m.ChatID, &m.SenderID, &m.Username, &m.AvatarURL, &m.Kind, &m.Body, &m.SentAt); err != nil {
-				return nil, nil, err
-			}
+		if err := rows.Scan(&m.ID, &m.ChatID, &m.SenderID, &m.Username, &m.AvatarURL, &m.Kind, &m.Body, &m.SentAt, &m.ClientMessageID, &m.ChatSeq); err != nil {
+			return nil, nil, err
 		}
 		msgs = append(msgs, m)
 	}
@@ -661,11 +635,6 @@ func (s *pgStore) ListMessages(ctx context.Context, chatID, userID uuid.UUID, be
 }
 
 func (s *pgStore) InsertMessage(ctx context.Context, chatID, userID uuid.UUID, body string, clientMessageID *string) (*Message, error) {
-	realtimeFieldsEnabled, err := s.messageRealtimeFieldsEnabled(ctx)
-	if err != nil {
-		return nil, err
-	}
-
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return nil, err
@@ -718,91 +687,63 @@ func (s *pgStore) InsertMessage(ctx context.Context, chatID, userID uuid.UUID, b
 		}
 	}
 
-	var chatStatus string
-	if err := tx.QueryRow(ctx, `SELECT status FROM chats WHERE id = $1 FOR UPDATE`, chatID).Scan(&chatStatus); err != nil {
-		return nil, err
-	}
-	if chatStatus != "active" {
-		return nil, ErrConflict
-	}
-
-	var nextSeq int64
-	if realtimeFieldsEnabled {
-		if err := tx.QueryRow(ctx,
-			`SELECT COALESCE(MAX(chat_seq), 0) + 1
-			FROM messages
-			WHERE chat_id = $1`,
-			chatID,
-		).Scan(&nextSeq); err != nil {
-			return nil, err
-		}
-	}
-
 	var message Message
-	if realtimeFieldsEnabled {
-		err = tx.QueryRow(ctx,
-			`WITH inserted AS (
-				INSERT INTO messages (chat_id, sender_id, kind, body, client_message_id, chat_seq)
-				VALUES ($1, $2, 'user', $3, $4, $5)
-				RETURNING id, chat_id, sender_id, kind, body, sent_at, client_message_id, chat_seq
-			)
-			SELECT
-				inserted.id,
-				inserted.chat_id,
-				inserted.sender_id,
-				u.username,
-				u.avatar_url,
-				inserted.kind,
-				inserted.body,
-				inserted.sent_at,
-				inserted.client_message_id,
-				inserted.chat_seq
+	err = tx.QueryRow(ctx,
+		`WITH updated_chat AS (
+			UPDATE chats
+			SET
+				next_message_seq = next_message_seq + 1,
+				last_message_seq = next_message_seq,
+				last_message_body = $3,
+				last_message_at = NOW(),
+				last_message_sender_id = $2
+			WHERE id = $1
+				AND status = 'active'
+			RETURNING next_message_seq - 1 AS assigned_seq, last_message_at
+		),
+		inserted AS (
+			INSERT INTO messages (chat_id, sender_id, kind, body, client_message_id, chat_seq, sent_at)
+			SELECT $1, $2, 'user', $3, $4, assigned_seq, last_message_at
+			FROM updated_chat
+			RETURNING id, chat_id, sender_id, kind, body, sent_at, client_message_id, chat_seq
+		),
+		final_chat AS (
+			UPDATE chats ch
+			SET last_message_id = inserted.id
 			FROM inserted
-			JOIN users u ON u.id = inserted.sender_id`,
-			chatID, userID, body, clientMessageID, nextSeq,
-		).Scan(
-			&message.ID,
-			&message.ChatID,
-			&message.SenderID,
-			&message.Username,
-			&message.AvatarURL,
-			&message.Kind,
-			&message.Body,
-			&message.SentAt,
-			&message.ClientMessageID,
-			&message.ChatSeq,
+			WHERE ch.id = inserted.chat_id
+			RETURNING inserted.id
 		)
-	} else {
-		err = tx.QueryRow(ctx,
-			`WITH inserted AS (
-				INSERT INTO messages (chat_id, sender_id, kind, body)
-				VALUES ($1, $2, 'user', $3)
-				RETURNING id, chat_id, sender_id, kind, body, sent_at
-			)
-			SELECT
-				inserted.id,
-				inserted.chat_id,
-				inserted.sender_id,
-				u.username,
-				u.avatar_url,
-				inserted.kind,
-				inserted.body,
-				inserted.sent_at
-			FROM inserted
-			JOIN users u ON u.id = inserted.sender_id`,
-			chatID, userID, body,
-		).Scan(
-			&message.ID,
-			&message.ChatID,
-			&message.SenderID,
-			&message.Username,
-			&message.AvatarURL,
-			&message.Kind,
-			&message.Body,
-			&message.SentAt,
-		)
-	}
+		SELECT
+			inserted.id,
+			inserted.chat_id,
+			inserted.sender_id,
+			u.username,
+			u.avatar_url,
+			inserted.kind,
+			inserted.body,
+			inserted.sent_at,
+			inserted.client_message_id,
+			inserted.chat_seq
+		FROM inserted
+		JOIN users u ON u.id = inserted.sender_id`,
+		chatID, userID, body, clientMessageID,
+	).Scan(
+		&message.ID,
+		&message.ChatID,
+		&message.SenderID,
+		&message.Username,
+		&message.AvatarURL,
+		&message.Kind,
+		&message.Body,
+		&message.SentAt,
+		&message.ClientMessageID,
+		&message.ChatSeq,
+	)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrConflict
+		}
 		return nil, err
 	}
 

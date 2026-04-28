@@ -56,6 +56,11 @@ func (s *cachedStore) DiscoverMeetups(ctx context.Context, userID uuid.UUID, par
 	if err != nil {
 		return s.inner.DiscoverMeetups(ctx, userID, params)
 	}
+
+	if store, ok := s.inner.(*pgStore); ok && store.recommendedPipelineV2 && params.Sort == "recommended" {
+		return s.discoverRecommendedMeetupsFromWindowCache(ctx, store, userID, params, version)
+	}
+
 	key := s.cache.Key(
 		"meetups", "discover",
 		"v", strconv.FormatInt(version, 10),
@@ -88,6 +93,56 @@ func (s *cachedStore) DiscoverMeetups(ctx context.Context, userID uuid.UUID, par
 		return nil, err
 	}
 	return &page, nil
+}
+
+func (s *cachedStore) discoverRecommendedMeetupsFromWindowCache(ctx context.Context, store *pgStore, userID uuid.UUID, params DiscoverMeetupsParams, version int64) (*CursorPage[Meetup], error) {
+	viewer, err := store.loadViewerContext(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+
+	rankLimit := recommendedRankedWindowLimit(params.Limit, params.Cursor)
+	key := s.cache.Key(
+		"meetups", "discover", "recommended_window",
+		"v", strconv.FormatInt(version, 10),
+		"pipeline", discoverPipelineCacheVersion(params.Sort),
+		"viewer", userID.String(),
+		"q", encodeMeetupPart(params.Query),
+		"category", encodeMeetupPart(params.CategorySlug),
+		"city", encodeMeetupPart(params.City),
+		"distance", encodeOptionalInt(params.DistanceKM),
+		"type", encodeMeetupPart(params.EventType),
+		"date_preset", encodeMeetupPart(params.DatePreset),
+		"date_from", encodeOptionalTime(params.DateFrom),
+		"date_to", encodeOptionalTime(params.DateTo),
+		"day", encodeIntSlice(params.DayOfWeek),
+		"time", encodeStringSlice(params.TimeOfDay),
+		"open", strconv.FormatBool(params.OpenSpotsOnly),
+		"sort", encodeMeetupPart(params.Sort),
+		"ranked_limit", strconv.Itoa(rankLimit),
+	)
+
+	var ranked []recommendedCandidate
+	if err := s.cache.ReadThrough(ctx, key, meetupsListTTL, &ranked, func(ctx context.Context, dest any) error {
+		rankedParams := params
+		rankedParams.Cursor = ""
+		rankedParams.Limit = rankLimit
+
+		loaded, err := store.rankRecommendedMeetups(ctx, userID, rankedParams, viewer, time.Now().UTC())
+		if err != nil {
+			return err
+		}
+		*dest.(*[]recommendedCandidate) = loaded
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+
+	page := sliceRecommendedMeetups(ranked, params.Limit, params.Cursor)
+	if len(page.Items) > 0 {
+		store.decorateMeetups(page.Items, viewer)
+	}
+	return page, nil
 }
 
 func discoverPipelineCacheVersion(sortKey string) string {
