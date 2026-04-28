@@ -16,9 +16,6 @@ CREATE TABLE IF NOT EXISTS users (
     sober_since DATE,
     subscription_tier TEXT NOT NULL DEFAULT 'free',
     subscription_status TEXT NOT NULL DEFAULT 'inactive',
-    is_available_to_support BOOLEAN NOT NULL DEFAULT FALSE,
-    support_modes TEXT[] NOT NULL DEFAULT '{}',
-    support_updated_at TIMESTAMPTZ,
     friend_count INT NOT NULL DEFAULT 0,
     lat DOUBLE PRECISION,
     lng DOUBLE PRECISION,
@@ -42,9 +39,6 @@ CREATE UNIQUE INDEX IF NOT EXISTS users_email_unique_idx
 
 CREATE UNIQUE INDEX IF NOT EXISTS users_username_unique_idx
     ON users(username);
-
-CREATE INDEX IF NOT EXISTS idx_users_available_to_support
-    ON users(id) WHERE is_available_to_support = true;
 
 CREATE INDEX IF NOT EXISTS idx_users_username_trgm
     ON users USING GIN(username gin_trgm_ops);
@@ -137,6 +131,211 @@ CREATE INDEX IF NOT EXISTS idx_comments_post_id_created_at
 
 CREATE INDEX IF NOT EXISTS idx_comments_user_id
     ON comments(user_id);
+
+CREATE TABLE IF NOT EXISTS post_shares (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    post_id UUID NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    commentary TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_post_shares_user_created_at
+    ON post_shares(user_id, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_post_shares_post_created_at
+    ON post_shares(post_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS feed_hidden_posts (
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    item_id UUID NOT NULL,
+    item_kind TEXT NOT NULL CHECK (item_kind IN ('post', 'reshare')),
+    hidden_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (user_id, item_id, item_kind)
+);
+
+CREATE INDEX IF NOT EXISTS idx_feed_hidden_posts_user_hidden_at
+    ON feed_hidden_posts(user_id, hidden_at DESC);
+
+CREATE TABLE IF NOT EXISTS feed_muted_authors (
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    author_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    muted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (user_id, author_id),
+    CHECK (user_id <> author_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_feed_muted_authors_user_muted_at
+    ON feed_muted_authors(user_id, muted_at DESC);
+
+CREATE TABLE IF NOT EXISTS feed_impressions (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    item_id UUID NOT NULL,
+    item_kind TEXT NOT NULL CHECK (item_kind IN ('post', 'reshare')),
+    feed_mode TEXT NOT NULL CHECK (feed_mode IN ('friends', 'for_you')),
+    session_id TEXT NOT NULL DEFAULT '',
+    position INT NOT NULL DEFAULT 0,
+    served_at TIMESTAMPTZ NOT NULL,
+    viewed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    view_ms INT NOT NULL DEFAULT 0 CHECK (view_ms >= 0),
+    was_clicked BOOLEAN NOT NULL DEFAULT FALSE,
+    was_liked BOOLEAN NOT NULL DEFAULT FALSE,
+    was_commented BOOLEAN NOT NULL DEFAULT FALSE
+);
+
+CREATE INDEX IF NOT EXISTS idx_feed_impressions_user_viewed_at
+    ON feed_impressions(user_id, viewed_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_feed_impressions_item_viewed_at
+    ON feed_impressions(item_id, item_kind, viewed_at DESC);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_feed_impressions_session_item_served
+    ON feed_impressions(user_id, item_id, item_kind, feed_mode, session_id, served_at);
+
+CREATE TABLE IF NOT EXISTS feed_events (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    item_id UUID NOT NULL,
+    item_kind TEXT NOT NULL CHECK (item_kind IN ('post', 'reshare')),
+    feed_mode TEXT NOT NULL CHECK (feed_mode IN ('friends', 'for_you')),
+    event_type TEXT NOT NULL CHECK (
+        event_type IN (
+            'impression',
+            'open_post',
+            'open_comments',
+            'comment',
+            'like',
+            'unlike',
+            'share_open',
+            'share_create',
+            'hide',
+            'mute_author'
+        )
+    ),
+    position INT,
+    event_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    payload JSONB NOT NULL DEFAULT '{}'::jsonb
+);
+
+CREATE INDEX IF NOT EXISTS idx_feed_events_user_event_at
+    ON feed_events(user_id, event_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_feed_events_item_event_at
+    ON feed_events(item_id, item_kind, event_at DESC);
+
+CREATE TABLE IF NOT EXISTS post_stats_daily (
+    post_id UUID NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+    bucket_date DATE NOT NULL,
+    impression_count INT NOT NULL DEFAULT 0,
+    unique_viewer_count INT NOT NULL DEFAULT 0,
+    like_count INT NOT NULL DEFAULT 0,
+    comment_count INT NOT NULL DEFAULT 0,
+    share_count INT NOT NULL DEFAULT 0,
+    hide_count INT NOT NULL DEFAULT 0,
+    report_count INT NOT NULL DEFAULT 0,
+    PRIMARY KEY (post_id, bucket_date)
+);
+
+CREATE INDEX IF NOT EXISTS idx_post_stats_daily_bucket_date
+    ON post_stats_daily(bucket_date DESC);
+
+CREATE TABLE IF NOT EXISTS post_quality_features (
+    post_id UUID PRIMARY KEY REFERENCES posts(id) ON DELETE CASCADE,
+    author_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    has_body BOOLEAN NOT NULL DEFAULT FALSE,
+    has_image BOOLEAN NOT NULL DEFAULT FALSE,
+    body_length INT NOT NULL DEFAULT 0,
+    total_impression_count INT NOT NULL DEFAULT 0,
+    total_like_count INT NOT NULL DEFAULT 0,
+    total_comment_count INT NOT NULL DEFAULT 0,
+    total_share_count INT NOT NULL DEFAULT 0,
+    total_hide_count INT NOT NULL DEFAULT 0,
+    recent_impression_count INT NOT NULL DEFAULT 0,
+    recent_like_count INT NOT NULL DEFAULT 0,
+    recent_comment_count INT NOT NULL DEFAULT 0,
+    recent_share_count INT NOT NULL DEFAULT 0,
+    recent_hide_count INT NOT NULL DEFAULT 0,
+    quality_score DOUBLE PRECISION NOT NULL DEFAULT 0,
+    last_engagement_at TIMESTAMPTZ,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_post_quality_features_author_id
+    ON post_quality_features(author_id);
+
+CREATE TABLE IF NOT EXISTS author_feed_stats (
+    author_id UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    recent_post_count INT NOT NULL DEFAULT 0,
+    recent_share_count INT NOT NULL DEFAULT 0,
+    rolling_impression_count INT NOT NULL DEFAULT 0,
+    rolling_like_count INT NOT NULL DEFAULT 0,
+    rolling_comment_count INT NOT NULL DEFAULT 0,
+    rolling_hide_count INT NOT NULL DEFAULT 0,
+    last_post_at TIMESTAMPTZ,
+    last_share_at TIMESTAMPTZ,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS share_reactions (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    share_id UUID NOT NULL REFERENCES post_shares(id) ON DELETE CASCADE,
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    type TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (share_id, user_id, type)
+);
+
+CREATE INDEX IF NOT EXISTS idx_share_reactions_share_id_type
+    ON share_reactions(share_id, type);
+
+CREATE INDEX IF NOT EXISTS idx_share_reactions_user_created_at
+    ON share_reactions(user_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS share_comments (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    share_id UUID NOT NULL REFERENCES post_shares(id) ON DELETE CASCADE,
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    body TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_share_comments_share_id_created_at
+    ON share_comments(share_id, created_at);
+
+CREATE INDEX IF NOT EXISTS idx_share_comments_user_id
+    ON share_comments(user_id);
+
+CREATE TABLE IF NOT EXISTS share_comment_mentions (
+    share_comment_id UUID NOT NULL REFERENCES share_comments(id) ON DELETE CASCADE,
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    PRIMARY KEY (share_comment_id, user_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_share_comment_mentions_user_id
+    ON share_comment_mentions(user_id);
+
+CREATE TABLE IF NOT EXISTS share_quality_features (
+    share_id UUID PRIMARY KEY REFERENCES post_shares(id) ON DELETE CASCADE,
+    author_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    original_post_id UUID NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+    has_commentary BOOLEAN NOT NULL DEFAULT FALSE,
+    commentary_length INT NOT NULL DEFAULT 0,
+    total_impression_count INT NOT NULL DEFAULT 0,
+    total_like_count INT NOT NULL DEFAULT 0,
+    total_comment_count INT NOT NULL DEFAULT 0,
+    total_hide_count INT NOT NULL DEFAULT 0,
+    recent_impression_count INT NOT NULL DEFAULT 0,
+    recent_like_count INT NOT NULL DEFAULT 0,
+    recent_comment_count INT NOT NULL DEFAULT 0,
+    recent_hide_count INT NOT NULL DEFAULT 0,
+    quality_score DOUBLE PRECISION NOT NULL DEFAULT 0,
+    last_engagement_at TIMESTAMPTZ,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_share_quality_features_author_id
+    ON share_quality_features(author_id);
 
 CREATE TABLE IF NOT EXISTS event_categories (
     slug TEXT PRIMARY KEY,
@@ -237,15 +436,20 @@ CREATE TABLE IF NOT EXISTS support_requests (
         'need_to_talk',
         'need_distraction',
         'need_encouragement',
-        'need_company'
+        'need_in_person_help'
     )),
     message TEXT,
-    audience TEXT NOT NULL CHECK (audience IN ('friends', 'city', 'community')),
     city TEXT,
-    status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'matched', 'closed', 'expired')),
-    matched_user_id UUID REFERENCES users(id) ON DELETE SET NULL,
-    expires_at TIMESTAMPTZ NOT NULL,
+    channel TEXT NOT NULL DEFAULT 'community' CHECK (channel IN ('immediate', 'community')),
+    urgency TEXT NOT NULL DEFAULT 'when_you_can' CHECK (urgency IN ('when_you_can', 'soon', 'right_now')),
+    status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'active', 'closed')),
+    privacy_level TEXT NOT NULL DEFAULT 'standard' CHECK (privacy_level IN ('standard', 'private')),
+    accepted_response_id UUID,
+    accepted_responder_id UUID REFERENCES users(id) ON DELETE SET NULL,
+    accepted_at TIMESTAMPTZ,
+    chat_id UUID,
     response_count INT NOT NULL DEFAULT 0,
+    last_response_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     closed_at TIMESTAMPTZ
 );
@@ -253,17 +457,24 @@ CREATE TABLE IF NOT EXISTS support_requests (
 CREATE INDEX IF NOT EXISTS idx_support_requests_requester_created_at
     ON support_requests(requester_id, created_at DESC);
 
-CREATE INDEX IF NOT EXISTS idx_support_requests_status_expires_at
-    ON support_requests(status, expires_at);
+CREATE INDEX IF NOT EXISTS idx_support_requests_channel_status_created_at
+    ON support_requests(channel, status, created_at DESC);
 
-CREATE INDEX IF NOT EXISTS idx_support_requests_city_status_expires_at
-    ON support_requests(city, status, expires_at);
+CREATE INDEX IF NOT EXISTS idx_support_requests_open_queue
+    ON support_requests(channel, created_at, id)
+    WHERE status = 'open';
+
+CREATE INDEX IF NOT EXISTS idx_support_requests_requester_status_created_at
+    ON support_requests(requester_id, status, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_support_requests_accepted_responder_status_created_at
+    ON support_requests(accepted_responder_id, status, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS chats (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     is_group BOOLEAN NOT NULL DEFAULT FALSE,
     name TEXT,
-    status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('request', 'active', 'declined')),
+    status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('request', 'active', 'declined', 'closed')),
     support_request_id UUID REFERENCES support_requests(id) ON DELETE SET NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -286,7 +497,10 @@ CREATE TABLE IF NOT EXISTS messages (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     chat_id UUID NOT NULL REFERENCES chats(id) ON DELETE CASCADE,
     sender_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL DEFAULT 'user' CHECK (kind IN ('user', 'system')),
     body TEXT,
+    client_message_id TEXT,
+    chat_seq BIGINT,
     sent_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
@@ -299,14 +513,23 @@ CREATE INDEX IF NOT EXISTS idx_messages_sent_at
 CREATE INDEX IF NOT EXISTS idx_messages_chat_id_sent_at
     ON messages(chat_id, sent_at DESC);
 
+CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_chat_id_client_message_id
+    ON messages(chat_id, client_message_id)
+    WHERE client_message_id IS NOT NULL;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_chat_id_chat_seq
+    ON messages(chat_id, chat_seq)
+    WHERE chat_seq IS NOT NULL;
+
 CREATE TABLE IF NOT EXISTS support_responses (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     support_request_id UUID NOT NULL REFERENCES support_requests(id) ON DELETE CASCADE,
     responder_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    response_type TEXT NOT NULL CHECK (response_type IN ('can_chat', 'check_in_later', 'nearby')),
+    response_type TEXT NOT NULL CHECK (response_type IN ('can_chat', 'check_in_later', 'can_meet')),
     message TEXT,
     scheduled_for TIMESTAMPTZ,
     chat_id UUID REFERENCES chats(id) ON DELETE SET NULL,
+    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'accepted', 'not_selected')),
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE (support_request_id, responder_id, response_type)
 );
@@ -319,6 +542,20 @@ CREATE INDEX IF NOT EXISTS idx_support_responses_responder_request
 
 CREATE INDEX IF NOT EXISTS idx_support_responses_chat_id
     ON support_responses(chat_id);
+
+ALTER TABLE support_requests
+    DROP CONSTRAINT IF EXISTS support_requests_accepted_response_id_fkey;
+
+ALTER TABLE support_requests
+    DROP CONSTRAINT IF EXISTS support_requests_chat_id_fkey;
+
+ALTER TABLE support_requests
+    ADD CONSTRAINT support_requests_accepted_response_id_fkey
+        FOREIGN KEY (accepted_response_id) REFERENCES support_responses(id) ON DELETE SET NULL;
+
+ALTER TABLE support_requests
+    ADD CONSTRAINT support_requests_chat_id_fkey
+        FOREIGN KEY (chat_id) REFERENCES chats(id) ON DELETE SET NULL;
 
 CREATE TABLE IF NOT EXISTS friendships (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

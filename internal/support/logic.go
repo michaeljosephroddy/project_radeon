@@ -6,66 +6,20 @@ import (
 	"time"
 )
 
-type createSupportRequestInput struct {
-	Type               string  `json:"type"`
-	Message            *string `json:"message"`
-	Urgency            string  `json:"urgency"`
-	PriorityVisibility bool    `json:"priority_visibility"`
-}
-
 type createSupportResponseInput struct {
 	ResponseType string  `json:"response_type"`
 	Message      *string `json:"message"`
 	ScheduledFor *string `json:"scheduled_for"`
 }
 
-type createRoutedSupportRequestInput struct {
-	Type               string  `json:"type"`
-	Message            *string `json:"message"`
-	Urgency            string  `json:"urgency"`
-	PrivacyLevel       string  `json:"privacy_level"`
-	PriorityVisibility bool    `json:"priority_visibility"`
+type createChannelSupportRequestInput struct {
+	Type         string  `json:"type"`
+	Message      *string `json:"message"`
+	Urgency      string  `json:"urgency"`
+	PrivacyLevel string  `json:"privacy_level"`
 }
 
-type updateSupportResponderProfileInput struct {
-	IsAvailableForImmediate bool     `json:"is_available_for_immediate"`
-	IsAvailableForCommunity bool     `json:"is_available_for_community"`
-	SupportsChat            bool     `json:"supports_chat"`
-	SupportsCheckIns        bool     `json:"supports_check_ins"`
-	SupportsInPerson        bool     `json:"supports_in_person"`
-	MaxConcurrentSessions   int      `json:"max_concurrent_sessions"`
-	Languages               []string `json:"languages"`
-	AvailableNow            bool     `json:"available_now"`
-	IsActive                bool     `json:"is_active"`
-}
-
-func normalizeCreateSupportRequestInput(input createSupportRequestInput) createSupportRequestInput {
-	input.Type = strings.TrimSpace(input.Type)
-	input.Urgency = strings.TrimSpace(input.Urgency)
-	if input.Urgency == "" {
-		input.Urgency = "when_you_can"
-	}
-	if input.Message != nil {
-		msg := strings.TrimSpace(*input.Message)
-		input.Message = &msg
-	}
-	return input
-}
-
-func validateCreateSupportRequestInput(input createSupportRequestInput) map[string]string {
-	errs := map[string]string{}
-	if input.Type == "" {
-		errs["type"] = "required"
-	} else if !validSupportTypes[input.Type] {
-		errs["type"] = "invalid"
-	}
-	if !validSupportUrgencies[input.Urgency] {
-		errs["urgency"] = "invalid"
-	}
-	return errs
-}
-
-func normalizeCreateRoutedSupportRequestInput(input createRoutedSupportRequestInput) createRoutedSupportRequestInput {
+func normalizeCreateChannelSupportRequestInput(input createChannelSupportRequestInput) createChannelSupportRequestInput {
 	input.Type = strings.TrimSpace(input.Type)
 	input.Urgency = strings.TrimSpace(input.Urgency)
 	input.PrivacyLevel = strings.TrimSpace(input.PrivacyLevel)
@@ -82,7 +36,7 @@ func normalizeCreateRoutedSupportRequestInput(input createRoutedSupportRequestIn
 	return input
 }
 
-func validateCreateRoutedSupportRequestInput(input createRoutedSupportRequestInput) map[string]string {
+func validateCreateChannelSupportRequestInput(input createChannelSupportRequestInput) map[string]string {
 	errs := map[string]string{}
 	if input.Type == "" {
 		errs["type"] = "required"
@@ -94,29 +48,6 @@ func validateCreateRoutedSupportRequestInput(input createRoutedSupportRequestInp
 	}
 	if !validSupportPrivacyLevels[input.PrivacyLevel] {
 		errs["privacy_level"] = "invalid"
-	}
-	return errs
-}
-
-func normalizeUpdateSupportResponderProfileInput(input updateSupportResponderProfileInput) updateSupportResponderProfileInput {
-	languages := make([]string, 0, len(input.Languages))
-	for _, language := range input.Languages {
-		trimmed := strings.TrimSpace(language)
-		if trimmed != "" {
-			languages = append(languages, trimmed)
-		}
-	}
-	input.Languages = languages
-	if input.MaxConcurrentSessions == 0 {
-		input.MaxConcurrentSessions = 2
-	}
-	return input
-}
-
-func validateUpdateSupportResponderProfileInput(input updateSupportResponderProfileInput) map[string]string {
-	errs := map[string]string{}
-	if input.MaxConcurrentSessions < 0 || input.MaxConcurrentSessions > 10 {
-		errs["max_concurrent_sessions"] = "invalid"
 	}
 	return errs
 }

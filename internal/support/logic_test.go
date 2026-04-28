@@ -4,15 +4,16 @@ import (
 	"testing"
 )
 
-func TestNormalizeCreateSupportRequestInput(t *testing.T) {
+func TestNormalizeCreateChannelSupportRequestInput(t *testing.T) {
 	message := "  need a chat  "
-	input := normalizeCreateSupportRequestInput(createSupportRequestInput{
-		Type:    " need_to_talk ",
-		Urgency: " soon ",
-		Message: &message,
+	input := normalizeCreateChannelSupportRequestInput(createChannelSupportRequestInput{
+		Type:         " need_to_talk ",
+		Urgency:      " soon ",
+		PrivacyLevel: " standard ",
+		Message:      &message,
 	})
 
-	if input.Type != "need_to_talk" || input.Urgency != "soon" {
+	if input.Type != "need_to_talk" || input.Urgency != "soon" || input.PrivacyLevel != "standard" {
 		t.Fatalf("unexpected normalized input: %+v", input)
 	}
 	if input.Message == nil || *input.Message != "need a chat" {
@@ -20,33 +21,44 @@ func TestNormalizeCreateSupportRequestInput(t *testing.T) {
 	}
 }
 
-func TestNormalizeCreateSupportRequestInputDefaultsUrgency(t *testing.T) {
-	input := normalizeCreateSupportRequestInput(createSupportRequestInput{Type: "need_to_talk"})
-	if input.Urgency != "when_you_can" {
-		t.Fatalf("expected default urgency 'when_you_can', got %q", input.Urgency)
+func TestNormalizeCreateChannelSupportRequestInputDefaults(t *testing.T) {
+	input := normalizeCreateChannelSupportRequestInput(createChannelSupportRequestInput{Type: "need_to_talk"})
+	if input.Urgency != "when_you_can" || input.PrivacyLevel != "standard" {
+		t.Fatalf("unexpected defaults: %+v", input)
 	}
 }
 
-func TestValidateCreateSupportRequestInput(t *testing.T) {
-	errs := validateCreateSupportRequestInput(createSupportRequestInput{})
+func TestValidateCreateChannelSupportRequestInput(t *testing.T) {
+	errs := validateCreateChannelSupportRequestInput(createChannelSupportRequestInput{})
 	if errs["type"] == "" {
 		t.Fatalf("expected type error, errs: %+v", errs)
 	}
 
-	errs = validateCreateSupportRequestInput(createSupportRequestInput{
-		Type:    "bad",
-		Urgency: "when_you_can",
+	errs = validateCreateChannelSupportRequestInput(createChannelSupportRequestInput{
+		Type:         "bad",
+		Urgency:      "when_you_can",
+		PrivacyLevel: "standard",
 	})
 	if errs["type"] != "invalid" {
 		t.Fatalf("unexpected errs: %+v", errs)
 	}
 
-	errs = validateCreateSupportRequestInput(createSupportRequestInput{
-		Type:    "need_to_talk",
-		Urgency: "bad_urgency",
+	errs = validateCreateChannelSupportRequestInput(createChannelSupportRequestInput{
+		Type:         "need_to_talk",
+		Urgency:      "bad_urgency",
+		PrivacyLevel: "standard",
 	})
 	if errs["urgency"] != "invalid" {
 		t.Fatalf("unexpected urgency error, errs: %+v", errs)
+	}
+
+	errs = validateCreateChannelSupportRequestInput(createChannelSupportRequestInput{
+		Type:         "need_to_talk",
+		Urgency:      "soon",
+		PrivacyLevel: "bad_privacy",
+	})
+	if errs["privacy_level"] != "invalid" {
+		t.Fatalf("unexpected privacy error, errs: %+v", errs)
 	}
 }
 

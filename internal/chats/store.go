@@ -14,6 +14,7 @@ import (
 var (
 	ErrNotFound  = errors.New("not found")
 	ErrForbidden = errors.New("forbidden")
+	ErrConflict  = errors.New("conflict")
 )
 
 type pgStore struct {
@@ -115,7 +116,7 @@ func (s *pgStore) ListChats(ctx context.Context, userID uuid.UUID, query string,
 		) latest_support ON true
 		WHERE (
 				ch.status IN ('active', 'request')
-				OR (ch.status = 'declined' AND ch.support_request_id IS NOT NULL)
+				OR (ch.status IN ('declined', 'closed') AND ch.support_request_id IS NOT NULL)
 			)
 			AND (
 				$2 = ''
@@ -331,6 +332,80 @@ func (s *pgStore) GetChatStatus(ctx context.Context, chatID uuid.UUID) (string, 
 	return status, err
 }
 
+func (s *pgStore) GetLatestMessage(ctx context.Context, chatID uuid.UUID) (*Message, error) {
+	realtimeFieldsEnabled, err := s.messageRealtimeFieldsEnabled(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	query := `SELECT
+			m.id,
+			m.chat_id,
+			m.sender_id,
+			u.username,
+			u.avatar_url,
+			m.kind,
+			m.body,
+			m.sent_at,
+			m.client_message_id,
+			m.chat_seq
+		FROM messages m
+		JOIN users u ON u.id = m.sender_id
+		WHERE m.chat_id = $1
+		ORDER BY m.chat_seq DESC, m.sent_at DESC
+		LIMIT 1`
+	if !realtimeFieldsEnabled {
+		query = `SELECT
+			m.id,
+			m.chat_id,
+			m.sender_id,
+			u.username,
+			u.avatar_url,
+			m.kind,
+			m.body,
+			m.sent_at
+		FROM messages m
+		JOIN users u ON u.id = m.sender_id
+		WHERE m.chat_id = $1
+		ORDER BY m.sent_at DESC
+		LIMIT 1`
+	}
+
+	var message Message
+	if realtimeFieldsEnabled {
+		err = s.pool.QueryRow(ctx, query, chatID).Scan(
+			&message.ID,
+			&message.ChatID,
+			&message.SenderID,
+			&message.Username,
+			&message.AvatarURL,
+			&message.Kind,
+			&message.Body,
+			&message.SentAt,
+			&message.ClientMessageID,
+			&message.ChatSeq,
+		)
+	} else {
+		err = s.pool.QueryRow(ctx, query, chatID).Scan(
+			&message.ID,
+			&message.ChatID,
+			&message.SenderID,
+			&message.Username,
+			&message.AvatarURL,
+			&message.Kind,
+			&message.Body,
+			&message.SentAt,
+		)
+	}
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &message, nil
+}
+
 func (s *pgStore) ListChatMemberIDs(ctx context.Context, chatID uuid.UUID) ([]uuid.UUID, error) {
 	rows, err := s.pool.Query(ctx,
 		`SELECT user_id
@@ -507,6 +582,7 @@ func (s *pgStore) ListMessages(ctx context.Context, chatID, userID uuid.UUID, be
 			m.sender_id,
 			u.username,
 			u.avatar_url,
+			m.kind,
 			m.body,
 			m.sent_at,
 			m.client_message_id,
@@ -524,6 +600,7 @@ func (s *pgStore) ListMessages(ctx context.Context, chatID, userID uuid.UUID, be
 			m.sender_id,
 			u.username,
 			u.avatar_url,
+			m.kind,
 			m.body,
 			m.sent_at
 		FROM messages m
@@ -544,11 +621,11 @@ func (s *pgStore) ListMessages(ctx context.Context, chatID, userID uuid.UUID, be
 	for rows.Next() {
 		var m Message
 		if realtimeFieldsEnabled {
-			if err := rows.Scan(&m.ID, &m.ChatID, &m.SenderID, &m.Username, &m.AvatarURL, &m.Body, &m.SentAt, &m.ClientMessageID, &m.ChatSeq); err != nil {
+			if err := rows.Scan(&m.ID, &m.ChatID, &m.SenderID, &m.Username, &m.AvatarURL, &m.Kind, &m.Body, &m.SentAt, &m.ClientMessageID, &m.ChatSeq); err != nil {
 				return nil, nil, err
 			}
 		} else {
-			if err := rows.Scan(&m.ID, &m.ChatID, &m.SenderID, &m.Username, &m.AvatarURL, &m.Body, &m.SentAt); err != nil {
+			if err := rows.Scan(&m.ID, &m.ChatID, &m.SenderID, &m.Username, &m.AvatarURL, &m.Kind, &m.Body, &m.SentAt); err != nil {
 				return nil, nil, err
 			}
 		}
@@ -589,40 +666,6 @@ func (s *pgStore) InsertMessage(ctx context.Context, chatID, userID uuid.UUID, b
 		return nil, err
 	}
 
-	if !realtimeFieldsEnabled {
-		var message Message
-		err = s.pool.QueryRow(ctx,
-			`WITH inserted AS (
-				INSERT INTO messages (chat_id, sender_id, body)
-				VALUES ($1, $2, $3)
-				RETURNING id, chat_id, sender_id, body, sent_at
-			)
-			SELECT
-				inserted.id,
-				inserted.chat_id,
-				inserted.sender_id,
-				u.username,
-				u.avatar_url,
-				inserted.body,
-				inserted.sent_at
-			FROM inserted
-			JOIN users u ON u.id = inserted.sender_id`,
-			chatID, userID, body,
-		).Scan(
-			&message.ID,
-			&message.ChatID,
-			&message.SenderID,
-			&message.Username,
-			&message.AvatarURL,
-			&message.Body,
-			&message.SentAt,
-		)
-		if err != nil {
-			return nil, err
-		}
-		return &message, nil
-	}
-
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return nil, err
@@ -640,6 +683,7 @@ func (s *pgStore) InsertMessage(ctx context.Context, chatID, userID uuid.UUID, b
 					m.sender_id,
 					u.username,
 					u.avatar_url,
+					m.kind,
 					m.body,
 					m.sent_at,
 					m.client_message_id,
@@ -656,6 +700,7 @@ func (s *pgStore) InsertMessage(ctx context.Context, chatID, userID uuid.UUID, b
 				&existing.SenderID,
 				&existing.Username,
 				&existing.AvatarURL,
+				&existing.Kind,
 				&existing.Body,
 				&existing.SentAt,
 				&existing.ClientMessageID,
@@ -673,51 +718,90 @@ func (s *pgStore) InsertMessage(ctx context.Context, chatID, userID uuid.UUID, b
 		}
 	}
 
-	if _, err := tx.Exec(ctx, `SELECT id FROM chats WHERE id = $1 FOR UPDATE`, chatID); err != nil {
+	var chatStatus string
+	if err := tx.QueryRow(ctx, `SELECT status FROM chats WHERE id = $1 FOR UPDATE`, chatID).Scan(&chatStatus); err != nil {
 		return nil, err
+	}
+	if chatStatus != "active" {
+		return nil, ErrConflict
 	}
 
 	var nextSeq int64
-	if err := tx.QueryRow(ctx,
-		`SELECT COALESCE(MAX(chat_seq), 0) + 1
-		FROM messages
-		WHERE chat_id = $1`,
-		chatID,
-	).Scan(&nextSeq); err != nil {
-		return nil, err
+	if realtimeFieldsEnabled {
+		if err := tx.QueryRow(ctx,
+			`SELECT COALESCE(MAX(chat_seq), 0) + 1
+			FROM messages
+			WHERE chat_id = $1`,
+			chatID,
+		).Scan(&nextSeq); err != nil {
+			return nil, err
+		}
 	}
 
 	var message Message
-	err = tx.QueryRow(ctx,
-		`WITH inserted AS (
-			INSERT INTO messages (chat_id, sender_id, body, client_message_id, chat_seq)
-			VALUES ($1, $2, $3, $4, $5)
-			RETURNING id, chat_id, sender_id, body, sent_at, client_message_id, chat_seq
+	if realtimeFieldsEnabled {
+		err = tx.QueryRow(ctx,
+			`WITH inserted AS (
+				INSERT INTO messages (chat_id, sender_id, kind, body, client_message_id, chat_seq)
+				VALUES ($1, $2, 'user', $3, $4, $5)
+				RETURNING id, chat_id, sender_id, kind, body, sent_at, client_message_id, chat_seq
+			)
+			SELECT
+				inserted.id,
+				inserted.chat_id,
+				inserted.sender_id,
+				u.username,
+				u.avatar_url,
+				inserted.kind,
+				inserted.body,
+				inserted.sent_at,
+				inserted.client_message_id,
+				inserted.chat_seq
+			FROM inserted
+			JOIN users u ON u.id = inserted.sender_id`,
+			chatID, userID, body, clientMessageID, nextSeq,
+		).Scan(
+			&message.ID,
+			&message.ChatID,
+			&message.SenderID,
+			&message.Username,
+			&message.AvatarURL,
+			&message.Kind,
+			&message.Body,
+			&message.SentAt,
+			&message.ClientMessageID,
+			&message.ChatSeq,
 		)
-		SELECT
-			inserted.id,
-			inserted.chat_id,
-			inserted.sender_id,
-			u.username,
-			u.avatar_url,
-			inserted.body,
-			inserted.sent_at,
-			inserted.client_message_id,
-			inserted.chat_seq
-		FROM inserted
-		JOIN users u ON u.id = inserted.sender_id`,
-		chatID, userID, body, clientMessageID, nextSeq,
-	).Scan(
-		&message.ID,
-		&message.ChatID,
-		&message.SenderID,
-		&message.Username,
-		&message.AvatarURL,
-		&message.Body,
-		&message.SentAt,
-		&message.ClientMessageID,
-		&message.ChatSeq,
-	)
+	} else {
+		err = tx.QueryRow(ctx,
+			`WITH inserted AS (
+				INSERT INTO messages (chat_id, sender_id, kind, body)
+				VALUES ($1, $2, 'user', $3)
+				RETURNING id, chat_id, sender_id, kind, body, sent_at
+			)
+			SELECT
+				inserted.id,
+				inserted.chat_id,
+				inserted.sender_id,
+				u.username,
+				u.avatar_url,
+				inserted.kind,
+				inserted.body,
+				inserted.sent_at
+			FROM inserted
+			JOIN users u ON u.id = inserted.sender_id`,
+			chatID, userID, body,
+		).Scan(
+			&message.ID,
+			&message.ChatID,
+			&message.SenderID,
+			&message.Username,
+			&message.AvatarURL,
+			&message.Kind,
+			&message.Body,
+			&message.SentAt,
+		)
+	}
 	if err != nil {
 		return nil, err
 	}

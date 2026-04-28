@@ -13,44 +13,20 @@ type stubQuerier struct {
 	getSupportRequestCalls int
 }
 
-func (s *stubQuerier) GetSupportProfile(context.Context, uuid.UUID) (*SupportProfile, error) {
-	return nil, nil
-}
-
-func (s *stubQuerier) UpdateSupportProfile(context.Context, uuid.UUID, bool) (*SupportProfile, error) {
-	return nil, nil
-}
-
-func (s *stubQuerier) GetSupportHome(context.Context, uuid.UUID) (*SupportHomePayload, error) {
-	return &SupportHomePayload{}, nil
-}
-
-func (s *stubQuerier) GetSupportResponderProfile(context.Context, uuid.UUID) (*SupportResponderProfile, error) {
-	return &SupportResponderProfile{}, nil
-}
-
-func (s *stubQuerier) UpdateSupportResponderProfile(context.Context, uuid.UUID, UpdateSupportResponderProfileInput) (*SupportResponderProfile, error) {
-	return &SupportResponderProfile{}, nil
-}
-
 func (s *stubQuerier) CountOpenSupportRequests(context.Context, uuid.UUID) (int, error) {
 	return 0, nil
 }
 
-func (s *stubQuerier) CreateSupportRequest(context.Context, uuid.UUID, string, *string, string, bool, *time.Time) (*SupportRequest, error) {
+func (s *stubQuerier) CreateImmediateSupportRequest(context.Context, uuid.UUID, string, *string, string, string) (*SupportRequest, error) {
 	return nil, nil
 }
 
-func (s *stubQuerier) CreateImmediateSupportRequest(context.Context, uuid.UUID, string, *string, string, string, bool, *time.Time) (*SupportRequest, error) {
+func (s *stubQuerier) CreateCommunitySupportRequest(context.Context, uuid.UUID, string, *string, string, string) (*SupportRequest, error) {
 	return nil, nil
 }
 
-func (s *stubQuerier) CreateCommunitySupportRequest(context.Context, uuid.UUID, string, *string, string, string, bool, *time.Time) (*SupportRequest, error) {
-	return nil, nil
-}
-
-func (s *stubQuerier) RouteSupportRequest(context.Context, uuid.UUID) error {
-	return nil
+func (s *stubQuerier) AcceptSupportResponse(context.Context, uuid.UUID, uuid.UUID, uuid.UUID) (*SupportRequest, error) {
+	return &SupportRequest{}, nil
 }
 
 func (s *stubQuerier) GetSupportRequest(_ context.Context, viewerID, requestID uuid.UUID) (*SupportRequest, error) {
@@ -67,52 +43,16 @@ func (s *stubQuerier) GetSupportRequest(_ context.Context, viewerID, requestID u
 	}, nil
 }
 
-func (s *stubQuerier) CloseSupportRequest(context.Context, uuid.UUID, uuid.UUID) error {
-	return nil
-}
-
-func (s *stubQuerier) ConvertImmediateRequestToCommunity(context.Context, uuid.UUID, uuid.UUID) (*SupportRequest, error) {
-	return &SupportRequest{}, nil
+func (s *stubQuerier) CloseSupportRequest(context.Context, uuid.UUID, uuid.UUID) ([]uuid.UUID, error) {
+	return nil, nil
 }
 
 func (s *stubQuerier) ListMySupportRequests(context.Context, uuid.UUID, *time.Time, int) ([]SupportRequest, error) {
 	return nil, nil
 }
 
-func (s *stubQuerier) ListVisibleSupportRequests(context.Context, uuid.UUID, *time.Time, int) ([]SupportRequest, error) {
+func (s *stubQuerier) ListVisibleSupportRequests(context.Context, uuid.UUID, SupportChannel, *SupportQueueCursor, int) ([]SupportRequest, error) {
 	return nil, nil
-}
-
-func (s *stubQuerier) ListRespondedSupportRequests(context.Context, uuid.UUID, *time.Time, int) ([]SupportRequest, error) {
-	return nil, nil
-}
-
-func (s *stubQuerier) ListResponderQueue(context.Context, uuid.UUID, *time.Time, int) ([]SupportOffer, error) {
-	return nil, nil
-}
-
-func (s *stubQuerier) ListSupportSessions(context.Context, uuid.UUID, *time.Time, int) ([]SupportSession, error) {
-	return nil, nil
-}
-
-func (s *stubQuerier) CloseSupportSession(context.Context, uuid.UUID, uuid.UUID, string) (*SupportSession, error) {
-	return &SupportSession{}, nil
-}
-
-func (s *stubQuerier) AcceptSupportOffer(context.Context, uuid.UUID, uuid.UUID) (*SupportSession, error) {
-	return &SupportSession{}, nil
-}
-
-func (s *stubQuerier) DeclineSupportOffer(context.Context, uuid.UUID, uuid.UUID) error {
-	return nil
-}
-
-func (s *stubQuerier) SweepExpiredSupportOffers(context.Context) error {
-	return nil
-}
-
-func (s *stubQuerier) FetchSupportSummary(context.Context, uuid.UUID) (int, int, error) {
-	return 0, 0, nil
 }
 
 func (s *stubQuerier) GetSupportRequestState(context.Context, uuid.UUID) (uuid.UUID, string, error) {
@@ -120,11 +60,7 @@ func (s *stubQuerier) GetSupportRequestState(context.Context, uuid.UUID) (uuid.U
 }
 
 func (s *stubQuerier) CreateSupportResponse(context.Context, uuid.UUID, uuid.UUID, string, *string, *time.Time) (*CreateSupportResponseResult, error) {
-	return &CreateSupportResponseResult{
-		Chat: &ChatSummary{
-			SupportContext: &SupportChatContext{RequesterID: requestOwnerID},
-		},
-	}, nil
+	return &CreateSupportResponseResult{Response: &SupportResponse{}}, nil
 }
 
 func (s *stubQuerier) GetSupportRequestOwner(context.Context, uuid.UUID) (uuid.UUID, error) {

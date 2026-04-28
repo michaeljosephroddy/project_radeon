@@ -2,6 +2,7 @@ package support
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -17,29 +18,14 @@ import (
 
 // Querier is the database interface required by the support handler.
 type Querier interface {
-	GetSupportProfile(ctx context.Context, userID uuid.UUID) (*SupportProfile, error)
-	UpdateSupportProfile(ctx context.Context, userID uuid.UUID, available bool) (*SupportProfile, error)
-	GetSupportHome(ctx context.Context, userID uuid.UUID) (*SupportHomePayload, error)
-	GetSupportResponderProfile(ctx context.Context, userID uuid.UUID) (*SupportResponderProfile, error)
-	UpdateSupportResponderProfile(ctx context.Context, userID uuid.UUID, input UpdateSupportResponderProfileInput) (*SupportResponderProfile, error)
 	CountOpenSupportRequests(ctx context.Context, userID uuid.UUID) (int, error)
-	CreateSupportRequest(ctx context.Context, userID uuid.UUID, reqType string, message *string, urgency string, priorityVisibility bool, priorityExpiresAt *time.Time) (*SupportRequest, error)
-	CreateImmediateSupportRequest(ctx context.Context, userID uuid.UUID, reqType string, message *string, urgency string, privacyLevel string, priorityVisibility bool, priorityExpiresAt *time.Time) (*SupportRequest, error)
-	CreateCommunitySupportRequest(ctx context.Context, userID uuid.UUID, reqType string, message *string, urgency string, privacyLevel string, priorityVisibility bool, priorityExpiresAt *time.Time) (*SupportRequest, error)
-	RouteSupportRequest(ctx context.Context, requestID uuid.UUID) error
-	AcceptSupportOffer(ctx context.Context, responderID, offerID uuid.UUID) (*SupportSession, error)
-	DeclineSupportOffer(ctx context.Context, responderID, offerID uuid.UUID) error
+	CreateImmediateSupportRequest(ctx context.Context, userID uuid.UUID, reqType string, message *string, urgency string, privacyLevel string) (*SupportRequest, error)
+	CreateCommunitySupportRequest(ctx context.Context, userID uuid.UUID, reqType string, message *string, urgency string, privacyLevel string) (*SupportRequest, error)
+	AcceptSupportResponse(ctx context.Context, requesterID, requestID, responseID uuid.UUID) (*SupportRequest, error)
 	GetSupportRequest(ctx context.Context, viewerID, requestID uuid.UUID) (*SupportRequest, error)
-	CloseSupportRequest(ctx context.Context, requestID, userID uuid.UUID) error
-	ConvertImmediateRequestToCommunity(ctx context.Context, requestID, userID uuid.UUID) (*SupportRequest, error)
+	CloseSupportRequest(ctx context.Context, requestID, userID uuid.UUID) ([]uuid.UUID, error)
 	ListMySupportRequests(ctx context.Context, userID uuid.UUID, before *time.Time, limit int) ([]SupportRequest, error)
-	ListVisibleSupportRequests(ctx context.Context, userID uuid.UUID, before *time.Time, limit int) ([]SupportRequest, error)
-	ListRespondedSupportRequests(ctx context.Context, userID uuid.UUID, before *time.Time, limit int) ([]SupportRequest, error)
-	ListResponderQueue(ctx context.Context, userID uuid.UUID, before *time.Time, limit int) ([]SupportOffer, error)
-	ListSupportSessions(ctx context.Context, userID uuid.UUID, before *time.Time, limit int) ([]SupportSession, error)
-	CloseSupportSession(ctx context.Context, userID, sessionID uuid.UUID, outcome string) (*SupportSession, error)
-	SweepExpiredSupportOffers(ctx context.Context) error
-	FetchSupportSummary(ctx context.Context, viewerID uuid.UUID) (openCount, availableCount int, err error)
+	ListVisibleSupportRequests(ctx context.Context, userID uuid.UUID, channel SupportChannel, cursor *SupportQueueCursor, limit int) ([]SupportRequest, error)
 	GetSupportRequestState(ctx context.Context, requestID uuid.UUID) (requesterID uuid.UUID, status string, err error)
 	CreateSupportResponse(ctx context.Context, requestID, userID uuid.UUID, responseType string, message *string, scheduledFor *time.Time) (*CreateSupportResponseResult, error)
 	GetSupportRequestOwner(ctx context.Context, requestID uuid.UUID) (uuid.UUID, error)
@@ -47,7 +33,12 @@ type Querier interface {
 }
 
 type Handler struct {
-	db Querier
+	db              Querier
+	chatBroadcaster ChatBroadcaster
+}
+
+type ChatBroadcaster interface {
+	BroadcastChatUpdate(ctx context.Context, chatID uuid.UUID) error
 }
 
 var validSupportTypes = map[string]bool{
@@ -68,6 +59,11 @@ var validSupportPrivacyLevels = map[string]bool{
 	"private":  true,
 }
 
+var validSupportChannels = map[SupportChannel]bool{
+	SupportChannelImmediate: true,
+	SupportChannelCommunity: true,
+}
+
 var validSupportResponseTypes = map[string]bool{
 	"can_chat":       true,
 	"check_in_later": true,
@@ -79,33 +75,44 @@ func NewHandler(db Querier) *Handler {
 	return &Handler{db: db}
 }
 
-type SupportProfile struct {
-	IsAvailableToSupport bool       `json:"is_available_to_support"`
-	SupportUpdatedAt     *time.Time `json:"support_updated_at,omitempty"`
+func NewHandlerWithChatBroadcaster(db Querier, chatBroadcaster ChatBroadcaster) *Handler {
+	return &Handler{db: db, chatBroadcaster: chatBroadcaster}
 }
 
 type SupportRequest struct {
-	ID                    uuid.UUID            `json:"id"`
-	RequesterID           uuid.UUID            `json:"requester_id"`
-	Username              string               `json:"username"`
-	AvatarURL             *string              `json:"avatar_url"`
-	City                  *string              `json:"city"`
-	Type                  string               `json:"type"`
-	Message               *string              `json:"message"`
-	Urgency               string               `json:"urgency"`
-	Status                string               `json:"status"`
-	ResponseCount         int                  `json:"response_count"`
-	CreatedAt             time.Time            `json:"created_at"`
-	PriorityVisibility    bool                 `json:"priority_visibility"`
-	PriorityExpiresAt     *time.Time           `json:"priority_expires_at,omitempty"`
-	Channel               SupportChannel       `json:"channel,omitempty"`
-	RoutingStatus         SupportRoutingStatus `json:"routing_status,omitempty"`
-	DesiredResponseWindow string               `json:"desired_response_window,omitempty"`
-	PrivacyLevel          string               `json:"privacy_level,omitempty"`
-	MatchedSessionID      *uuid.UUID           `json:"matched_session_id,omitempty"`
-	HasResponded          bool                 `json:"has_responded"`
-	IsOwnRequest          bool                 `json:"is_own_request"`
-	SortAt                time.Time            `json:"-"`
+	ID                  uuid.UUID      `json:"id"`
+	RequesterID         uuid.UUID      `json:"requester_id"`
+	Username            string         `json:"username"`
+	AvatarURL           *string        `json:"avatar_url"`
+	City                *string        `json:"city"`
+	Type                string         `json:"type"`
+	Message             *string        `json:"message"`
+	Urgency             string         `json:"urgency"`
+	Status              string         `json:"status"`
+	ResponseCount       int            `json:"response_count"`
+	CreatedAt           time.Time      `json:"created_at"`
+	Channel             SupportChannel `json:"channel,omitempty"`
+	PrivacyLevel        string         `json:"privacy_level,omitempty"`
+	AcceptedResponseID  *uuid.UUID     `json:"accepted_response_id,omitempty"`
+	AcceptedResponderID *uuid.UUID     `json:"accepted_responder_id,omitempty"`
+	AcceptedAt          *time.Time     `json:"accepted_at,omitempty"`
+	ClosedAt            *time.Time     `json:"closed_at,omitempty"`
+	ResponderID         *uuid.UUID     `json:"responder_id,omitempty"`
+	ResponderUsername   *string        `json:"responder_username,omitempty"`
+	ResponderAvatarURL  *string        `json:"responder_avatar_url,omitempty"`
+	ChatID              *uuid.UUID     `json:"chat_id,omitempty"`
+	HasResponded        bool           `json:"has_responded"`
+	IsOwnRequest        bool           `json:"is_own_request"`
+	SortAt              time.Time      `json:"-"`
+	AttentionBucket     int            `json:"-"`
+	UrgencyRank         int            `json:"-"`
+}
+
+type SupportQueueCursor struct {
+	AttentionBucket int       `json:"attention_bucket"`
+	UrgencyRank     int       `json:"urgency_rank"`
+	CreatedAt       time.Time `json:"created_at"`
+	ID              uuid.UUID `json:"id"`
 }
 
 type SupportResponse struct {
@@ -117,6 +124,7 @@ type SupportResponse struct {
 	City             *string    `json:"city"`
 	ResponseType     string     `json:"response_type"`
 	Message          *string    `json:"message"`
+	Status           string     `json:"status"`
 	ScheduledFor     *time.Time `json:"scheduled_for,omitempty"`
 	CreatedAt        time.Time  `json:"created_at"`
 	ChatID           *uuid.UUID `json:"chat_id,omitempty"`
@@ -152,192 +160,33 @@ type CreateSupportResponseResult struct {
 }
 
 type SupportRequestsPage struct {
-	Items                   []SupportRequest `json:"items"`
-	Limit                   int              `json:"limit"`
-	HasMore                 bool             `json:"has_more"`
-	NextCursor              *string          `json:"next_cursor,omitempty"`
-	OpenRequestCount        *int             `json:"open_request_count,omitempty"`
-	AvailableToSupportCount *int             `json:"available_to_support_count,omitempty"`
+	Items      []SupportRequest `json:"items"`
+	Limit      int              `json:"limit"`
+	HasMore    bool             `json:"has_more"`
+	NextCursor *string          `json:"next_cursor,omitempty"`
 }
 
-// GetMySupportProfile returns the caller's support availability settings.
-func (h *Handler) GetMySupportProfile(w http.ResponseWriter, r *http.Request) {
-	userID := middleware.CurrentUserID(r)
-
-	profile, err := h.db.GetSupportProfile(r.Context(), userID)
-	if err != nil {
-		response.Error(w, http.StatusInternalServerError, "could not fetch support profile")
-		return
-	}
-
-	response.Success(w, http.StatusOK, profile)
+type AcceptSupportResponseResult struct {
+	Request *SupportRequest `json:"request"`
 }
 
-// UpdateMySupportProfile saves the caller's support availability settings.
-func (h *Handler) UpdateMySupportProfile(w http.ResponseWriter, r *http.Request) {
-	userID := middleware.CurrentUserID(r)
-
-	var input struct {
-		IsAvailableToSupport bool `json:"is_available_to_support"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-		response.Error(w, http.StatusBadRequest, "invalid request body")
-		return
-	}
-
-	profile, err := h.db.UpdateSupportProfile(r.Context(), userID, input.IsAvailableToSupport)
-	if err != nil {
-		response.Error(w, http.StatusInternalServerError, "could not update support profile")
-		return
-	}
-
-	response.Success(w, http.StatusOK, profile)
-}
-
-// GetSupportHome returns the current user's routed support home payload.
-func (h *Handler) GetSupportHome(w http.ResponseWriter, r *http.Request) {
-	userID := middleware.CurrentUserID(r)
-
-	home, err := h.db.GetSupportHome(r.Context(), userID)
-	if err != nil {
-		response.Error(w, http.StatusInternalServerError, "could not fetch support home")
-		return
-	}
-
-	response.Success(w, http.StatusOK, home)
-}
-
-// GetMyResponderProfile returns the richer support responder profile used by the routing platform.
-func (h *Handler) GetMyResponderProfile(w http.ResponseWriter, r *http.Request) {
-	userID := middleware.CurrentUserID(r)
-
-	profile, err := h.db.GetSupportResponderProfile(r.Context(), userID)
-	if err != nil {
-		response.Error(w, http.StatusInternalServerError, "could not fetch responder profile")
-		return
-	}
-
-	response.Success(w, http.StatusOK, profile)
-}
-
-// UpdateMyResponderProfile saves the richer support responder profile used by the routing platform.
-func (h *Handler) UpdateMyResponderProfile(w http.ResponseWriter, r *http.Request) {
-	userID := middleware.CurrentUserID(r)
-
-	var input struct {
-		IsAvailableForImmediate bool     `json:"is_available_for_immediate"`
-		IsAvailableForCommunity bool     `json:"is_available_for_community"`
-		SupportsChat            bool     `json:"supports_chat"`
-		SupportsCheckIns        bool     `json:"supports_check_ins"`
-		SupportsInPerson        bool     `json:"supports_in_person"`
-		MaxConcurrentSessions   int      `json:"max_concurrent_sessions"`
-		Languages               []string `json:"languages"`
-		AvailableNow            bool     `json:"available_now"`
-		IsActive                bool     `json:"is_active"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-		response.Error(w, http.StatusBadRequest, "invalid request body")
-		return
-	}
-
-	normalized := normalizeUpdateSupportResponderProfileInput(updateSupportResponderProfileInput(input))
-	if errs := validateUpdateSupportResponderProfileInput(normalized); len(errs) > 0 {
-		response.ValidationError(w, errs)
-		return
-	}
-
-	profile, err := h.db.UpdateSupportResponderProfile(r.Context(), userID, UpdateSupportResponderProfileInput{
-		IsAvailableForImmediate: normalized.IsAvailableForImmediate,
-		IsAvailableForCommunity: normalized.IsAvailableForCommunity,
-		SupportsChat:            normalized.SupportsChat,
-		SupportsCheckIns:        normalized.SupportsCheckIns,
-		SupportsInPerson:        normalized.SupportsInPerson,
-		MaxConcurrentSessions:   normalized.MaxConcurrentSessions,
-		Languages:               normalized.Languages,
-		AvailableNow:            normalized.AvailableNow,
-		IsActive:                normalized.IsActive,
-	})
-	if err != nil {
-		response.Error(w, http.StatusInternalServerError, "could not update responder profile")
-		return
-	}
-
-	response.Success(w, http.StatusOK, profile)
-}
-
-// CreateSupportRequest creates a support request for the authenticated user.
-func (h *Handler) CreateSupportRequest(w http.ResponseWriter, r *http.Request) {
-	userID := middleware.CurrentUserID(r)
-
-	var input struct {
-		Type               string  `json:"type"`
-		Message            *string `json:"message"`
-		Urgency            string  `json:"urgency"`
-		PriorityVisibility bool    `json:"priority_visibility"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-		response.Error(w, http.StatusBadRequest, "invalid request body")
-		return
-	}
-
-	normalized := normalizeCreateSupportRequestInput(createSupportRequestInput(input))
-	errs := validateCreateSupportRequestInput(normalized)
-	if len(errs) > 0 {
-		response.ValidationError(w, errs)
-		return
-	}
-
-	openCount, err := h.db.CountOpenSupportRequests(r.Context(), userID)
-	if err != nil {
-		response.Error(w, http.StatusInternalServerError, "could not validate support request")
-		return
-	}
-	if openCount > 0 {
-		response.Error(w, http.StatusConflict, "you already have an open support request")
-		return
-	}
-
-	var priorityExpiresAt *time.Time
-	if input.PriorityVisibility {
-		expires := time.Now().Add(time.Hour)
-		priorityExpiresAt = &expires
-	}
-
-	req, err := h.db.CreateSupportRequest(
-		r.Context(),
-		userID,
-		normalized.Type,
-		normalized.Message,
-		normalized.Urgency,
-		input.PriorityVisibility,
-		priorityExpiresAt,
-	)
-	if err != nil {
-		response.Error(w, http.StatusInternalServerError, "could not create support request")
-		return
-	}
-
-	response.Success(w, http.StatusCreated, req)
-}
-
-// CreateImmediateSupportRequest creates a routed immediate support request for the authenticated user.
+// CreateImmediateSupportRequest creates an immediate support request for the authenticated user.
 func (h *Handler) CreateImmediateSupportRequest(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.CurrentUserID(r)
 
 	var input struct {
-		Type               string  `json:"type"`
-		Message            *string `json:"message"`
-		Urgency            string  `json:"urgency"`
-		PrivacyLevel       string  `json:"privacy_level"`
-		PriorityVisibility bool    `json:"priority_visibility"`
+		Type         string  `json:"type"`
+		Message      *string `json:"message"`
+		Urgency      string  `json:"urgency"`
+		PrivacyLevel string  `json:"privacy_level"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 		response.Error(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 
-	normalized := normalizeCreateRoutedSupportRequestInput(createRoutedSupportRequestInput(input))
-	if errs := validateCreateRoutedSupportRequestInput(normalized); len(errs) > 0 {
+	normalized := normalizeCreateChannelSupportRequestInput(createChannelSupportRequestInput(input))
+	if errs := validateCreateChannelSupportRequestInput(normalized); len(errs) > 0 {
 		response.ValidationError(w, errs)
 		return
 	}
@@ -350,12 +199,6 @@ func (h *Handler) CreateImmediateSupportRequest(w http.ResponseWriter, r *http.R
 	if openCount > 0 {
 		response.Error(w, http.StatusConflict, "you already have an open support request")
 		return
-	}
-
-	var priorityExpiresAt *time.Time
-	if normalized.PriorityVisibility {
-		expires := time.Now().Add(time.Hour)
-		priorityExpiresAt = &expires
 	}
 
 	req, err := h.db.CreateImmediateSupportRequest(
@@ -365,15 +208,11 @@ func (h *Handler) CreateImmediateSupportRequest(w http.ResponseWriter, r *http.R
 		normalized.Message,
 		normalized.Urgency,
 		normalized.PrivacyLevel,
-		normalized.PriorityVisibility,
-		priorityExpiresAt,
 	)
 	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "could not create immediate support request")
 		return
 	}
-
-	_ = h.db.RouteSupportRequest(r.Context(), req.ID)
 
 	response.Success(w, http.StatusCreated, req)
 }
@@ -383,19 +222,18 @@ func (h *Handler) CreateCommunitySupportRequest(w http.ResponseWriter, r *http.R
 	userID := middleware.CurrentUserID(r)
 
 	var input struct {
-		Type               string  `json:"type"`
-		Message            *string `json:"message"`
-		Urgency            string  `json:"urgency"`
-		PrivacyLevel       string  `json:"privacy_level"`
-		PriorityVisibility bool    `json:"priority_visibility"`
+		Type         string  `json:"type"`
+		Message      *string `json:"message"`
+		Urgency      string  `json:"urgency"`
+		PrivacyLevel string  `json:"privacy_level"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 		response.Error(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 
-	normalized := normalizeCreateRoutedSupportRequestInput(createRoutedSupportRequestInput(input))
-	if errs := validateCreateRoutedSupportRequestInput(normalized); len(errs) > 0 {
+	normalized := normalizeCreateChannelSupportRequestInput(createChannelSupportRequestInput(input))
+	if errs := validateCreateChannelSupportRequestInput(normalized); len(errs) > 0 {
 		response.ValidationError(w, errs)
 		return
 	}
@@ -410,12 +248,6 @@ func (h *Handler) CreateCommunitySupportRequest(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	var priorityExpiresAt *time.Time
-	if normalized.PriorityVisibility {
-		expires := time.Now().Add(time.Hour)
-		priorityExpiresAt = &expires
-	}
-
 	req, err := h.db.CreateCommunitySupportRequest(
 		r.Context(),
 		userID,
@@ -423,8 +255,6 @@ func (h *Handler) CreateCommunitySupportRequest(w http.ResponseWriter, r *http.R
 		normalized.Message,
 		normalized.Urgency,
 		normalized.PrivacyLevel,
-		normalized.PriorityVisibility,
-		priorityExpiresAt,
 	)
 	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "could not create community support request")
@@ -454,46 +284,28 @@ func (h *Handler) ListMySupportRequests(w http.ResponseWriter, r *http.Request) 
 	})
 }
 
-// ListSupportRequests returns the visible support page plus the lightweight tab summary counts.
+// ListSupportRequests returns the visible support queue.
 func (h *Handler) ListSupportRequests(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.CurrentUserID(r)
-	params := pagination.ParseCursor(r, 20, 50)
+	channel, ok := parseSupportChannelQuery(r)
+	if !ok {
+		response.Error(w, http.StatusBadRequest, "invalid support channel")
+		return
+	}
+	cursor, err := parseSupportQueueCursor(strings.TrimSpace(r.URL.Query().Get("cursor")))
+	if err != nil {
+		response.Error(w, http.StatusBadRequest, "invalid support cursor")
+		return
+	}
+	params := pagination.Parse(r, 20, 50)
 
-	requests, err := h.db.ListVisibleSupportRequests(r.Context(), userID, params.Before, params.Limit+1)
+	requests, err := h.db.ListVisibleSupportRequests(r.Context(), userID, channel, cursor, params.Limit+1)
 	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "could not fetch support requests")
 		return
 	}
 
-	openCount, availableCount, err := h.db.FetchSupportSummary(r.Context(), userID)
-	if err != nil {
-		response.Error(w, http.StatusInternalServerError, "could not fetch support requests")
-		return
-	}
-
-	page := pagination.CursorSlice(requests, params.Limit, func(sr SupportRequest) time.Time { return sr.SortAt })
-	response.Success(w, http.StatusOK, SupportRequestsPage{
-		Items:                   page.Items,
-		Limit:                   page.Limit,
-		HasMore:                 page.HasMore,
-		NextCursor:              page.NextCursor,
-		OpenRequestCount:        &openCount,
-		AvailableToSupportCount: &availableCount,
-	})
-}
-
-// ListRespondedSupportRequests returns closed community support requests the authenticated user responded to.
-func (h *Handler) ListRespondedSupportRequests(w http.ResponseWriter, r *http.Request) {
-	userID := middleware.CurrentUserID(r)
-	params := pagination.ParseCursor(r, 20, 50)
-
-	requests, err := h.db.ListRespondedSupportRequests(r.Context(), userID, params.Before, params.Limit+1)
-	if err != nil {
-		response.Error(w, http.StatusInternalServerError, "could not fetch responded support requests")
-		return
-	}
-
-	page := pagination.CursorSlice(requests, params.Limit, func(sr SupportRequest) time.Time { return sr.SortAt })
+	page := supportQueueSlice(requests, params.Limit)
 	response.Success(w, http.StatusOK, SupportRequestsPage{
 		Items:      page.Items,
 		Limit:      page.Limit,
@@ -502,151 +314,68 @@ func (h *Handler) ListRespondedSupportRequests(w http.ResponseWriter, r *http.Re
 	})
 }
 
-// ListResponderQueue returns the authenticated responder's targeted offer queue.
-func (h *Handler) ListResponderQueue(w http.ResponseWriter, r *http.Request) {
-	userID := middleware.CurrentUserID(r)
-	params := pagination.ParseCursor(r, 20, 50)
-
-	offers, err := h.db.ListResponderQueue(r.Context(), userID, params.Before, params.Limit+1)
-	if err != nil {
-		response.Error(w, http.StatusInternalServerError, "could not fetch support queue")
-		return
+func parseSupportChannelQuery(r *http.Request) (SupportChannel, bool) {
+	raw := strings.TrimSpace(r.URL.Query().Get("channel"))
+	if raw == "" {
+		return SupportChannelCommunity, true
 	}
-
-	page := pagination.CursorSlice(offers, params.Limit, func(item SupportOffer) time.Time { return item.SortAt })
-	response.Success(w, http.StatusOK, SupportOfferPage{
-		Items:      page.Items,
-		Limit:      page.Limit,
-		HasMore:    page.HasMore,
-		NextCursor: page.NextCursor,
-	})
+	channel := SupportChannel(raw)
+	return channel, validSupportChannels[channel]
 }
 
-// ListSupportSessions returns support sessions for the authenticated user.
-func (h *Handler) ListSupportSessions(w http.ResponseWriter, r *http.Request) {
-	userID := middleware.CurrentUserID(r)
-	params := pagination.ParseCursor(r, 20, 50)
-
-	sessions, err := h.db.ListSupportSessions(r.Context(), userID, params.Before, params.Limit+1)
-	if err != nil {
-		response.Error(w, http.StatusInternalServerError, "could not fetch support sessions")
-		return
+func parseSupportQueueCursor(raw string) (*SupportQueueCursor, error) {
+	if raw == "" {
+		return nil, nil
 	}
 
-	page := pagination.CursorSlice(sessions, params.Limit, func(item SupportSession) time.Time { return item.SortAt })
-	response.Success(w, http.StatusOK, SupportSessionsPage{
-		Items:      page.Items,
-		Limit:      page.Limit,
-		HasMore:    page.HasMore,
-		NextCursor: page.NextCursor,
-	})
+	decoded, err := base64.RawURLEncoding.DecodeString(raw)
+	if err != nil {
+		return nil, err
+	}
+
+	var cursor SupportQueueCursor
+	if err := json.Unmarshal(decoded, &cursor); err != nil {
+		return nil, err
+	}
+	return &cursor, nil
 }
 
-// CloseSupportSession marks a support session as completed or cancelled.
-func (h *Handler) CloseSupportSession(w http.ResponseWriter, r *http.Request) {
-	userID := middleware.CurrentUserID(r)
-	sessionID, err := uuid.Parse(chi.URLParam(r, "sessionID"))
+func encodeSupportQueueCursor(cursor SupportQueueCursor) (*string, error) {
+	payload, err := json.Marshal(cursor)
 	if err != nil {
-		response.Error(w, http.StatusBadRequest, "invalid session id")
-		return
+		return nil, err
 	}
 
-	var input struct {
-		Outcome string `json:"outcome"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-		response.Error(w, http.StatusBadRequest, "invalid request body")
-		return
-	}
-	input.Outcome = strings.TrimSpace(input.Outcome)
-	if input.Outcome == "" {
-		input.Outcome = "completed"
-	}
-
-	session, err := h.db.CloseSupportSession(r.Context(), userID, sessionID, input.Outcome)
-	if err != nil {
-		if errors.Is(err, ErrNotFound) {
-			response.Error(w, http.StatusNotFound, "support session not found")
-			return
-		}
-		response.Error(w, http.StatusInternalServerError, "could not close support session")
-		return
-	}
-
-	response.Success(w, http.StatusOK, session)
+	encoded := base64.RawURLEncoding.EncodeToString(payload)
+	return &encoded, nil
 }
 
-// AcceptSupportOffer accepts a routed immediate-support offer for the authenticated responder.
-func (h *Handler) AcceptSupportOffer(w http.ResponseWriter, r *http.Request) {
-	userID := middleware.CurrentUserID(r)
-	offerID, err := uuid.Parse(chi.URLParam(r, "offerID"))
-	if err != nil {
-		response.Error(w, http.StatusBadRequest, "invalid offer id")
-		return
+func supportQueueSlice(items []SupportRequest, limit int) pagination.CursorResponse[SupportRequest] {
+	hasMore := len(items) > limit
+	if hasMore {
+		items = items[:limit]
 	}
 
-	session, err := h.db.AcceptSupportOffer(r.Context(), userID, offerID)
-	if err != nil {
-		if errors.Is(err, ErrNotFound) {
-			response.Error(w, http.StatusNotFound, "support offer not found")
-			return
+	var nextCursor *string
+	if hasMore && len(items) > 0 {
+		last := items[len(items)-1]
+		cursor, err := encodeSupportQueueCursor(SupportQueueCursor{
+			AttentionBucket: last.AttentionBucket,
+			UrgencyRank:     last.UrgencyRank,
+			CreatedAt:       last.CreatedAt,
+			ID:              last.ID,
+		})
+		if err == nil {
+			nextCursor = cursor
 		}
-		if errors.Is(err, ErrConflict) {
-			response.Error(w, http.StatusConflict, "support offer is no longer available")
-			return
-		}
-		response.Error(w, http.StatusInternalServerError, "could not accept support offer")
-		return
 	}
 
-	response.Success(w, http.StatusOK, session)
-}
-
-// ConvertImmediateSupportRequestToCommunity reopens an unmatched immediate request on the community board.
-func (h *Handler) ConvertImmediateSupportRequestToCommunity(w http.ResponseWriter, r *http.Request) {
-	userID := middleware.CurrentUserID(r)
-	requestID, err := uuid.Parse(chi.URLParam(r, "id"))
-	if err != nil {
-		response.Error(w, http.StatusBadRequest, "invalid support request id")
-		return
+	return pagination.CursorResponse[SupportRequest]{
+		Items:      items,
+		Limit:      limit,
+		HasMore:    hasMore,
+		NextCursor: nextCursor,
 	}
-
-	req, err := h.db.ConvertImmediateRequestToCommunity(r.Context(), requestID, userID)
-	if err != nil {
-		if errors.Is(err, ErrNotFound) {
-			response.Error(w, http.StatusNotFound, "support request not found")
-			return
-		}
-		if errors.Is(err, ErrConflict) {
-			response.Error(w, http.StatusConflict, "support request can no longer move to community")
-			return
-		}
-		response.Error(w, http.StatusInternalServerError, "could not move support request to community")
-		return
-	}
-
-	response.Success(w, http.StatusOK, req)
-}
-
-// DeclineSupportOffer declines a routed immediate-support offer for the authenticated responder.
-func (h *Handler) DeclineSupportOffer(w http.ResponseWriter, r *http.Request) {
-	userID := middleware.CurrentUserID(r)
-	offerID, err := uuid.Parse(chi.URLParam(r, "offerID"))
-	if err != nil {
-		response.Error(w, http.StatusBadRequest, "invalid offer id")
-		return
-	}
-
-	if err := h.db.DeclineSupportOffer(r.Context(), userID, offerID); err != nil {
-		if errors.Is(err, ErrNotFound) {
-			response.Error(w, http.StatusNotFound, "support offer not found")
-			return
-		}
-		response.Error(w, http.StatusInternalServerError, "could not decline support offer")
-		return
-	}
-
-	response.Success(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
 // GetSupportRequest returns one support request with viewer-specific metadata.
@@ -667,7 +396,7 @@ func (h *Handler) GetSupportRequest(w http.ResponseWriter, r *http.Request) {
 	response.Success(w, http.StatusOK, req)
 }
 
-// UpdateSupportRequest lets the requester close their own support request.
+// UpdateSupportRequest lets a requester or accepted responder close a support request.
 func (h *Handler) UpdateSupportRequest(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.CurrentUserID(r)
 	requestID, err := uuid.Parse(chi.URLParam(r, "id"))
@@ -688,7 +417,8 @@ func (h *Handler) UpdateSupportRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.db.CloseSupportRequest(r.Context(), requestID, userID); err != nil {
+	closedChatIDs, err := h.db.CloseSupportRequest(r.Context(), requestID, userID)
+	if err != nil {
 		if errors.Is(err, ErrNotFound) {
 			response.Error(w, http.StatusNotFound, "support request not found")
 			return
@@ -701,6 +431,12 @@ func (h *Handler) UpdateSupportRequest(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		response.Error(w, http.StatusNotFound, "support request not found")
 		return
+	}
+
+	if h.chatBroadcaster != nil {
+		for _, chatID := range closedChatIDs {
+			_ = h.chatBroadcaster.BroadcastChatUpdate(r.Context(), chatID)
+		}
 	}
 
 	response.Success(w, http.StatusOK, req)
@@ -750,16 +486,6 @@ func (h *Handler) CreateSupportResponse(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	profile, err := h.db.GetSupportProfile(r.Context(), userID)
-	if err != nil {
-		response.Error(w, http.StatusInternalServerError, "could not fetch support profile")
-		return
-	}
-	if !profile.IsAvailableToSupport {
-		response.Error(w, http.StatusForbidden, "turn on support availability to respond")
-		return
-	}
-
 	res, err := h.db.CreateSupportResponse(r.Context(), requestID, userID, input.ResponseType, input.Message, scheduledFor)
 	if err != nil {
 		response.Error(w, http.StatusConflict, "could not create support response")
@@ -767,6 +493,37 @@ func (h *Handler) CreateSupportResponse(w http.ResponseWriter, r *http.Request) 
 	}
 
 	response.Success(w, http.StatusCreated, res)
+}
+
+// AcceptSupportResponse lets the requester choose one response and only then open the support chat.
+func (h *Handler) AcceptSupportResponse(w http.ResponseWriter, r *http.Request) {
+	userID := middleware.CurrentUserID(r)
+	requestID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		response.Error(w, http.StatusBadRequest, "invalid support request id")
+		return
+	}
+	responseID, err := uuid.Parse(chi.URLParam(r, "responseId"))
+	if err != nil {
+		response.Error(w, http.StatusBadRequest, "invalid support response id")
+		return
+	}
+
+	req, err := h.db.AcceptSupportResponse(r.Context(), userID, requestID, responseID)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			response.Error(w, http.StatusNotFound, "support response not found")
+			return
+		}
+		if errors.Is(err, ErrConflict) {
+			response.Error(w, http.StatusConflict, "support response is no longer available")
+			return
+		}
+		response.Error(w, http.StatusInternalServerError, "could not accept support response")
+		return
+	}
+
+	response.Success(w, http.StatusOK, AcceptSupportResponseResult{Request: req})
 }
 
 // ListSupportResponses returns a paginated list of responses for a support request owned by the caller.
