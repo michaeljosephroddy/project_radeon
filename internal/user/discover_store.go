@@ -521,13 +521,6 @@ func discoverEligibilitySQL(alias string) string {
 				WHERE (fx.user_a_id = $1 AND fx.user_b_id = %[1]s.id)
 					OR (fx.user_b_id = $1 AND fx.user_a_id = %[1]s.id)
 			)
-			AND NOT EXISTS (
-				SELECT 1
-				FROM discover_dismissals dd
-				WHERE dd.viewer_id = $1
-					AND dd.candidate_id = %[1]s.id
-					AND dd.dismissed_at > NOW() - INTERVAL '14 days'
-			)
 			AND ($2 = '' OR COALESCE(%[1]s.current_city, %[1]s.city) ILIKE $2)
 			AND ($3 = '' OR %[1]s.gender = $3)
 			AND ($4::int IS NULL OR (%[1]s.birth_date IS NOT NULL AND %[1]s.birth_date <= CURRENT_DATE - make_interval(years => $4::int)))

@@ -49,9 +49,6 @@ CREATE INDEX IF NOT EXISTS idx_users_city
 CREATE INDEX IF NOT EXISTS idx_users_gender
     ON users(gender);
 
-CREATE INDEX IF NOT EXISTS idx_users_sobriety_band
-    ON users(sobriety_band);
-
 CREATE INDEX IF NOT EXISTS idx_users_last_active_at_desc
     ON users(last_active_at DESC);
 
@@ -223,22 +220,6 @@ CREATE INDEX IF NOT EXISTS idx_feed_events_user_event_at
 
 CREATE INDEX IF NOT EXISTS idx_feed_events_item_event_at
     ON feed_events(item_id, item_kind, event_at DESC);
-
-CREATE TABLE IF NOT EXISTS post_stats_daily (
-    post_id UUID NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
-    bucket_date DATE NOT NULL,
-    impression_count INT NOT NULL DEFAULT 0,
-    unique_viewer_count INT NOT NULL DEFAULT 0,
-    like_count INT NOT NULL DEFAULT 0,
-    comment_count INT NOT NULL DEFAULT 0,
-    share_count INT NOT NULL DEFAULT 0,
-    hide_count INT NOT NULL DEFAULT 0,
-    report_count INT NOT NULL DEFAULT 0,
-    PRIMARY KEY (post_id, bucket_date)
-);
-
-CREATE INDEX IF NOT EXISTS idx_post_stats_daily_bucket_date
-    ON post_stats_daily(bucket_date DESC);
 
 CREATE TABLE IF NOT EXISTS post_quality_features (
     post_id UUID PRIMARY KEY REFERENCES posts(id) ON DELETE CASCADE,
@@ -801,16 +782,6 @@ CREATE INDEX IF NOT EXISTS idx_discover_impressions_viewer_shown_at
 
 CREATE INDEX IF NOT EXISTS idx_discover_impressions_viewer_candidate
     ON discover_impressions(viewer_id, candidate_id, shown_at DESC);
-
-CREATE TABLE IF NOT EXISTS discover_dismissals (
-    viewer_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    candidate_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    dismissed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    PRIMARY KEY (viewer_id, candidate_id)
-);
-
-CREATE INDEX IF NOT EXISTS idx_discover_dismissals_viewer_dismissed_at
-    ON discover_dismissals(viewer_id, dismissed_at DESC);
 
 CREATE TABLE IF NOT EXISTS comment_mentions (
     comment_id UUID NOT NULL REFERENCES comments(id) ON DELETE CASCADE,

@@ -390,13 +390,6 @@ func (s *pgStore) discoverBySearch(ctx context.Context, params DiscoverUsersPara
 				WHERE (fx.user_a_id = $1 AND fx.user_b_id = u.id)
 					OR (fx.user_b_id = $1 AND fx.user_a_id = u.id)
 			)
-			AND NOT EXISTS (
-				SELECT 1
-				FROM discover_dismissals dd
-				WHERE dd.viewer_id = $1
-					AND dd.candidate_id = u.id
-					AND dd.dismissed_at > NOW() - INTERVAL '14 days'
-			)
 			AND ($2 = '' OR COALESCE(u.current_city, u.city) ILIKE $2)
 			AND u.username ILIKE '%' || $3 || '%'
 			AND ($4 = '' OR u.gender = $4)

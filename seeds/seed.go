@@ -168,10 +168,10 @@ func seed(ctx context.Context, pool *pgxpool.Pool) error {
 			support_responses, support_requests,
 			share_comment_mentions, share_comments, share_reactions, share_quality_features,
 			post_shares, feed_hidden_posts, feed_muted_authors, feed_impressions, feed_events,
-			post_stats_daily, post_quality_features, author_feed_stats,
+			post_quality_features, author_feed_stats,
 			event_waitlist, event_hosts, meetup_attendees, meetups,
 			post_reactions, comment_mentions, comments, post_images, posts,
-			discover_dismissals, discover_impressions,
+			discover_impressions,
 			notification_deliveries, notifications, notification_preferences, user_devices,
 			user_interests, friendships, users
 		RESTART IDENTITY CASCADE
