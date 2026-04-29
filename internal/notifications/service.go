@@ -63,7 +63,14 @@ func (s *Service) MarkChatRead(ctx context.Context, chatID, userID uuid.UUID, la
 }
 
 func (s *Service) NotifyChatMessage(ctx context.Context, chatID, messageID, senderID uuid.UUID, body string) error {
-	return s.store.CreateChatMessageNotifications(ctx, chatID, messageID, senderID, body)
+	go func() {
+		notifyCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := s.store.CreateChatMessageNotifications(notifyCtx, chatID, messageID, senderID, body); err != nil {
+			log.Printf("create chat message notifications: %v", err)
+		}
+	}()
+	return nil
 }
 
 func (s *Service) NotifyCommentMentions(ctx context.Context, postID, commentID, authorID uuid.UUID, mentionedUserIDs []uuid.UUID, body string) error {

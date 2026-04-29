@@ -94,10 +94,18 @@ func (s *pgStore) discoverRankedCandidatesV2(ctx context.Context, params Discove
 
 func (s *pgStore) discoverUsersPageFromCandidates(ctx context.Context, params DiscoverUsersParams, candidates []discoverCandidate, shownAt time.Time) ([]User, error) {
 	start := params.Offset
+	if decoded := decodeDiscoverCursor(params.Cursor); decoded.Mode == "ranked" && decoded.LastID != "" {
+		for index, candidate := range candidates {
+			if candidate.ID.String() == decoded.LastID {
+				start = index + 1
+				break
+			}
+		}
+	}
 	if start >= len(candidates) {
 		return nil, nil
 	}
-	end := params.Offset + params.Limit
+	end := start + params.Limit
 	if end > len(candidates) {
 		end = len(candidates)
 	}

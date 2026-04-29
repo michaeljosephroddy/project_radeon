@@ -258,6 +258,7 @@ func (h *Handler) UploadPostImage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	userID := middleware.CurrentUserID(r)
+	r.Body = http.MaxBytesReader(w, r.Body, maxPostImageBytes+(4<<20))
 	if err := r.ParseMultipartForm(24 << 20); err != nil {
 		response.Error(w, http.StatusBadRequest, "file too large or invalid form data")
 		return
@@ -301,6 +302,8 @@ type uploadedImage struct {
 	extension   string
 }
 
+const maxPostImageBytes = 20 << 20
+
 func readUploadedImage(r *http.Request, fieldName string) (*uploadedImage, error) {
 	file, header, err := r.FormFile(fieldName)
 	if err != nil {
@@ -311,9 +314,12 @@ func readUploadedImage(r *http.Request, fieldName string) (*uploadedImage, error
 	}
 	defer file.Close()
 
-	fileBytes, err := io.ReadAll(file)
+	fileBytes, err := io.ReadAll(io.LimitReader(file, maxPostImageBytes+1))
 	if err != nil {
 		return nil, errors.New("could not read image")
+	}
+	if len(fileBytes) > maxPostImageBytes {
+		return nil, errors.New("image must be 20MB or smaller")
 	}
 
 	contentType := header.Header.Get("Content-Type")

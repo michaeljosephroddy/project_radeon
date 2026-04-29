@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -22,8 +23,13 @@ func Connect() (*pgxpool.Pool, error) {
 		return nil, fmt.Errorf("unable to parse database URL: %w", err)
 	}
 
-	config.MaxConns = 25
-	config.MinConns = 5
+	maxConns := envInt("DB_MAX_CONNS", 25)
+	minConns := envInt("DB_MIN_CONNS", 5)
+	if minConns > maxConns {
+		minConns = maxConns
+	}
+	config.MaxConns = int32(maxConns)
+	config.MinConns = int32(minConns)
 	config.ConnConfig.Tracer = observability.NewPGXTracer()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -42,4 +48,16 @@ func Connect() (*pgxpool.Pool, error) {
 	}
 
 	return pool, nil
+}
+
+func envInt(name string, fallback int) int {
+	raw := os.Getenv(name)
+	if raw == "" {
+		return fallback
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil || value < 0 {
+		return fallback
+	}
+	return value
 }

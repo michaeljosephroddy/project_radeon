@@ -42,6 +42,7 @@ type DiscoverUsersParams struct {
 	DisplayLimit  int
 	Limit         int
 	Offset        int
+	Cursor        string
 }
 
 type DiscoverPreviewResponse struct {
@@ -425,7 +426,10 @@ func parseDiscoverRequest(r *http.Request, allowAdvanced bool) (DiscoverUsersPar
 		Query:        username.Normalize(query),
 		DisplayLimit: params.Limit,
 		Limit:        params.Limit + 1,
-		Offset:       params.Offset,
+		Cursor:       strings.TrimSpace(r.URL.Query().Get("cursor")),
+	}
+	if decoded := decodeDiscoverCursor(request.Cursor); decoded.Mode == "ranked" && decoded.LastOffset > 0 {
+		request.Offset = decoded.LastOffset
 	}
 
 	if s := r.URL.Query().Get("lat"); s != "" {
@@ -775,7 +779,6 @@ func (h *Handler) UploadBanner(w http.ResponseWriter, r *http.Request) {
 // friendship state for each row so the app does not need global friend sets.
 func (h *Handler) Discover(w http.ResponseWriter, r *http.Request) {
 	currentUserID := middleware.CurrentUserID(r)
-	pageParams := pagination.Parse(r, 20, 50)
 
 	viewer, err := h.db.GetUser(r.Context(), currentUserID, currentUserID)
 	if err != nil {
@@ -796,7 +799,7 @@ func (h *Handler) Discover(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	response.Success(w, http.StatusOK, pagination.Slice(users, pageParams))
+	response.Success(w, http.StatusOK, sliceDiscoverUsers(users, discoverParams))
 }
 
 func (h *Handler) DiscoverPreview(w http.ResponseWriter, r *http.Request) {

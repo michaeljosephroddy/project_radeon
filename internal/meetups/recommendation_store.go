@@ -17,7 +17,7 @@ func (s *pgStore) discoverRecommendedMeetups(ctx context.Context, userID uuid.UU
 	}
 	page := sliceRecommendedMeetups(ranked, params.Limit, params.Cursor)
 	if len(page.Items) > 0 {
-		s.decorateMeetups(page.Items, viewer)
+		s.decorateMeetups(ctx, page.Items, viewer)
 	}
 	return page, nil
 }

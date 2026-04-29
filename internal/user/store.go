@@ -333,6 +333,19 @@ func (s *pgStore) CountDiscoverUsers(ctx context.Context, params DiscoverUsersPa
 // discoverBySearch returns users filtered and sorted by username relevance.
 func (s *pgStore) discoverBySearch(ctx context.Context, params DiscoverUsersParams) ([]User, error) {
 	sobrietyMinDays := sobrietyMinimumDays(params.Sobriety)
+	decodedCursor := decodeDiscoverCursor(params.Cursor)
+	var cursorRank *int
+	var cursorCreatedAt *time.Time
+	var cursorID *uuid.UUID
+	if decodedCursor.Mode == "search" && decodedCursor.Rank != nil && decodedCursor.CreatedAt != "" && decodedCursor.LastID != "" {
+		if parsedAt, err := time.Parse(time.RFC3339Nano, decodedCursor.CreatedAt); err == nil {
+			if parsedID, err := uuid.Parse(decodedCursor.LastID); err == nil {
+				cursorRank = decodedCursor.Rank
+				cursorCreatedAt = &parsedAt
+				cursorID = &parsedID
+			}
+		}
+	}
 	rows, err := s.pool.Query(ctx,
 		`SELECT
 			u.id,
@@ -405,25 +418,50 @@ func (s *pgStore) discoverBySearch(ctx context.Context, params DiscoverUsersPara
 					)) <= $10::float8
 				)
 			)
-			AND (
-				$11::text[] IS NULL
-				OR EXISTS (
+				AND (
+					$11::text[] IS NULL
+					OR EXISTS (
 					SELECT 1
 					FROM user_interests ui
 					JOIN interests i ON i.id = ui.interest_id
 					WHERE ui.user_id = u.id
-					  AND i.name = ANY($11::text[])
+						  AND i.name = ANY($11::text[])
+					)
 				)
-			)
-		ORDER BY
-			CASE
-				WHEN u.username = $3 THEN 0
-				WHEN u.username ILIKE $3 || '%' THEN 1
-				ELSE 2
-			END,
-			u.created_at DESC
-		LIMIT $12 OFFSET $13`,
-		params.CurrentUserID, params.City, params.Query, params.Gender, params.AgeMin, params.AgeMax, sobrietyMinDays, params.Lat, params.Lng, params.DistanceKm, nullableTextArray(params.Interests), params.Limit, params.Offset,
+				AND (
+					$13::int IS NULL
+					OR (
+						CASE
+							WHEN u.username = $3 THEN 0
+							WHEN u.username ILIKE $3 || '%' THEN 1
+							ELSE 2
+						END
+					) > $13::int
+					OR (
+						CASE
+							WHEN u.username = $3 THEN 0
+							WHEN u.username ILIKE $3 || '%' THEN 1
+							ELSE 2
+						END
+					) = $13::int AND u.created_at < $14::timestamptz
+					OR (
+						CASE
+							WHEN u.username = $3 THEN 0
+							WHEN u.username ILIKE $3 || '%' THEN 1
+							ELSE 2
+						END
+					) = $13::int AND u.created_at = $14::timestamptz AND u.id > $15::uuid
+				)
+			ORDER BY
+				CASE
+					WHEN u.username = $3 THEN 0
+					WHEN u.username ILIKE $3 || '%' THEN 1
+					ELSE 2
+				END,
+				u.created_at DESC,
+				u.id ASC
+			LIMIT $12`,
+		params.CurrentUserID, params.City, params.Query, params.Gender, params.AgeMin, params.AgeMax, sobrietyMinDays, params.Lat, params.Lng, params.DistanceKm, nullableTextArray(params.Interests), params.Limit, cursorRank, cursorCreatedAt, cursorID,
 	)
 	if err != nil {
 		return nil, err
