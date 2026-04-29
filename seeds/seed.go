@@ -169,7 +169,7 @@ func seed(ctx context.Context, pool *pgxpool.Pool) error {
 			share_comment_mentions, share_comments, share_reactions, share_quality_features,
 			post_shares, feed_hidden_posts, feed_muted_authors, feed_impressions, feed_events,
 			post_quality_features, author_feed_stats,
-			event_waitlist, event_hosts, meetup_attendees, meetups,
+			meetup_waitlist, meetup_hosts, meetup_attendees, meetups,
 			post_reactions, comment_mentions, comments, post_images, posts,
 			discover_impressions,
 			notification_deliveries, notifications, notification_preferences, user_devices,
@@ -1271,7 +1271,7 @@ func insertMeetups(ctx context.Context, tx pgx.Tx, users []seededUser) ([]seeded
 			return nil, fmt.Errorf("insert meetup %s: %w", def.title, err)
 		}
 		if _, err := tx.Exec(ctx, `
-			INSERT INTO event_hosts (meetup_id, user_id, role)
+			INSERT INTO meetup_hosts (meetup_id, user_id, role)
 			VALUES ($1, $2, 'organizer')
 		`, meetupID, organizer.ID); err != nil {
 			return nil, fmt.Errorf("insert meetup organizer host %s: %w", def.title, err)
@@ -1282,7 +1282,7 @@ func insertMeetups(ctx context.Context, tx pgx.Tx, users []seededUser) ([]seeded
 				continue
 			}
 			if _, err := tx.Exec(ctx, `
-				INSERT INTO event_hosts (meetup_id, user_id, role)
+				INSERT INTO meetup_hosts (meetup_id, user_id, role)
 				VALUES ($1, $2, 'co_host')
 				ON CONFLICT (meetup_id, user_id) DO NOTHING
 			`, meetupID, host.ID); err != nil {
@@ -1344,7 +1344,7 @@ func insertMeetupAttendees(ctx context.Context, tx pgx.Tx, meetups []seededMeetu
 				}
 				seen[user.ID] = struct{}{}
 				if _, err := tx.Exec(ctx,
-					`INSERT INTO event_waitlist (meetup_id, user_id, joined_at) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
+					`INSERT INTO meetup_waitlist (meetup_id, user_id, joined_at) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
 					meetup.ID, user.ID, daysAgo(rng.Intn(10)+1),
 				); err != nil {
 					return fmt.Errorf("insert meetup waitlist: %w", err)
@@ -1820,7 +1820,7 @@ func refreshMeetupState(ctx context.Context, tx pgx.Tx) error {
 		) attendee_counts,
 		(
 			SELECT meetup_id, COUNT(*)::INT AS count
-			FROM event_waitlist
+			FROM meetup_waitlist
 			GROUP BY meetup_id
 		) waitlist_counts
 		WHERE m.id = attendee_counts.meetup_id
@@ -1837,7 +1837,7 @@ func refreshMeetupState(ctx context.Context, tx pgx.Tx) error {
 			), 0),
 			waitlist_count = COALESCE((
 				SELECT COUNT(*)::INT
-				FROM event_waitlist ew
+				FROM meetup_waitlist ew
 				WHERE ew.meetup_id = m.id
 			), 0)
 	`); err != nil {

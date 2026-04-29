@@ -571,25 +571,25 @@ CREATE INDEX IF NOT EXISTS idx_meetup_attendees_meetup_id
 CREATE INDEX IF NOT EXISTS idx_meetup_attendees_user_meetup_id
     ON meetup_attendees(user_id, meetup_id);
 
-CREATE TABLE IF NOT EXISTS event_hosts (
+CREATE TABLE IF NOT EXISTS meetup_hosts (
     meetup_id UUID NOT NULL REFERENCES meetups(id) ON DELETE CASCADE,
     user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     role TEXT NOT NULL DEFAULT 'co_host',
     PRIMARY KEY (meetup_id, user_id)
 );
 
-CREATE INDEX IF NOT EXISTS idx_event_hosts_meetup_id
-    ON event_hosts(meetup_id);
+CREATE INDEX IF NOT EXISTS idx_meetup_hosts_meetup_id
+    ON meetup_hosts(meetup_id);
 
-CREATE TABLE IF NOT EXISTS event_waitlist (
+CREATE TABLE IF NOT EXISTS meetup_waitlist (
     meetup_id UUID NOT NULL REFERENCES meetups(id) ON DELETE CASCADE,
     user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     joined_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     PRIMARY KEY (meetup_id, user_id)
 );
 
-CREATE INDEX IF NOT EXISTS idx_event_waitlist_meetup_id
-    ON event_waitlist(meetup_id);
+CREATE INDEX IF NOT EXISTS idx_meetup_waitlist_meetup_id
+    ON meetup_waitlist(meetup_id);
 
 CREATE TABLE IF NOT EXISTS support_requests (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

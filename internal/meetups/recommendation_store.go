@@ -294,7 +294,7 @@ func buildRecommendedMeetupQuery(userID uuid.UUID) (string, []any) {
 			m.waitlist_count,
 			m.saved_count,
 			EXISTS(SELECT 1 FROM meetup_attendees ma WHERE ma.meetup_id = m.id AND ma.user_id = $1) AS is_attending,
-			EXISTS(SELECT 1 FROM event_waitlist ew WHERE ew.meetup_id = m.id AND ew.user_id = $1) AS is_waitlisted,
+			EXISTS(SELECT 1 FROM meetup_waitlist ew WHERE ew.meetup_id = m.id AND ew.user_id = $1) AS is_waitlisted,
 			m.published_at,
 			m.updated_at,
 			m.created_at
@@ -352,7 +352,7 @@ func buildRecommendedSocialMeetupQuery(userID uuid.UUID) (string, []any) {
 			m.waitlist_count,
 			m.saved_count,
 			EXISTS(SELECT 1 FROM meetup_attendees ma WHERE ma.meetup_id = m.id AND ma.user_id = $1) AS is_attending,
-			EXISTS(SELECT 1 FROM event_waitlist ew WHERE ew.meetup_id = m.id AND ew.user_id = $1) AS is_waitlisted,
+			EXISTS(SELECT 1 FROM meetup_waitlist ew WHERE ew.meetup_id = m.id AND ew.user_id = $1) AS is_waitlisted,
 			m.published_at,
 			m.updated_at,
 			m.created_at

@@ -167,7 +167,7 @@ func (s *pgStore) CreateMeetup(ctx context.Context, userID uuid.UUID, input Crea
 	}
 
 	if _, err := tx.Exec(ctx, `
-		INSERT INTO event_hosts (meetup_id, user_id, role)
+		INSERT INTO meetup_hosts (meetup_id, user_id, role)
 		VALUES ($1, $2, 'organizer')
 		ON CONFLICT (meetup_id, user_id) DO NOTHING
 	`, meetup.ID, userID); err != nil {
@@ -383,7 +383,7 @@ func (s *pgStore) GetWaitlist(ctx context.Context, meetupID, userID uuid.UUID, l
 	}
 	rows, err := s.pool.Query(ctx, `
 		SELECT u.id, u.username, u.avatar_url, u.city, ew.joined_at
-		FROM event_waitlist ew
+		FROM meetup_waitlist ew
 		JOIN users u ON u.id = ew.user_id
 		WHERE ew.meetup_id = $1
 		ORDER BY ew.joined_at ASC, u.username ASC
@@ -445,7 +445,7 @@ func (s *pgStore) ToggleRSVP(ctx context.Context, meetupID, userID uuid.UUID) (*
 
 	var isWaitlisted bool
 	if err := tx.QueryRow(ctx, `
-		SELECT EXISTS(SELECT 1 FROM event_waitlist WHERE meetup_id = $1 AND user_id = $2)
+		SELECT EXISTS(SELECT 1 FROM meetup_waitlist WHERE meetup_id = $1 AND user_id = $2)
 	`, meetupID, userID).Scan(&isWaitlisted); err != nil {
 		return nil, err
 	}
@@ -463,13 +463,13 @@ func (s *pgStore) ToggleRSVP(ctx context.Context, meetupID, userID uuid.UUID) (*
 			var promoteUserID uuid.UUID
 			err := tx.QueryRow(ctx, `
 				SELECT user_id
-				FROM event_waitlist
+				FROM meetup_waitlist
 				WHERE meetup_id = $1
 				ORDER BY joined_at ASC
 				LIMIT 1
 			`, meetupID).Scan(&promoteUserID)
 			if err == nil {
-				if _, err := tx.Exec(ctx, `DELETE FROM event_waitlist WHERE meetup_id = $1 AND user_id = $2`, meetupID, promoteUserID); err != nil {
+				if _, err := tx.Exec(ctx, `DELETE FROM meetup_waitlist WHERE meetup_id = $1 AND user_id = $2`, meetupID, promoteUserID); err != nil {
 					return nil, err
 				}
 				if _, err := tx.Exec(ctx, `
@@ -491,7 +491,7 @@ func (s *pgStore) ToggleRSVP(ctx context.Context, meetupID, userID uuid.UUID) (*
 		result.Waitlisted = false
 
 	case isWaitlisted:
-		if _, err := tx.Exec(ctx, `DELETE FROM event_waitlist WHERE meetup_id = $1 AND user_id = $2`, meetupID, userID); err != nil {
+		if _, err := tx.Exec(ctx, `DELETE FROM meetup_waitlist WHERE meetup_id = $1 AND user_id = $2`, meetupID, userID); err != nil {
 			return nil, err
 		}
 		waitlistCount = maxInt(waitlistCount-1, 0)
@@ -515,7 +515,7 @@ func (s *pgStore) ToggleRSVP(ctx context.Context, meetupID, userID uuid.UUID) (*
 			result.Waitlisted = false
 		} else if waitlistEnabled {
 			if _, err := tx.Exec(ctx, `
-				INSERT INTO event_waitlist (meetup_id, user_id, joined_at)
+				INSERT INTO meetup_waitlist (meetup_id, user_id, joined_at)
 				VALUES ($1, $2, $3)
 				ON CONFLICT (meetup_id, user_id) DO NOTHING
 			`, meetupID, userID, now); err != nil {
@@ -619,7 +619,7 @@ type meetupHostExecutor interface {
 
 func syncMeetupHosts(ctx context.Context, execer meetupHostExecutor, meetupID, organizerID uuid.UUID, coHostIDs []uuid.UUID) error {
 	if _, err := execer.Exec(ctx, `
-		DELETE FROM event_hosts
+		DELETE FROM meetup_hosts
 		WHERE meetup_id = $1
 			AND user_id <> $2
 	`, meetupID, organizerID); err != nil {
@@ -631,7 +631,7 @@ func syncMeetupHosts(ctx context.Context, execer meetupHostExecutor, meetupID, o
 			continue
 		}
 		if _, err := execer.Exec(ctx, `
-			INSERT INTO event_hosts (meetup_id, user_id, role)
+			INSERT INTO meetup_hosts (meetup_id, user_id, role)
 			VALUES ($1, $2, 'co_host')
 			ON CONFLICT (meetup_id, user_id)
 			DO UPDATE SET role = 'co_host'
@@ -675,7 +675,7 @@ func (s *pgStore) loadDiscoverMeetups(ctx context.Context, userID uuid.UUID, par
 			m.waitlist_count,
 			m.saved_count,
 			EXISTS(SELECT 1 FROM meetup_attendees ma WHERE ma.meetup_id = m.id AND ma.user_id = $1) AS is_attending,
-			EXISTS(SELECT 1 FROM event_waitlist ew WHERE ew.meetup_id = m.id AND ew.user_id = $1) AS is_waitlisted,
+			EXISTS(SELECT 1 FROM meetup_waitlist ew WHERE ew.meetup_id = m.id AND ew.user_id = $1) AS is_waitlisted,
 			m.published_at,
 			m.updated_at,
 			m.created_at
@@ -818,7 +818,7 @@ func (s *pgStore) loadMyMeetups(ctx context.Context, userID uuid.UUID, scope str
 			m.waitlist_count,
 			m.saved_count,
 			EXISTS(SELECT 1 FROM meetup_attendees ma WHERE ma.meetup_id = m.id AND ma.user_id = $1) AS is_attending,
-			EXISTS(SELECT 1 FROM event_waitlist ew WHERE ew.meetup_id = m.id AND ew.user_id = $1) AS is_waitlisted,
+			EXISTS(SELECT 1 FROM meetup_waitlist ew WHERE ew.meetup_id = m.id AND ew.user_id = $1) AS is_waitlisted,
 			m.published_at,
 			m.updated_at,
 			m.created_at
@@ -904,7 +904,7 @@ func (s *pgStore) loadMeetupByID(ctx context.Context, meetupID, userID uuid.UUID
 			m.waitlist_count,
 			m.saved_count,
 			EXISTS(SELECT 1 FROM meetup_attendees ma WHERE ma.meetup_id = m.id AND ma.user_id = $2) AS is_attending,
-			EXISTS(SELECT 1 FROM event_waitlist ew WHERE ew.meetup_id = m.id AND ew.user_id = $2) AS is_waitlisted,
+			EXISTS(SELECT 1 FROM meetup_waitlist ew WHERE ew.meetup_id = m.id AND ew.user_id = $2) AS is_waitlisted,
 			m.published_at,
 			m.updated_at,
 			m.created_at
@@ -1045,7 +1045,7 @@ func (s *pgStore) attachHosts(ctx context.Context, meetups []Meetup) error {
 	}
 	rows, err := s.pool.Query(ctx, `
 		SELECT eh.meetup_id, u.id, u.username, u.avatar_url, eh.role
-		FROM event_hosts eh
+		FROM meetup_hosts eh
 		JOIN users u ON u.id = eh.user_id
 		WHERE eh.meetup_id = ANY($1)
 		ORDER BY eh.role ASC, u.username ASC
