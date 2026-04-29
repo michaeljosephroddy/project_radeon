@@ -93,8 +93,6 @@ func main() {
 	friendsStore := friends.NewCachedStore(friends.NewPgStore(db), cacheStore)
 
 	userHandler := user.NewHandler(userStore, uploader)
-	feedHandler := feed.NewHandler(feedStore, uploader)
-	meetupsHandler := meetups.NewHandler(meetups.NewPgStore(db), uploader)
 	notificationsService := notifications.NewService(
 		notifications.NewPgStore(db),
 		notifications.NewExpoProvider(nil),
@@ -104,8 +102,8 @@ func main() {
 	chatsRealtimeBus := chats.NewRedisRealtimeBus(cacheStore)
 	chatsHandler := chats.NewHandlerWithRealtimeInfra(chats.NewPgStore(db), notificationsService, chatsRealtimeHub, chatsRealtimeBus)
 	friendsHandler := friends.NewHandler(friendsStore)
-	feedHandler = feed.NewHandlerWithNotifier(feedStore, notificationsService, uploader)
-	meetupsHandler = meetups.NewHandler(meetupsStore, uploader)
+	feedHandler := feed.NewHandlerWithNotifier(feedStore, notificationsService, uploader)
+	meetupsHandler := meetups.NewHandler(meetupsStore, uploader)
 	supportHandler := support.NewHandlerWithChatBroadcaster(supportStore, chatsHandler)
 
 	r := chi.NewRouter()
