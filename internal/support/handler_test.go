@@ -17,17 +17,21 @@ import (
 
 type mockQuerier struct {
 	countOpenSupportRequests      func(ctx context.Context, userID uuid.UUID) (int, error)
-	createImmediateSupportRequest func(ctx context.Context, userID uuid.UUID, reqType string, message *string, urgency string, privacyLevel string) (*SupportRequest, error)
-	createCommunitySupportRequest func(ctx context.Context, userID uuid.UUID, reqType string, message *string, urgency string, privacyLevel string) (*SupportRequest, error)
-	acceptSupportResponse         func(ctx context.Context, requesterID, requestID, responseID uuid.UUID) (*SupportRequest, error)
+	countHighUrgencyRequestsSince func(ctx context.Context, userID uuid.UUID, since time.Time) (int, error)
+	createSupportRequest          func(ctx context.Context, userID uuid.UUID, input CreateSupportRequestInput) (*SupportRequest, error)
+	acceptSupportOffer            func(ctx context.Context, requesterID, requestID, offerID uuid.UUID) (*SupportRequest, error)
 	getSupportRequest             func(ctx context.Context, viewerID, requestID uuid.UUID) (*SupportRequest, error)
 	closeSupportRequest           func(ctx context.Context, requestID, userID uuid.UUID) ([]uuid.UUID, error)
 	listMySupportRequests         func(ctx context.Context, userID uuid.UUID, before *time.Time, limit int) ([]SupportRequest, error)
-	listVisibleSupportRequests    func(ctx context.Context, userID uuid.UUID, channel SupportChannel, cursor *SupportQueueCursor, limit int) ([]SupportRequest, error)
+	listVisibleSupportRequests    func(ctx context.Context, userID uuid.UUID, filter SupportRequestFilter, cursor *SupportFeedCursor, limit int) ([]SupportRequest, error)
 	getSupportRequestState        func(ctx context.Context, requestID uuid.UUID) (uuid.UUID, string, error)
-	createSupportResponse         func(ctx context.Context, requestID, userID uuid.UUID, responseType string, message *string, scheduledFor *time.Time) (*CreateSupportResponseResult, error)
+	createSupportOffer            func(ctx context.Context, requestID, userID uuid.UUID, offerType string, message *string, scheduledFor *time.Time) (*CreateSupportOfferResult, error)
 	getSupportRequestOwner        func(ctx context.Context, requestID uuid.UUID) (uuid.UUID, error)
-	listSupportResponses          func(ctx context.Context, requestID uuid.UUID, limit, offset int) ([]SupportResponse, error)
+	listSupportOffers             func(ctx context.Context, requestID uuid.UUID, limit, offset int) ([]SupportOffer, error)
+	createSupportReply            func(ctx context.Context, requestID, authorID uuid.UUID, body string) (*SupportReply, error)
+	listSupportReplies            func(ctx context.Context, requestID uuid.UUID, cursor *SupportReplyCursor, limit int) ([]SupportReply, error)
+	declineSupportOffer           func(ctx context.Context, requesterID, requestID, offerID uuid.UUID) error
+	cancelSupportOffer            func(ctx context.Context, responderID, requestID, offerID uuid.UUID) error
 }
 
 func (m *mockQuerier) CountOpenSupportRequests(ctx context.Context, userID uuid.UUID) (int, error) {
@@ -36,23 +40,23 @@ func (m *mockQuerier) CountOpenSupportRequests(ctx context.Context, userID uuid.
 	}
 	return 0, nil
 }
-func (m *mockQuerier) CreateImmediateSupportRequest(ctx context.Context, userID uuid.UUID, reqType string, message *string, urgency string, privacyLevel string) (*SupportRequest, error) {
-	if m.createImmediateSupportRequest != nil {
-		return m.createImmediateSupportRequest(ctx, userID, reqType, message, urgency, privacyLevel)
+func (m *mockQuerier) CountHighUrgencySupportRequestsSince(ctx context.Context, userID uuid.UUID, since time.Time) (int, error) {
+	if m.countHighUrgencyRequestsSince != nil {
+		return m.countHighUrgencyRequestsSince(ctx, userID, since)
 	}
-	return &SupportRequest{ID: uuid.New(), RequesterID: userID, Channel: SupportChannelImmediate}, nil
+	return 0, nil
 }
-func (m *mockQuerier) CreateCommunitySupportRequest(ctx context.Context, userID uuid.UUID, reqType string, message *string, urgency string, privacyLevel string) (*SupportRequest, error) {
-	if m.createCommunitySupportRequest != nil {
-		return m.createCommunitySupportRequest(ctx, userID, reqType, message, urgency, privacyLevel)
+func (m *mockQuerier) CreateSupportRequest(ctx context.Context, userID uuid.UUID, input CreateSupportRequestInput) (*SupportRequest, error) {
+	if m.createSupportRequest != nil {
+		return m.createSupportRequest(ctx, userID, input)
 	}
-	return &SupportRequest{ID: uuid.New(), RequesterID: userID, Channel: SupportChannelCommunity}, nil
+	return &SupportRequest{ID: uuid.New(), RequesterID: userID, SupportType: input.SupportType, Urgency: input.Urgency}, nil
 }
-func (m *mockQuerier) AcceptSupportResponse(ctx context.Context, requesterID, requestID, responseID uuid.UUID) (*SupportRequest, error) {
-	if m.acceptSupportResponse != nil {
-		return m.acceptSupportResponse(ctx, requesterID, requestID, responseID)
+func (m *mockQuerier) AcceptSupportOffer(ctx context.Context, requesterID, requestID, offerID uuid.UUID) (*SupportRequest, error) {
+	if m.acceptSupportOffer != nil {
+		return m.acceptSupportOffer(ctx, requesterID, requestID, offerID)
 	}
-	return &SupportRequest{ID: requestID, RequesterID: requesterID, AcceptedResponseID: &responseID}, nil
+	return &SupportRequest{ID: requestID, RequesterID: requesterID, AcceptedResponseID: &offerID}, nil
 }
 func (m *mockQuerier) GetSupportRequest(ctx context.Context, viewerID, requestID uuid.UUID) (*SupportRequest, error) {
 	if m.getSupportRequest != nil {
@@ -72,9 +76,9 @@ func (m *mockQuerier) ListMySupportRequests(ctx context.Context, userID uuid.UUI
 	}
 	return nil, nil
 }
-func (m *mockQuerier) ListVisibleSupportRequests(ctx context.Context, userID uuid.UUID, channel SupportChannel, cursor *SupportQueueCursor, limit int) ([]SupportRequest, error) {
+func (m *mockQuerier) ListVisibleSupportRequests(ctx context.Context, userID uuid.UUID, filter SupportRequestFilter, cursor *SupportFeedCursor, limit int) ([]SupportRequest, error) {
 	if m.listVisibleSupportRequests != nil {
-		return m.listVisibleSupportRequests(ctx, userID, channel, cursor, limit)
+		return m.listVisibleSupportRequests(ctx, userID, filter, cursor, limit)
 	}
 	return nil, nil
 }
@@ -84,11 +88,11 @@ func (m *mockQuerier) GetSupportRequestState(ctx context.Context, requestID uuid
 	}
 	return uuid.Nil, "", ErrNotFound
 }
-func (m *mockQuerier) CreateSupportResponse(ctx context.Context, requestID, userID uuid.UUID, responseType string, message *string, scheduledFor *time.Time) (*CreateSupportResponseResult, error) {
-	if m.createSupportResponse != nil {
-		return m.createSupportResponse(ctx, requestID, userID, responseType, message, scheduledFor)
+func (m *mockQuerier) CreateSupportOffer(ctx context.Context, requestID, userID uuid.UUID, offerType string, message *string, scheduledFor *time.Time) (*CreateSupportOfferResult, error) {
+	if m.createSupportOffer != nil {
+		return m.createSupportOffer(ctx, requestID, userID, offerType, message, scheduledFor)
 	}
-	return &CreateSupportResponseResult{Response: &SupportResponse{ID: uuid.New()}}, nil
+	return &CreateSupportOfferResult{Offer: &SupportOffer{ID: uuid.New()}}, nil
 }
 func (m *mockQuerier) GetSupportRequestOwner(ctx context.Context, requestID uuid.UUID) (uuid.UUID, error) {
 	if m.getSupportRequestOwner != nil {
@@ -96,11 +100,35 @@ func (m *mockQuerier) GetSupportRequestOwner(ctx context.Context, requestID uuid
 	}
 	return uuid.Nil, ErrNotFound
 }
-func (m *mockQuerier) ListSupportResponses(ctx context.Context, requestID uuid.UUID, limit, offset int) ([]SupportResponse, error) {
-	if m.listSupportResponses != nil {
-		return m.listSupportResponses(ctx, requestID, limit, offset)
+func (m *mockQuerier) ListSupportOffers(ctx context.Context, requestID uuid.UUID, limit, offset int) ([]SupportOffer, error) {
+	if m.listSupportOffers != nil {
+		return m.listSupportOffers(ctx, requestID, limit, offset)
 	}
 	return nil, nil
+}
+func (m *mockQuerier) CreateSupportReply(ctx context.Context, requestID, authorID uuid.UUID, body string) (*SupportReply, error) {
+	if m.createSupportReply != nil {
+		return m.createSupportReply(ctx, requestID, authorID, body)
+	}
+	return &SupportReply{ID: uuid.New(), SupportRequestID: requestID, AuthorID: authorID, Body: body}, nil
+}
+func (m *mockQuerier) ListSupportReplies(ctx context.Context, requestID uuid.UUID, cursor *SupportReplyCursor, limit int) ([]SupportReply, error) {
+	if m.listSupportReplies != nil {
+		return m.listSupportReplies(ctx, requestID, cursor, limit)
+	}
+	return nil, nil
+}
+func (m *mockQuerier) DeclineSupportOffer(ctx context.Context, requesterID, requestID, offerID uuid.UUID) error {
+	if m.declineSupportOffer != nil {
+		return m.declineSupportOffer(ctx, requesterID, requestID, offerID)
+	}
+	return nil
+}
+func (m *mockQuerier) CancelSupportOffer(ctx context.Context, responderID, requestID, offerID uuid.UUID) error {
+	if m.cancelSupportOffer != nil {
+		return m.cancelSupportOffer(ctx, responderID, requestID, offerID)
+	}
+	return nil
 }
 
 var (
@@ -113,11 +141,11 @@ func withUserID(r *http.Request, id uuid.UUID) *http.Request {
 	return r.WithContext(context.WithValue(r.Context(), middleware.UserIDKey, id))
 }
 
-func TestListSupportRequestsRejectsInvalidChannel(t *testing.T) {
+func TestListSupportRequestsRejectsInvalidFilter(t *testing.T) {
 	h := NewHandler(&mockQuerier{})
 	rec := httptest.NewRecorder()
 	req := authedRequest(http.MethodGet, "")
-	req.URL.RawQuery = "channel=bad"
+	req.URL.RawQuery = "filter=bad"
 
 	h.ListSupportRequests(rec, req)
 	if rec.Code != http.StatusBadRequest {
@@ -125,23 +153,24 @@ func TestListSupportRequestsRejectsInvalidChannel(t *testing.T) {
 	}
 }
 
-func TestListSupportRequestsPassesChannelAndCursor(t *testing.T) {
-	var seenChannel SupportChannel
-	var seenCursor *SupportQueueCursor
+func TestListSupportRequestsPassesFilterAndCursor(t *testing.T) {
+	var seenFilter SupportRequestFilter
+	var seenCursor *SupportFeedCursor
 
 	h := NewHandler(&mockQuerier{
-		listVisibleSupportRequests: func(_ context.Context, _ uuid.UUID, channel SupportChannel, cursor *SupportQueueCursor, limit int) ([]SupportRequest, error) {
-			seenChannel = channel
+		listVisibleSupportRequests: func(_ context.Context, _ uuid.UUID, filter SupportRequestFilter, cursor *SupportFeedCursor, limit int) ([]SupportRequest, error) {
+			seenFilter = filter
 			seenCursor = cursor
 			return []SupportRequest{}, nil
 		},
 	})
 
-	encodedCursor, err := encodeSupportQueueCursor(SupportQueueCursor{
-		AttentionBucket: 1,
-		UrgencyRank:     2,
-		CreatedAt:       time.Date(2026, 4, 28, 10, 0, 0, 0, time.UTC),
-		ID:              fixedRequest,
+	servedAt := time.Date(2026, 4, 28, 9, 0, 0, 0, time.UTC)
+	encodedCursor, err := encodeSupportFeedCursor(SupportFeedCursor{
+		Score:     245.5,
+		CreatedAt: time.Date(2026, 4, 28, 10, 0, 0, 0, time.UTC),
+		ID:        fixedRequest,
+		ServedAt:  servedAt,
 	})
 	if err != nil {
 		t.Fatalf("encode cursor: %v", err)
@@ -149,35 +178,35 @@ func TestListSupportRequestsPassesChannelAndCursor(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	req := authedRequest(http.MethodGet, "")
-	req.URL.RawQuery = "channel=immediate&cursor=" + *encodedCursor
+	req.URL.RawQuery = "filter=urgent&cursor=" + *encodedCursor
 
 	h.ListSupportRequests(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
 	}
-	if seenChannel != SupportChannelImmediate {
-		t.Fatalf("channel = %q, want %q", seenChannel, SupportChannelImmediate)
+	if seenFilter != SupportRequestFilterUrgent {
+		t.Fatalf("filter = %q, want %q", seenFilter, SupportRequestFilterUrgent)
 	}
-	if seenCursor == nil || seenCursor.ID != fixedRequest || seenCursor.AttentionBucket != 1 || seenCursor.UrgencyRank != 2 {
+	if seenCursor == nil || seenCursor.ID != fixedRequest || seenCursor.Score != 245.5 || !seenCursor.ServedAt.Equal(servedAt) {
 		t.Fatalf("cursor = %#v, want populated decoded cursor", seenCursor)
 	}
 }
 
-func TestParseSupportQueueCursorRejectsInvalidBase64(t *testing.T) {
-	if _, err := parseSupportQueueCursor("not-valid-%%%"); err == nil {
+func TestParseSupportFeedCursorRejectsInvalidBase64(t *testing.T) {
+	if _, err := parseSupportFeedCursor("not-valid-%%%"); err == nil {
 		t.Fatal("expected cursor parse error")
 	}
 }
 
-func TestEncodeSupportQueueCursorProducesRoundTripPayload(t *testing.T) {
-	cursor := SupportQueueCursor{
-		AttentionBucket: 2,
-		UrgencyRank:     1,
-		CreatedAt:       time.Date(2026, 4, 28, 11, 0, 0, 0, time.UTC),
-		ID:              fixedOther,
+func TestEncodeSupportFeedCursorProducesRoundTripPayload(t *testing.T) {
+	cursor := SupportFeedCursor{
+		Score:     312.25,
+		CreatedAt: time.Date(2026, 4, 28, 11, 0, 0, 0, time.UTC),
+		ID:        fixedOther,
+		ServedAt:  time.Date(2026, 4, 28, 12, 0, 0, 0, time.UTC),
 	}
 
-	encoded, err := encodeSupportQueueCursor(cursor)
+	encoded, err := encodeSupportFeedCursor(cursor)
 	if err != nil {
 		t.Fatalf("encode cursor: %v", err)
 	}
@@ -187,7 +216,7 @@ func TestEncodeSupportQueueCursorProducesRoundTripPayload(t *testing.T) {
 		t.Fatalf("decode base64: %v", err)
 	}
 
-	var decoded SupportQueueCursor
+	var decoded SupportFeedCursor
 	if err := json.Unmarshal(payload, &decoded); err != nil {
 		t.Fatalf("decode json: %v", err)
 	}
@@ -290,127 +319,127 @@ func TestUpdateSupportRequestSuccess(t *testing.T) {
 	}
 }
 
-// ── CreateSupportResponse ─────────────────────────────────────────────────────
+// ── CreateSupportOffer ─────────────────────────────────────────────────────
 
-func TestCreateSupportResponseValidationFlow(t *testing.T) {
+func TestCreateSupportOfferValidationFlow(t *testing.T) {
 	h := NewHandler(&mockQuerier{})
 	rec := httptest.NewRecorder()
-	h.CreateSupportResponse(rec, authedRequestWithID(http.MethodPost, `{"response_type":"bad"}`, fixedRequest.String()))
+	h.CreateSupportOffer(rec, authedRequestWithID(http.MethodPost, `{"offer_type":"bad"}`, fixedRequest.String()))
 	if rec.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnprocessableEntity)
 	}
 }
 
-func TestCreateSupportResponseRequestNotFound(t *testing.T) {
+func TestCreateSupportOfferRequestNotFound(t *testing.T) {
 	h := NewHandler(&mockQuerier{
 		getSupportRequestState: func(_ context.Context, _ uuid.UUID) (uuid.UUID, string, error) {
 			return uuid.Nil, "", ErrNotFound
 		},
 	})
 	rec := httptest.NewRecorder()
-	h.CreateSupportResponse(rec, authedRequestWithID(http.MethodPost, `{"response_type":"can_chat"}`, fixedRequest.String()))
+	h.CreateSupportOffer(rec, authedRequestWithID(http.MethodPost, `{"offer_type":"chat"}`, fixedRequest.String()))
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNotFound)
 	}
 }
 
-func TestCreateSupportResponseCannotRespondToOwnRequest(t *testing.T) {
+func TestCreateSupportOfferCannotRespondToOwnRequest(t *testing.T) {
 	h := NewHandler(&mockQuerier{
 		getSupportRequestState: func(_ context.Context, _ uuid.UUID) (uuid.UUID, string, error) {
 			return fixedUser, "open", nil
 		},
 	})
 	rec := httptest.NewRecorder()
-	h.CreateSupportResponse(rec, authedRequestWithID(http.MethodPost, `{"response_type":"can_chat"}`, fixedRequest.String()))
+	h.CreateSupportOffer(rec, authedRequestWithID(http.MethodPost, `{"offer_type":"chat"}`, fixedRequest.String()))
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
 	}
 }
 
-func TestCreateSupportResponseRequestNoLongerOpen(t *testing.T) {
+func TestCreateSupportOfferRequestNoLongerOpen(t *testing.T) {
 	h := NewHandler(&mockQuerier{
 		getSupportRequestState: func(_ context.Context, _ uuid.UUID) (uuid.UUID, string, error) {
 			return fixedOther, "closed", nil
 		},
 	})
 	rec := httptest.NewRecorder()
-	h.CreateSupportResponse(rec, authedRequestWithID(http.MethodPost, `{"response_type":"can_chat"}`, fixedRequest.String()))
+	h.CreateSupportOffer(rec, authedRequestWithID(http.MethodPost, `{"offer_type":"chat"}`, fixedRequest.String()))
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusConflict)
 	}
 }
 
-func TestCreateSupportResponseSuccessWhenRequesterIsOtherUser(t *testing.T) {
+func TestCreateSupportOfferSuccessWhenRequesterIsOtherUser(t *testing.T) {
 	h := NewHandler(&mockQuerier{
 		getSupportRequestState: func(_ context.Context, _ uuid.UUID) (uuid.UUID, string, error) {
 			return fixedOther, "open", nil
 		},
 	})
 	rec := httptest.NewRecorder()
-	h.CreateSupportResponse(rec, authedRequestWithID(http.MethodPost, `{"response_type":"can_chat"}`, fixedRequest.String()))
+	h.CreateSupportOffer(rec, authedRequestWithID(http.MethodPost, `{"offer_type":"chat"}`, fixedRequest.String()))
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusCreated)
 	}
 }
 
-func TestCreateSupportResponseSuccess(t *testing.T) {
+func TestCreateSupportOfferSuccess(t *testing.T) {
 	h := NewHandler(&mockQuerier{
 		getSupportRequestState: func(_ context.Context, _ uuid.UUID) (uuid.UUID, string, error) {
 			return fixedOther, "open", nil
 		},
 	})
 	rec := httptest.NewRecorder()
-	h.CreateSupportResponse(rec, authedRequestWithID(http.MethodPost, `{"response_type":"can_chat"}`, fixedRequest.String()))
+	h.CreateSupportOffer(rec, authedRequestWithID(http.MethodPost, `{"offer_type":"chat"}`, fixedRequest.String()))
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusCreated)
 	}
 }
 
-// ── ListSupportResponses ──────────────────────────────────────────────────────
+// ── ListSupportOffers ──────────────────────────────────────────────────────
 
-func TestListSupportResponsesRejectsInvalidUUID(t *testing.T) {
+func TestListSupportOffersRejectsInvalidUUID(t *testing.T) {
 	h := NewHandler(&mockQuerier{})
 	rec := httptest.NewRecorder()
-	h.ListSupportResponses(rec, authedRequestWithID(http.MethodGet, "", "bad"))
+	h.ListSupportOffers(rec, authedRequestWithID(http.MethodGet, "", "bad"))
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
 	}
 }
 
-func TestListSupportResponsesRequestNotFound(t *testing.T) {
+func TestListSupportOffersRequestNotFound(t *testing.T) {
 	h := NewHandler(&mockQuerier{
 		getSupportRequestOwner: func(_ context.Context, _ uuid.UUID) (uuid.UUID, error) {
 			return uuid.Nil, ErrNotFound
 		},
 	})
 	rec := httptest.NewRecorder()
-	h.ListSupportResponses(rec, authedRequestWithID(http.MethodGet, "", fixedRequest.String()))
+	h.ListSupportOffers(rec, authedRequestWithID(http.MethodGet, "", fixedRequest.String()))
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNotFound)
 	}
 }
 
-func TestListSupportResponsesForbiddenForNonOwner(t *testing.T) {
+func TestListSupportOffersForbiddenForNonOwner(t *testing.T) {
 	h := NewHandler(&mockQuerier{
 		getSupportRequestOwner: func(_ context.Context, _ uuid.UUID) (uuid.UUID, error) {
 			return fixedOther, nil
 		},
 	})
 	rec := httptest.NewRecorder()
-	h.ListSupportResponses(rec, authedRequestWithID(http.MethodGet, "", fixedRequest.String()))
+	h.ListSupportOffers(rec, authedRequestWithID(http.MethodGet, "", fixedRequest.String()))
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusForbidden)
 	}
 }
 
-func TestListSupportResponsesSuccess(t *testing.T) {
+func TestListSupportOffersSuccess(t *testing.T) {
 	h := NewHandler(&mockQuerier{
 		getSupportRequestOwner: func(_ context.Context, _ uuid.UUID) (uuid.UUID, error) {
 			return fixedUser, nil
 		},
 	})
 	rec := httptest.NewRecorder()
-	h.ListSupportResponses(rec, authedRequestWithID(http.MethodGet, "", fixedRequest.String()))
+	h.ListSupportOffers(rec, authedRequestWithID(http.MethodGet, "", fixedRequest.String()))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
 	}

@@ -21,10 +21,50 @@ type pgStore struct {
 	pool *pgxpool.Pool
 }
 
-const (
-	immediateSupportCoolingWindow = 10 * time.Minute
-	generalSupportCoolingWindow   = time.Hour
-)
+func setSupportRequestLocation(req *SupportRequest, visibility string, city, region, country *string, lat, lng *float64) {
+	if req.Topics == nil {
+		req.Topics = []string{}
+	}
+	if visibility == "" {
+		visibility = "hidden"
+	}
+	if visibility == "hidden" {
+		req.Location = nil
+		return
+	}
+	req.Location = &SupportLocation{
+		City:           city,
+		Region:         region,
+		Country:        country,
+		ApproximateLat: lat,
+		ApproximateLng: lng,
+		Visibility:     visibility,
+	}
+}
+
+func supportFeedScore(urgency string, isPriority bool, replyCount int, offerCount int, createdAt time.Time, servedAt time.Time) float64 {
+	score := 100.0
+	switch urgency {
+	case "high":
+		score = 300
+	case "medium":
+		score = 200
+	}
+	if isPriority {
+		score += 40
+	}
+	if replyCount == 0 && offerCount == 0 {
+		score += 80
+	} else if offerCount == 0 {
+		score += 50
+	}
+	ageHours := servedAt.Sub(createdAt).Hours()
+	if ageHours < 0 {
+		ageHours = 0
+	}
+	score += 50 / (1 + ageHours/24)
+	return score
+}
 
 // NewPgStore wraps a pgxpool.Pool as the production Querier implementation.
 func NewPgStore(pool *pgxpool.Pool) Querier {
@@ -43,8 +83,27 @@ func (s *pgStore) CountOpenSupportRequests(ctx context.Context, userID uuid.UUID
 	return count, err
 }
 
+func (s *pgStore) CountHighUrgencySupportRequestsSince(ctx context.Context, userID uuid.UUID, since time.Time) (int, error) {
+	var count int
+	err := s.pool.QueryRow(ctx,
+		`SELECT COUNT(*)
+		FROM support_requests
+		WHERE requester_id = $1
+		  AND urgency = 'high'
+		  AND created_at >= $2`,
+		userID, since,
+	).Scan(&count)
+	return count, err
+}
+
 func (s *pgStore) GetSupportRequest(ctx context.Context, viewerID, requestID uuid.UUID) (*SupportRequest, error) {
 	var req SupportRequest
+	var locationVisibility string
+	var locationCity *string
+	var locationRegion *string
+	var locationCountry *string
+	var locationApproxLat *float64
+	var locationApproxLng *float64
 	err := s.pool.QueryRow(ctx,
 		`SELECT
 			sr.id,
@@ -52,13 +111,23 @@ func (s *pgStore) GetSupportRequest(ctx context.Context, viewerID, requestID uui
 			requester.username,
 			requester.avatar_url,
 			requester.city,
-			sr.type,
+			sr.support_type,
+			COALESCE(sr.topics, '{}'::text[]),
+			sr.preferred_gender,
+			sr.location_visibility,
+			sr.location_city,
+			sr.location_region,
+			sr.location_country,
+			sr.location_approx_lat,
+			sr.location_approx_lng,
 			sr.message,
 			sr.urgency,
 			sr.status,
+			COALESCE(sr.reply_count, 0),
 			sr.response_count,
+			COALESCE(sr.view_count, 0),
+			(COALESCE(sr.is_priority, false) AND (sr.priority_expires_at IS NULL OR sr.priority_expires_at > NOW())) AS is_priority,
 			sr.created_at,
-			sr.channel,
 			sr.privacy_level,
 			sr.accepted_response_id,
 			sr.accepted_responder_id,
@@ -73,6 +142,11 @@ func (s *pgStore) GetSupportRequest(ctx context.Context, viewerID, requestID uui
 				WHERE own_res.support_request_id = sr.id
 					AND own_res.responder_id = $2
 			) AS has_responded,
+			EXISTS(
+				SELECT 1 FROM support_replies own_reply
+				WHERE own_reply.support_request_id = sr.id
+					AND own_reply.author_id = $2
+			) AS has_replied,
 			sr.requester_id = $2 AS is_own_request
 		FROM support_requests sr
 		JOIN users requester ON requester.id = sr.requester_id
@@ -81,11 +155,13 @@ func (s *pgStore) GetSupportRequest(ctx context.Context, viewerID, requestID uui
 		requestID, viewerID,
 	).Scan(
 		&req.ID, &req.RequesterID, &req.Username, &req.AvatarURL, &req.City,
-		&req.Type, &req.Message, &req.Urgency, &req.Status, &req.ResponseCount,
-		&req.CreatedAt, &req.Channel, &req.PrivacyLevel,
+		&req.SupportType, &req.Topics, &req.PreferredGender,
+		&locationVisibility, &locationCity, &locationRegion, &locationCountry, &locationApproxLat, &locationApproxLng,
+		&req.Message, &req.Urgency, &req.Status, &req.ReplyCount, &req.ResponseCount, &req.ViewCount, &req.IsPriority,
+		&req.CreatedAt, &req.PrivacyLevel,
 		&req.AcceptedResponseID, &req.AcceptedResponderID, &req.AcceptedAt, &req.ClosedAt,
 		&req.ResponderID, &req.ResponderUsername, &req.ResponderAvatarURL, &req.ChatID,
-		&req.HasResponded, &req.IsOwnRequest,
+		&req.HasResponded, &req.HasReplied, &req.IsOwnRequest,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
@@ -93,6 +169,9 @@ func (s *pgStore) GetSupportRequest(ctx context.Context, viewerID, requestID uui
 	if err != nil {
 		return nil, err
 	}
+	req.OfferCount = req.ResponseCount
+	req.HasOffered = req.HasResponded
+	setSupportRequestLocation(&req, locationVisibility, locationCity, locationRegion, locationCountry, locationApproxLat, locationApproxLng)
 	return &req, nil
 }
 
@@ -214,9 +293,12 @@ func (s *pgStore) ListMySupportRequests(ctx context.Context, userID uuid.UUID, b
 	rows, err := s.pool.Query(ctx,
 		`SELECT
 			sr.id, sr.requester_id, requester.username, requester.avatar_url, requester.city,
-			sr.type, sr.message, sr.urgency, sr.status,
-			sr.response_count, sr.created_at,
-			sr.channel,
+			sr.support_type, COALESCE(sr.topics, '{}'::text[]), sr.preferred_gender,
+			sr.location_visibility, sr.location_city, sr.location_region, sr.location_country, sr.location_approx_lat, sr.location_approx_lng,
+			sr.message, sr.urgency, sr.status,
+			COALESCE(sr.reply_count, 0), sr.response_count, COALESCE(sr.view_count, 0),
+			(COALESCE(sr.is_priority, false) AND (sr.priority_expires_at IS NULL OR sr.priority_expires_at > NOW())) AS is_priority,
+			sr.created_at,
 			sr.privacy_level,
 			sr.accepted_response_id,
 			sr.accepted_responder_id,
@@ -246,10 +328,18 @@ func (s *pgStore) ListMySupportRequests(ctx context.Context, userID uuid.UUID, b
 	var requests []SupportRequest
 	for rows.Next() {
 		var req SupportRequest
+		var locationVisibility string
+		var locationCity *string
+		var locationRegion *string
+		var locationCountry *string
+		var locationApproxLat *float64
+		var locationApproxLng *float64
 		if err := rows.Scan(
 			&req.ID, &req.RequesterID, &req.Username, &req.AvatarURL, &req.City,
-			&req.Type, &req.Message, &req.Urgency, &req.Status, &req.ResponseCount,
-			&req.CreatedAt, &req.Channel, &req.PrivacyLevel,
+			&req.SupportType, &req.Topics, &req.PreferredGender,
+			&locationVisibility, &locationCity, &locationRegion, &locationCountry, &locationApproxLat, &locationApproxLng,
+			&req.Message, &req.Urgency, &req.Status, &req.ReplyCount, &req.ResponseCount, &req.ViewCount, &req.IsPriority,
+			&req.CreatedAt, &req.PrivacyLevel,
 			&req.AcceptedResponseID, &req.AcceptedResponderID, &req.AcceptedAt, &req.ClosedAt,
 			&req.ResponderID, &req.ResponderUsername, &req.ResponderAvatarURL, &req.ChatID,
 			&req.HasResponded, &req.IsOwnRequest, &req.SortAt,
@@ -259,6 +349,9 @@ func (s *pgStore) ListMySupportRequests(ctx context.Context, userID uuid.UUID, b
 		if req.SortAt.IsZero() {
 			req.SortAt = req.CreatedAt
 		}
+		req.OfferCount = req.ResponseCount
+		req.HasOffered = req.HasResponded
+		setSupportRequestLocation(&req, locationVisibility, locationCity, locationRegion, locationCountry, locationApproxLat, locationApproxLng)
 		requests = append(requests, req)
 	}
 	return requests, rows.Err()
@@ -266,110 +359,95 @@ func (s *pgStore) ListMySupportRequests(ctx context.Context, userID uuid.UUID, b
 
 func supportUrgencyRank(urgency string) int {
 	switch urgency {
-	case "right_now":
+	case "high":
 		return 0
-	case "soon":
+	case "medium":
 		return 1
 	default:
 		return 2
 	}
 }
 
-func supportAttentionBucket(channel SupportChannel, hasResponded bool, responseCount int, lastResponseAt *time.Time, now time.Time) int {
-	if hasResponded {
-		return 3
-	}
-	if responseCount == 0 {
-		return 0
-	}
-	if responseCount >= 3 {
-		return 2
-	}
-
-	coolingWindow := generalSupportCoolingWindow
-	if channel == SupportChannelImmediate {
-		coolingWindow = immediateSupportCoolingWindow
-	}
-	if lastResponseAt != nil && lastResponseAt.After(now.Add(-coolingWindow)) {
-		return 2
-	}
-	return 1
-}
-
-func (s *pgStore) ListVisibleSupportRequests(ctx context.Context, userID uuid.UUID, channel SupportChannel, cursor *SupportQueueCursor, limit int) ([]SupportRequest, error) {
-	coolingThreshold := time.Now().UTC().Add(-generalSupportCoolingWindow)
-	if channel == SupportChannelImmediate {
-		coolingThreshold = time.Now().UTC().Add(-immediateSupportCoolingWindow)
-	}
-
-	var cursorBucket *int
-	var cursorUrgency *int
+func (s *pgStore) ListVisibleSupportRequests(ctx context.Context, userID uuid.UUID, filter SupportRequestFilter, cursor *SupportFeedCursor, limit int) ([]SupportRequest, error) {
+	servedAt := time.Now().UTC()
+	var cursorScore *float64
 	var cursorCreatedAt *time.Time
 	var cursorID *uuid.UUID
 	if cursor != nil {
-		cursorBucket = &cursor.AttentionBucket
-		cursorUrgency = &cursor.UrgencyRank
+		cursorScore = &cursor.Score
 		cursorCreatedAt = &cursor.CreatedAt
 		cursorID = &cursor.ID
+		if !cursor.ServedAt.IsZero() {
+			servedAt = cursor.ServedAt
+		}
 	}
 
 	rows, err := s.pool.Query(ctx,
-		`WITH base_requests AS (
+		`WITH visible_requests AS (
 			SELECT
 				sr.id,
 				sr.requester_id,
 				requester.username,
 				requester.avatar_url,
 				requester.city,
-				sr.type,
+				sr.support_type,
+				COALESCE(sr.topics, '{}'::text[]) AS topics,
+				sr.preferred_gender,
+				sr.location_visibility,
+				sr.location_city,
+				sr.location_region,
+				sr.location_country,
+				sr.location_approx_lat,
+				sr.location_approx_lng,
 				sr.message,
 				sr.urgency,
 				sr.status,
+				COALESCE(sr.reply_count, 0) AS reply_count,
 				sr.response_count,
+				COALESCE(sr.view_count, 0) AS view_count,
+				(COALESCE(sr.is_priority, false) AND (sr.priority_expires_at IS NULL OR sr.priority_expires_at > $3)) AS is_priority,
 				sr.created_at,
-				sr.channel,
 				EXISTS(
 					SELECT 1
 					FROM support_responses own_res
 					WHERE own_res.support_request_id = sr.id
 					  AND own_res.responder_id = $1
-				) AS has_responded,
-				sr.last_response_at,
-				CASE sr.urgency
-					WHEN 'right_now' THEN 0
-					WHEN 'soon' THEN 1
-					ELSE 2
-				END AS urgency_rank
+				) AS has_offered,
+				EXISTS(
+					SELECT 1
+					FROM support_replies own_reply
+					WHERE own_reply.support_request_id = sr.id
+					  AND own_reply.author_id = $1
+				) AS has_replied
 			FROM support_requests sr
 			JOIN users requester ON requester.id = sr.requester_id
 			WHERE sr.status = 'open'
-			  AND COALESCE(sr.channel, 'community') = $2
 			  AND sr.requester_id <> $1
+			  AND (
+			  	$2 = 'all'
+			  	OR ($2 = 'urgent' AND sr.urgency = 'high')
+			  	OR ($2 = 'unanswered' AND COALESCE(sr.reply_count, 0) = 0 AND sr.response_count = 0)
+			  )
 		),
-		visible_requests AS (
+		scored_requests AS (
 			SELECT
-				id,
-				requester_id,
-				username,
-				avatar_url,
-				city,
-				type,
-				message,
-				urgency,
-				status,
-				response_count,
-				created_at,
-				channel,
-				has_responded,
-				urgency_rank,
-				CASE
-					WHEN has_responded THEN 3
-					WHEN response_count = 0 THEN 0
-					WHEN response_count >= 3 THEN 2
-					WHEN last_response_at IS NOT NULL AND last_response_at > $3 THEN 2
-					ELSE 1
-				END AS attention_bucket
-			FROM base_requests
+				*,
+				(
+					CASE urgency
+						WHEN 'high' THEN 300.0
+						WHEN 'medium' THEN 200.0
+						ELSE 100.0
+					END
+					+ CASE WHEN is_priority THEN 40.0 ELSE 0.0 END
+					+ CASE
+						WHEN reply_count = 0 AND response_count = 0 THEN 80.0
+						WHEN response_count = 0 THEN 50.0
+						ELSE 0.0
+					END
+					+ (50.0 / (1.0 + (GREATEST(EXTRACT(EPOCH FROM ($3 - created_at)) / 3600.0, 0.0) / 24.0)))
+					- CASE WHEN has_offered THEN 100.0 ELSE 0.0 END
+				) AS feed_score
+			FROM visible_requests
 		)
 		SELECT
 			id,
@@ -377,29 +455,38 @@ func (s *pgStore) ListVisibleSupportRequests(ctx context.Context, userID uuid.UU
 			username,
 			avatar_url,
 			city,
-			type,
+			support_type,
+			topics,
+			preferred_gender,
+			location_visibility,
+			location_city,
+			location_region,
+			location_country,
+			location_approx_lat,
+			location_approx_lng,
 			message,
 			urgency,
 			status,
+			reply_count,
 			response_count,
+			view_count,
+			is_priority,
 			created_at,
-			channel,
-			has_responded,
+			has_offered,
+			has_replied,
 			false AS is_own_request,
 			created_at AS sort_at,
-			attention_bucket,
-			urgency_rank
-		FROM visible_requests
+			feed_score
+		FROM scored_requests
 		WHERE (
-			$4::int IS NULL
-			OR attention_bucket > $4
-			OR (attention_bucket = $4 AND urgency_rank > $5)
-			OR (attention_bucket = $4 AND urgency_rank = $5 AND created_at > $6)
-			OR (attention_bucket = $4 AND urgency_rank = $5 AND created_at = $6 AND id > $7)
+			$4::double precision IS NULL
+			OR feed_score < $4
+			OR (feed_score = $4 AND created_at < $5)
+			OR (feed_score = $4 AND created_at = $5 AND id < $6)
 		)
-		ORDER BY attention_bucket ASC, urgency_rank ASC, created_at ASC, id ASC
-		LIMIT $8`,
-		userID, channel, coolingThreshold, cursorBucket, cursorUrgency, cursorCreatedAt, cursorID, limit,
+		ORDER BY feed_score DESC, created_at DESC, id DESC
+		LIMIT $7`,
+		userID, filter, servedAt, cursorScore, cursorCreatedAt, cursorID, limit,
 	)
 	if err != nil {
 		return nil, err
@@ -409,14 +496,25 @@ func (s *pgStore) ListVisibleSupportRequests(ctx context.Context, userID uuid.UU
 	var requests []SupportRequest
 	for rows.Next() {
 		var req SupportRequest
+		var locationVisibility string
+		var locationCity *string
+		var locationRegion *string
+		var locationCountry *string
+		var locationApproxLat *float64
+		var locationApproxLng *float64
 		if err := rows.Scan(
 			&req.ID, &req.RequesterID, &req.Username, &req.AvatarURL, &req.City,
-			&req.Type, &req.Message, &req.Urgency, &req.Status, &req.ResponseCount,
-			&req.CreatedAt, &req.Channel, &req.HasResponded, &req.IsOwnRequest, &req.SortAt,
-			&req.AttentionBucket, &req.UrgencyRank,
+			&req.SupportType, &req.Topics, &req.PreferredGender,
+			&locationVisibility, &locationCity, &locationRegion, &locationCountry, &locationApproxLat, &locationApproxLng,
+			&req.Message, &req.Urgency, &req.Status, &req.ReplyCount, &req.ResponseCount, &req.ViewCount, &req.IsPriority,
+			&req.CreatedAt, &req.HasResponded, &req.HasReplied, &req.IsOwnRequest, &req.SortAt,
+			&req.FeedScore,
 		); err != nil {
 			return nil, err
 		}
+		req.OfferCount = req.ResponseCount
+		req.HasOffered = req.HasResponded
+		setSupportRequestLocation(&req, locationVisibility, locationCity, locationRegion, locationCountry, locationApproxLat, locationApproxLng)
 		requests = append(requests, req)
 	}
 	return requests, rows.Err()
@@ -435,10 +533,10 @@ func (s *pgStore) GetSupportRequestState(ctx context.Context, requestID uuid.UUI
 	return requesterID, status, err
 }
 
-func (s *pgStore) CreateSupportResponse(ctx context.Context, requestID, userID uuid.UUID, responseType string, message *string, scheduledFor *time.Time) (*CreateSupportResponseResult, error) {
-	formattedMessage := formatSupportResponseMessage(responseType, message, scheduledFor)
+func (s *pgStore) CreateSupportOffer(ctx context.Context, requestID, userID uuid.UUID, offerType string, message *string, scheduledFor *time.Time) (*CreateSupportOfferResult, error) {
+	formattedMessage := formatSupportOfferMessage(offerType, message, scheduledFor)
 
-	var res SupportResponse
+	var res SupportOffer
 	err := s.pool.QueryRow(ctx,
 		`WITH inserted AS (
 			INSERT INTO support_responses (
@@ -453,11 +551,11 @@ func (s *pgStore) CreateSupportResponse(ctx context.Context, requestID, userID u
 			i.response_type, i.message, i.status, i.scheduled_for, i.created_at, NULL::uuid
 		FROM inserted i
 		JOIN users u ON u.id = i.responder_id`,
-		requestID, userID, responseType, formattedMessage, scheduledFor,
+		requestID, userID, offerType, formattedMessage, scheduledFor,
 	).Scan(
 		&res.ID, &res.SupportRequestID, &res.ResponderID,
 		&res.Username, &res.AvatarURL, &res.City,
-		&res.ResponseType, &res.Message, &res.Status, &res.ScheduledFor, &res.CreatedAt, &res.ChatID,
+		&res.OfferType, &res.Message, &res.Status, &res.ScheduledFor, &res.CreatedAt, &res.ChatID,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -477,10 +575,10 @@ func (s *pgStore) CreateSupportResponse(ctx context.Context, requestID, userID u
 		return nil, err
 	}
 
-	return &CreateSupportResponseResult{Response: &res}, nil
+	return &CreateSupportOfferResult{Offer: &res}, nil
 }
 
-func (s *pgStore) AcceptSupportResponse(ctx context.Context, requesterID, requestID, responseID uuid.UUID) (*SupportRequest, error) {
+func (s *pgStore) AcceptSupportOffer(ctx context.Context, requesterID, requestID, responseID uuid.UUID) (*SupportRequest, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return nil, err
@@ -495,7 +593,7 @@ func (s *pgStore) AcceptSupportResponse(ctx context.Context, requesterID, reques
 	var requesterAvatarURL *string
 	err = tx.QueryRow(ctx,
 		`SELECT
-			sr.type,
+				sr.support_type,
 			sr.message,
 			sr.status,
 			sr.accepted_response_id,
@@ -641,7 +739,7 @@ func (s *pgStore) GetSupportRequestOwner(ctx context.Context, requestID uuid.UUI
 	return requesterID, err
 }
 
-func (s *pgStore) ListSupportResponses(ctx context.Context, requestID uuid.UUID, limit, offset int) ([]SupportResponse, error) {
+func (s *pgStore) ListSupportOffers(ctx context.Context, requestID uuid.UUID, limit, offset int) ([]SupportOffer, error) {
 	rows, err := s.pool.Query(ctx,
 		`SELECT
 			sres.id, sres.support_request_id, sres.responder_id,
@@ -661,15 +759,142 @@ func (s *pgStore) ListSupportResponses(ctx context.Context, requestID uuid.UUID,
 	}
 	defer rows.Close()
 
-	var responses []SupportResponse
+	var offers []SupportOffer
 	for rows.Next() {
-		var res SupportResponse
-		if err := rows.Scan(&res.ID, &res.SupportRequestID, &res.ResponderID, &res.Username, &res.AvatarURL, &res.City, &res.ResponseType, &res.Message, &res.Status, &res.ScheduledFor, &res.CreatedAt, &res.ChatID); err != nil {
+		var offer SupportOffer
+		if err := rows.Scan(&offer.ID, &offer.SupportRequestID, &offer.ResponderID, &offer.Username, &offer.AvatarURL, &offer.City, &offer.OfferType, &offer.Message, &offer.Status, &offer.ScheduledFor, &offer.CreatedAt, &offer.ChatID); err != nil {
 			return nil, err
 		}
-		responses = append(responses, res)
+		offers = append(offers, offer)
 	}
-	return responses, rows.Err()
+	return offers, rows.Err()
+}
+
+func (s *pgStore) DeclineSupportOffer(ctx context.Context, requesterID, requestID, offerID uuid.UUID) error {
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE support_responses rsp
+		SET status = 'not_selected'
+		FROM support_requests sr
+		WHERE rsp.id = $1
+		  AND rsp.support_request_id = $2
+		  AND sr.id = rsp.support_request_id
+		  AND sr.requester_id = $3
+		  AND sr.status = 'open'
+		  AND rsp.status = 'pending'`,
+		offerID, requestID, requesterID,
+	)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *pgStore) CancelSupportOffer(ctx context.Context, responderID, requestID, offerID uuid.UUID) error {
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE support_responses
+		SET status = 'not_selected'
+		WHERE id = $1
+		  AND support_request_id = $2
+		  AND responder_id = $3
+		  AND status = 'pending'`,
+		offerID, requestID, responderID,
+	)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *pgStore) CreateSupportReply(ctx context.Context, requestID, authorID uuid.UUID, body string) (*SupportReply, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+
+	var reply SupportReply
+	err = tx.QueryRow(ctx,
+		`WITH inserted AS (
+			INSERT INTO support_replies (support_request_id, author_id, body)
+			VALUES ($1, $2, $3)
+			RETURNING id, support_request_id, author_id, body, created_at
+		),
+		counter AS (
+			UPDATE support_requests
+			SET reply_count = reply_count + 1
+			WHERE id = $1
+			RETURNING id
+		)
+		SELECT
+			i.id,
+			i.support_request_id,
+			i.author_id,
+			u.username,
+			u.avatar_url,
+			i.body,
+			i.created_at
+		FROM inserted i
+		JOIN users u ON u.id = i.author_id`,
+		requestID, authorID, body,
+	).Scan(&reply.ID, &reply.SupportRequestID, &reply.AuthorID, &reply.Username, &reply.AvatarURL, &reply.Body, &reply.CreatedAt)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return &reply, nil
+}
+
+func (s *pgStore) ListSupportReplies(ctx context.Context, requestID uuid.UUID, cursor *SupportReplyCursor, limit int) ([]SupportReply, error) {
+	var cursorCreatedAt *time.Time
+	var cursorID *uuid.UUID
+	if cursor != nil {
+		cursorCreatedAt = &cursor.CreatedAt
+		cursorID = &cursor.ID
+	}
+
+	rows, err := s.pool.Query(ctx,
+		`SELECT
+			sr.id,
+			sr.support_request_id,
+			sr.author_id,
+			u.username,
+			u.avatar_url,
+			sr.body,
+			sr.created_at
+		FROM support_replies sr
+		JOIN users u ON u.id = sr.author_id
+		WHERE sr.support_request_id = $1
+		  AND (
+		  	$2::timestamptz IS NULL
+		  	OR sr.created_at > $2
+		  	OR (sr.created_at = $2 AND sr.id > $3)
+		  )
+		ORDER BY sr.created_at ASC, sr.id ASC
+		LIMIT $4`,
+		requestID, cursorCreatedAt, cursorID, limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var replies []SupportReply
+	for rows.Next() {
+		var reply SupportReply
+		if err := rows.Scan(&reply.ID, &reply.SupportRequestID, &reply.AuthorID, &reply.Username, &reply.AvatarURL, &reply.Body, &reply.CreatedAt); err != nil {
+			return nil, err
+		}
+		replies = append(replies, reply)
+	}
+	return replies, rows.Err()
 }
 
 func mapSupportChatStatus(chatStatus string) string {
@@ -681,27 +906,4 @@ func mapSupportChatStatus(chatStatus string) string {
 	default:
 		return chatStatus
 	}
-}
-
-func scanSupportRequests(rows interface {
-	Next() bool
-	Scan(...any) error
-	Err() error
-}) ([]SupportRequest, error) {
-	var requests []SupportRequest
-	for rows.Next() {
-		var req SupportRequest
-		if err := rows.Scan(
-			&req.ID, &req.RequesterID, &req.Username, &req.AvatarURL, &req.City,
-			&req.Type, &req.Message, &req.Urgency, &req.Status, &req.ResponseCount,
-			&req.CreatedAt, &req.HasResponded, &req.IsOwnRequest, &req.SortAt,
-		); err != nil {
-			return nil, err
-		}
-		if req.SortAt.IsZero() {
-			req.SortAt = req.CreatedAt
-		}
-		requests = append(requests, req)
-	}
-	return requests, rows.Err()
 }

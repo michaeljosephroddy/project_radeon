@@ -209,15 +209,18 @@ func main() {
 		r.Get("/meetups/{id}/waitlist", meetupsHandler.GetWaitlist)
 
 		// Support
-		r.Post("/support/requests/immediate", supportHandler.CreateImmediateSupportRequest)
-		r.Post("/support/requests/community", supportHandler.CreateCommunitySupportRequest)
+		r.Post("/support/requests", supportHandler.CreateSupportRequest)
 		r.Get("/support/requests", supportHandler.ListSupportRequests)
 		r.Get("/support/requests/mine", supportHandler.ListMySupportRequests)
 		r.Get("/support/requests/{id}", supportHandler.GetSupportRequest)
 		r.Patch("/support/requests/{id}", supportHandler.UpdateSupportRequest)
-		r.Post("/support/requests/{id}/responses", supportHandler.CreateSupportResponse)
-		r.Get("/support/requests/{id}/responses", supportHandler.ListSupportResponses)
-		r.Post("/support/requests/{id}/responses/{responseId}/accept", supportHandler.AcceptSupportResponse)
+		r.Post("/support/requests/{id}/replies", supportHandler.CreateSupportReply)
+		r.Get("/support/requests/{id}/replies", supportHandler.ListSupportReplies)
+		r.Post("/support/requests/{id}/offers", supportHandler.CreateSupportOffer)
+		r.Get("/support/requests/{id}/offers", supportHandler.ListSupportOffers)
+		r.Post("/support/requests/{id}/offers/{offerId}/accept", supportHandler.AcceptSupportOffer)
+		r.Post("/support/requests/{id}/offers/{offerId}/decline", supportHandler.DeclineSupportOffer)
+		r.Post("/support/requests/{id}/offers/{offerId}/cancel", supportHandler.CancelSupportOffer)
 
 		// Chats
 		r.Get("/chats", chatsHandler.ListChats)
