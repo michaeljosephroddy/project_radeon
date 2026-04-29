@@ -19,17 +19,21 @@ import (
 // Querier is the database interface required by the support handler.
 type Querier interface {
 	CountOpenSupportRequests(ctx context.Context, userID uuid.UUID) (int, error)
-	CreateImmediateSupportRequest(ctx context.Context, userID uuid.UUID, reqType string, message *string, urgency string, privacyLevel string) (*SupportRequest, error)
-	CreateCommunitySupportRequest(ctx context.Context, userID uuid.UUID, reqType string, message *string, urgency string, privacyLevel string) (*SupportRequest, error)
-	AcceptSupportResponse(ctx context.Context, requesterID, requestID, responseID uuid.UUID) (*SupportRequest, error)
+	CountHighUrgencySupportRequestsSince(ctx context.Context, userID uuid.UUID, since time.Time) (int, error)
+	CreateSupportRequest(ctx context.Context, userID uuid.UUID, input CreateSupportRequestInput) (*SupportRequest, error)
+	AcceptSupportOffer(ctx context.Context, requesterID, requestID, offerID uuid.UUID) (*SupportRequest, error)
 	GetSupportRequest(ctx context.Context, viewerID, requestID uuid.UUID) (*SupportRequest, error)
 	CloseSupportRequest(ctx context.Context, requestID, userID uuid.UUID) ([]uuid.UUID, error)
 	ListMySupportRequests(ctx context.Context, userID uuid.UUID, before *time.Time, limit int) ([]SupportRequest, error)
-	ListVisibleSupportRequests(ctx context.Context, userID uuid.UUID, channel SupportChannel, cursor *SupportQueueCursor, limit int) ([]SupportRequest, error)
+	ListVisibleSupportRequests(ctx context.Context, userID uuid.UUID, filter SupportRequestFilter, cursor *SupportFeedCursor, limit int) ([]SupportRequest, error)
 	GetSupportRequestState(ctx context.Context, requestID uuid.UUID) (requesterID uuid.UUID, status string, err error)
-	CreateSupportResponse(ctx context.Context, requestID, userID uuid.UUID, responseType string, message *string, scheduledFor *time.Time) (*CreateSupportResponseResult, error)
+	CreateSupportOffer(ctx context.Context, requestID, userID uuid.UUID, offerType string, message *string, scheduledFor *time.Time) (*CreateSupportOfferResult, error)
 	GetSupportRequestOwner(ctx context.Context, requestID uuid.UUID) (uuid.UUID, error)
-	ListSupportResponses(ctx context.Context, requestID uuid.UUID, limit, offset int) ([]SupportResponse, error)
+	ListSupportOffers(ctx context.Context, requestID uuid.UUID, limit, offset int) ([]SupportOffer, error)
+	CreateSupportReply(ctx context.Context, requestID, authorID uuid.UUID, body string) (*SupportReply, error)
+	ListSupportReplies(ctx context.Context, requestID uuid.UUID, cursor *SupportReplyCursor, limit int) ([]SupportReply, error)
+	DeclineSupportOffer(ctx context.Context, requesterID, requestID, offerID uuid.UUID) error
+	CancelSupportOffer(ctx context.Context, responderID, requestID, offerID uuid.UUID) error
 }
 
 type Handler struct {
@@ -42,16 +46,16 @@ type ChatBroadcaster interface {
 }
 
 var validSupportTypes = map[string]bool{
-	"need_to_talk":        true,
-	"need_distraction":    true,
-	"need_encouragement":  true,
-	"need_in_person_help": true,
+	"chat":    true,
+	"call":    true,
+	"meetup":  true,
+	"general": true,
 }
 
 var validSupportUrgencies = map[string]bool{
-	"when_you_can": true,
-	"soon":         true,
-	"right_now":    true,
+	"low":    true,
+	"medium": true,
+	"high":   true,
 }
 
 var validSupportPrivacyLevels = map[string]bool{
@@ -59,15 +63,42 @@ var validSupportPrivacyLevels = map[string]bool{
 	"private":  true,
 }
 
-var validSupportChannels = map[SupportChannel]bool{
-	SupportChannelImmediate: true,
-	SupportChannelCommunity: true,
+var validSupportOfferTypes = map[string]bool{
+	"chat":   true,
+	"call":   true,
+	"meetup": true,
 }
 
-var validSupportResponseTypes = map[string]bool{
-	"can_chat":       true,
-	"check_in_later": true,
-	"can_meet":       true,
+var validSupportTopics = map[string]bool{
+	"anxiety":      true,
+	"relapse_risk": true,
+	"loneliness":   true,
+	"cravings":     true,
+	"depression":   true,
+	"family":       true,
+	"work":         true,
+	"sleep":        true,
+	"celebration":  true,
+	"general":      true,
+}
+
+var validPreferredGenders = map[string]bool{
+	"woman":         true,
+	"man":           true,
+	"non_binary":    true,
+	"no_preference": true,
+}
+
+var validLocationVisibilities = map[string]bool{
+	"hidden":      true,
+	"city":        true,
+	"approximate": true,
+}
+
+var validSupportRequestFilters = map[SupportRequestFilter]bool{
+	SupportRequestFilterAll:        true,
+	SupportRequestFilterUrgent:     true,
+	SupportRequestFilterUnanswered: true,
 }
 
 // NewHandler builds a support handler. Pass support.NewPgStore(pool) for production.
@@ -80,49 +111,80 @@ func NewHandlerWithChatBroadcaster(db Querier, chatBroadcaster ChatBroadcaster) 
 }
 
 type SupportRequest struct {
-	ID                  uuid.UUID      `json:"id"`
-	RequesterID         uuid.UUID      `json:"requester_id"`
-	Username            string         `json:"username"`
-	AvatarURL           *string        `json:"avatar_url"`
-	City                *string        `json:"city"`
-	Type                string         `json:"type"`
-	Message             *string        `json:"message"`
-	Urgency             string         `json:"urgency"`
-	Status              string         `json:"status"`
-	ResponseCount       int            `json:"response_count"`
-	CreatedAt           time.Time      `json:"created_at"`
-	Channel             SupportChannel `json:"channel,omitempty"`
-	PrivacyLevel        string         `json:"privacy_level,omitempty"`
-	AcceptedResponseID  *uuid.UUID     `json:"accepted_response_id,omitempty"`
-	AcceptedResponderID *uuid.UUID     `json:"accepted_responder_id,omitempty"`
-	AcceptedAt          *time.Time     `json:"accepted_at,omitempty"`
-	ClosedAt            *time.Time     `json:"closed_at,omitempty"`
-	ResponderID         *uuid.UUID     `json:"responder_id,omitempty"`
-	ResponderUsername   *string        `json:"responder_username,omitempty"`
-	ResponderAvatarURL  *string        `json:"responder_avatar_url,omitempty"`
-	ChatID              *uuid.UUID     `json:"chat_id,omitempty"`
-	HasResponded        bool           `json:"has_responded"`
-	IsOwnRequest        bool           `json:"is_own_request"`
-	SortAt              time.Time      `json:"-"`
-	AttentionBucket     int            `json:"-"`
-	UrgencyRank         int            `json:"-"`
+	ID                  uuid.UUID        `json:"id"`
+	RequesterID         uuid.UUID        `json:"requester_id"`
+	Username            string           `json:"username"`
+	AvatarURL           *string          `json:"avatar_url"`
+	City                *string          `json:"city"`
+	SupportType         string           `json:"support_type"`
+	Topics              []string         `json:"topics"`
+	PreferredGender     *string          `json:"preferred_gender,omitempty"`
+	Location            *SupportLocation `json:"location,omitempty"`
+	Message             *string          `json:"message"`
+	Urgency             string           `json:"urgency"`
+	Status              string           `json:"status"`
+	ReplyCount          int              `json:"reply_count"`
+	OfferCount          int              `json:"offer_count"`
+	ResponseCount       int              `json:"-"`
+	ViewCount           int              `json:"view_count"`
+	IsPriority          bool             `json:"is_priority"`
+	CreatedAt           time.Time        `json:"created_at"`
+	PrivacyLevel        string           `json:"privacy_level,omitempty"`
+	AcceptedResponseID  *uuid.UUID       `json:"-"`
+	AcceptedResponderID *uuid.UUID       `json:"accepted_responder_id,omitempty"`
+	AcceptedAt          *time.Time       `json:"accepted_at,omitempty"`
+	ClosedAt            *time.Time       `json:"closed_at,omitempty"`
+	ResponderID         *uuid.UUID       `json:"responder_id,omitempty"`
+	ResponderUsername   *string          `json:"responder_username,omitempty"`
+	ResponderAvatarURL  *string          `json:"responder_avatar_url,omitempty"`
+	ChatID              *uuid.UUID       `json:"chat_id,omitempty"`
+	HasResponded        bool             `json:"-"`
+	HasOffered          bool             `json:"has_offered"`
+	HasReplied          bool             `json:"has_replied"`
+	IsOwnRequest        bool             `json:"is_own_request"`
+	SortAt              time.Time        `json:"-"`
+	AttentionBucket     int              `json:"-"`
+	UrgencyRank         int              `json:"-"`
+	FeedScore           float64          `json:"-"`
 }
 
-type SupportQueueCursor struct {
-	AttentionBucket int       `json:"attention_bucket"`
-	UrgencyRank     int       `json:"urgency_rank"`
-	CreatedAt       time.Time `json:"created_at"`
-	ID              uuid.UUID `json:"id"`
+type SupportLocation struct {
+	City           *string  `json:"city,omitempty"`
+	Region         *string  `json:"region,omitempty"`
+	Country        *string  `json:"country,omitempty"`
+	ApproximateLat *float64 `json:"approximate_lat,omitempty"`
+	ApproximateLng *float64 `json:"approximate_lng,omitempty"`
+	Visibility     string   `json:"visibility"`
 }
 
-type SupportResponse struct {
+type SupportRequestFilter string
+
+const (
+	SupportRequestFilterAll        SupportRequestFilter = "all"
+	SupportRequestFilterUrgent     SupportRequestFilter = "urgent"
+	SupportRequestFilterUnanswered SupportRequestFilter = "unanswered"
+)
+
+type SupportFeedCursor struct {
+	Score     float64   `json:"score"`
+	CreatedAt time.Time `json:"created_at"`
+	ID        uuid.UUID `json:"id"`
+	ServedAt  time.Time `json:"served_at"`
+}
+
+type SupportReplyCursor struct {
+	CreatedAt time.Time `json:"created_at"`
+	ID        uuid.UUID `json:"id"`
+}
+
+type SupportOffer struct {
 	ID               uuid.UUID  `json:"id"`
 	SupportRequestID uuid.UUID  `json:"support_request_id"`
 	ResponderID      uuid.UUID  `json:"responder_id"`
 	Username         string     `json:"username"`
 	AvatarURL        *string    `json:"avatar_url"`
 	City             *string    `json:"city"`
-	ResponseType     string     `json:"response_type"`
+	OfferType        string     `json:"offer_type"`
 	Message          *string    `json:"message"`
 	Status           string     `json:"status"`
 	ScheduledFor     *time.Time `json:"scheduled_for,omitempty"`
@@ -130,15 +192,25 @@ type SupportResponse struct {
 	ChatID           *uuid.UUID `json:"chat_id,omitempty"`
 }
 
+type SupportReply struct {
+	ID               uuid.UUID `json:"id"`
+	SupportRequestID uuid.UUID `json:"support_request_id"`
+	AuthorID         uuid.UUID `json:"author_id"`
+	Username         string    `json:"username"`
+	AvatarURL        *string   `json:"avatar_url"`
+	Body             string    `json:"body"`
+	CreatedAt        time.Time `json:"created_at"`
+}
+
 type SupportChatContext struct {
-	SupportRequestID   uuid.UUID  `json:"support_request_id"`
-	RequestType        string     `json:"request_type"`
-	RequestMessage     *string    `json:"request_message,omitempty"`
-	RequesterID        uuid.UUID  `json:"requester_id"`
-	RequesterUsername  string     `json:"requester_username"`
-	LatestResponseType *string    `json:"latest_response_type,omitempty"`
-	Status             string     `json:"status"`
-	AwaitingUserID     *uuid.UUID `json:"awaiting_user_id,omitempty"`
+	SupportRequestID  uuid.UUID  `json:"support_request_id"`
+	RequestType       string     `json:"request_type"`
+	RequestMessage    *string    `json:"request_message,omitempty"`
+	RequesterID       uuid.UUID  `json:"requester_id"`
+	RequesterUsername string     `json:"requester_username"`
+	LatestOfferType   *string    `json:"latest_offer_type,omitempty"`
+	Status            string     `json:"status"`
+	AwaitingUserID    *uuid.UUID `json:"awaiting_user_id,omitempty"`
 }
 
 type ChatSummary struct {
@@ -154,9 +226,9 @@ type ChatSummary struct {
 	SupportContext *SupportChatContext `json:"support_context,omitempty"`
 }
 
-type CreateSupportResponseResult struct {
-	Response *SupportResponse `json:"response"`
-	Chat     *ChatSummary     `json:"chat,omitempty"`
+type CreateSupportOfferResult struct {
+	Offer *SupportOffer `json:"offer"`
+	Chat  *ChatSummary  `json:"chat,omitempty"`
 }
 
 type SupportRequestsPage struct {
@@ -166,102 +238,71 @@ type SupportRequestsPage struct {
 	NextCursor *string          `json:"next_cursor,omitempty"`
 }
 
-type AcceptSupportResponseResult struct {
+type AcceptSupportOfferResult struct {
 	Request *SupportRequest `json:"request"`
 }
 
-// CreateImmediateSupportRequest creates an immediate support request for the authenticated user.
-func (h *Handler) CreateImmediateSupportRequest(w http.ResponseWriter, r *http.Request) {
+// CreateSupportRequest creates a unified support request for the authenticated user.
+func (h *Handler) CreateSupportRequest(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.CurrentUserID(r)
 
-	var input struct {
-		Type         string  `json:"type"`
-		Message      *string `json:"message"`
-		Urgency      string  `json:"urgency"`
-		PrivacyLevel string  `json:"privacy_level"`
-	}
+	var input CreateSupportRequestInput
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 		response.Error(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 
-	normalized := normalizeCreateChannelSupportRequestInput(createChannelSupportRequestInput(input))
-	if errs := validateCreateChannelSupportRequestInput(normalized); len(errs) > 0 {
-		response.ValidationError(w, errs)
-		return
-	}
-
-	openCount, err := h.db.CountOpenSupportRequests(r.Context(), userID)
-	if err != nil {
-		response.Error(w, http.StatusInternalServerError, "could not validate support request")
-		return
-	}
-	if openCount > 0 {
-		response.Error(w, http.StatusConflict, "you already have an open support request")
-		return
-	}
-
-	req, err := h.db.CreateImmediateSupportRequest(
-		r.Context(),
-		userID,
-		normalized.Type,
-		normalized.Message,
-		normalized.Urgency,
-		normalized.PrivacyLevel,
-	)
-	if err != nil {
-		response.Error(w, http.StatusInternalServerError, "could not create immediate support request")
+	req, ok := h.createSupportRequest(w, r, userID, normalizeCreateSupportRequestInput(input))
+	if !ok {
 		return
 	}
 
 	response.Success(w, http.StatusCreated, req)
 }
 
-// CreateCommunitySupportRequest creates an asynchronous community support request for the authenticated user.
-func (h *Handler) CreateCommunitySupportRequest(w http.ResponseWriter, r *http.Request) {
-	userID := middleware.CurrentUserID(r)
-
-	var input struct {
-		Type         string  `json:"type"`
-		Message      *string `json:"message"`
-		Urgency      string  `json:"urgency"`
-		PrivacyLevel string  `json:"privacy_level"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-		response.Error(w, http.StatusBadRequest, "invalid request body")
-		return
-	}
-
-	normalized := normalizeCreateChannelSupportRequestInput(createChannelSupportRequestInput(input))
-	if errs := validateCreateChannelSupportRequestInput(normalized); len(errs) > 0 {
+func (h *Handler) createSupportRequest(w http.ResponseWriter, r *http.Request, userID uuid.UUID, normalized CreateSupportRequestInput) (*SupportRequest, bool) {
+	if errs := validateCreateSupportRequestInput(normalized); len(errs) > 0 {
 		response.ValidationError(w, errs)
-		return
+		return nil, false
 	}
 
 	openCount, err := h.db.CountOpenSupportRequests(r.Context(), userID)
 	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "could not validate support request")
-		return
+		return nil, false
 	}
 	if openCount > 0 {
 		response.Error(w, http.StatusConflict, "you already have an open support request")
-		return
+		return nil, false
+	}
+	if normalized.Urgency == "high" {
+		recentCount, err := h.db.CountHighUrgencySupportRequestsSince(r.Context(), userID, time.Now().UTC().Add(-30*time.Minute))
+		if err != nil {
+			response.Error(w, http.StatusInternalServerError, "could not validate support request")
+			return nil, false
+		}
+		if recentCount > 0 {
+			response.Error(w, http.StatusTooManyRequests, "please wait before creating another high-urgency request")
+			return nil, false
+		}
+		dailyCount, err := h.db.CountHighUrgencySupportRequestsSince(r.Context(), userID, time.Now().UTC().Add(-24*time.Hour))
+		if err != nil {
+			response.Error(w, http.StatusInternalServerError, "could not validate support request")
+			return nil, false
+		}
+		if dailyCount >= 3 {
+			response.Error(w, http.StatusTooManyRequests, "you've used your high-urgency requests for today")
+			return nil, false
+		}
 	}
 
-	req, err := h.db.CreateCommunitySupportRequest(
-		r.Context(),
-		userID,
-		normalized.Type,
-		normalized.Message,
-		normalized.Urgency,
-		normalized.PrivacyLevel,
-	)
+	req, err := h.db.CreateSupportRequest(r.Context(), userID, normalized)
 	if err != nil {
-		response.Error(w, http.StatusInternalServerError, "could not create community support request")
-		return
+		response.Error(w, http.StatusInternalServerError, "could not create support request")
+		return nil, false
 	}
 
-	response.Success(w, http.StatusCreated, req)
+	return req, true
 }
 
 // ListMySupportRequests returns support requests created by the authenticated user.
@@ -287,25 +328,25 @@ func (h *Handler) ListMySupportRequests(w http.ResponseWriter, r *http.Request) 
 // ListSupportRequests returns the visible support queue.
 func (h *Handler) ListSupportRequests(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.CurrentUserID(r)
-	channel, ok := parseSupportChannelQuery(r)
+	filter, ok := parseSupportRequestFilterQuery(r)
 	if !ok {
-		response.Error(w, http.StatusBadRequest, "invalid support channel")
+		response.Error(w, http.StatusBadRequest, "invalid support request filter")
 		return
 	}
-	cursor, err := parseSupportQueueCursor(strings.TrimSpace(r.URL.Query().Get("cursor")))
+	cursor, err := parseSupportFeedCursor(strings.TrimSpace(r.URL.Query().Get("cursor")))
 	if err != nil {
 		response.Error(w, http.StatusBadRequest, "invalid support cursor")
 		return
 	}
 	params := pagination.Parse(r, 20, 50)
 
-	requests, err := h.db.ListVisibleSupportRequests(r.Context(), userID, channel, cursor, params.Limit+1)
+	requests, err := h.db.ListVisibleSupportRequests(r.Context(), userID, filter, cursor, params.Limit+1)
 	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "could not fetch support requests")
 		return
 	}
 
-	page := supportQueueSlice(requests, params.Limit)
+	page := supportFeedSlice(requests, params.Limit, cursor)
 	response.Success(w, http.StatusOK, SupportRequestsPage{
 		Items:      page.Items,
 		Limit:      page.Limit,
@@ -314,16 +355,18 @@ func (h *Handler) ListSupportRequests(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func parseSupportChannelQuery(r *http.Request) (SupportChannel, bool) {
-	raw := strings.TrimSpace(r.URL.Query().Get("channel"))
+func parseSupportRequestFilterQuery(r *http.Request) (SupportRequestFilter, bool) {
+	raw := strings.TrimSpace(r.URL.Query().Get("filter"))
 	if raw == "" {
-		return SupportChannelCommunity, true
+		// Older clients sent a channel instead of a feed filter. Channels now map
+		// to the same unified feed, so the compatibility default remains "all".
+		return SupportRequestFilterAll, true
 	}
-	channel := SupportChannel(raw)
-	return channel, validSupportChannels[channel]
+	filter := SupportRequestFilter(raw)
+	return filter, validSupportRequestFilters[filter]
 }
 
-func parseSupportQueueCursor(raw string) (*SupportQueueCursor, error) {
+func parseSupportFeedCursor(raw string) (*SupportFeedCursor, error) {
 	if raw == "" {
 		return nil, nil
 	}
@@ -333,14 +376,14 @@ func parseSupportQueueCursor(raw string) (*SupportQueueCursor, error) {
 		return nil, err
 	}
 
-	var cursor SupportQueueCursor
+	var cursor SupportFeedCursor
 	if err := json.Unmarshal(decoded, &cursor); err != nil {
 		return nil, err
 	}
 	return &cursor, nil
 }
 
-func encodeSupportQueueCursor(cursor SupportQueueCursor) (*string, error) {
+func encodeSupportFeedCursor(cursor SupportFeedCursor) (*string, error) {
 	payload, err := json.Marshal(cursor)
 	if err != nil {
 		return nil, err
@@ -350,7 +393,7 @@ func encodeSupportQueueCursor(cursor SupportQueueCursor) (*string, error) {
 	return &encoded, nil
 }
 
-func supportQueueSlice(items []SupportRequest, limit int) pagination.CursorResponse[SupportRequest] {
+func supportFeedSlice(items []SupportRequest, limit int, previous *SupportFeedCursor) pagination.CursorResponse[SupportRequest] {
 	hasMore := len(items) > limit
 	if hasMore {
 		items = items[:limit]
@@ -359,11 +402,15 @@ func supportQueueSlice(items []SupportRequest, limit int) pagination.CursorRespo
 	var nextCursor *string
 	if hasMore && len(items) > 0 {
 		last := items[len(items)-1]
-		cursor, err := encodeSupportQueueCursor(SupportQueueCursor{
-			AttentionBucket: last.AttentionBucket,
-			UrgencyRank:     last.UrgencyRank,
-			CreatedAt:       last.CreatedAt,
-			ID:              last.ID,
+		servedAt := time.Now().UTC()
+		if previous != nil && !previous.ServedAt.IsZero() {
+			servedAt = previous.ServedAt
+		}
+		cursor, err := encodeSupportFeedCursor(SupportFeedCursor{
+			Score:     last.FeedScore,
+			CreatedAt: last.CreatedAt,
+			ID:        last.ID,
+			ServedAt:  servedAt,
 		})
 		if err == nil {
 			nextCursor = cursor
@@ -442,8 +489,8 @@ func (h *Handler) UpdateSupportRequest(w http.ResponseWriter, r *http.Request) {
 	response.Success(w, http.StatusOK, req)
 }
 
-// CreateSupportResponse records one user's response to an open support request.
-func (h *Handler) CreateSupportResponse(w http.ResponseWriter, r *http.Request) {
+// CreateSupportOffer records one user's private offer to help on an open support request.
+func (h *Handler) CreateSupportOffer(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.CurrentUserID(r)
 	requestID, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
@@ -451,18 +498,18 @@ func (h *Handler) CreateSupportResponse(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	var input createSupportResponseInput
+	var input createSupportOfferInput
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 		response.Error(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	input = normalizeCreateSupportResponseInput(input)
-	if errs := validateCreateSupportResponseInput(input); len(errs) > 0 {
+	input = normalizeCreateSupportOfferInput(input)
+	if errs := validateCreateSupportOfferInput(input); len(errs) > 0 {
 		response.ValidationError(w, errs)
 		return
 	}
 
-	scheduledFor, err := parseSupportResponseScheduledFor(input.ScheduledFor)
+	scheduledFor, err := parseSupportOfferScheduledFor(input.ScheduledFor)
 	if err != nil {
 		response.ValidationError(w, map[string]string{"scheduled_for": "invalid"})
 		return
@@ -486,48 +533,48 @@ func (h *Handler) CreateSupportResponse(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	res, err := h.db.CreateSupportResponse(r.Context(), requestID, userID, input.ResponseType, input.Message, scheduledFor)
+	res, err := h.db.CreateSupportOffer(r.Context(), requestID, userID, input.OfferType, input.Message, scheduledFor)
 	if err != nil {
-		response.Error(w, http.StatusConflict, "could not create support response")
+		response.Error(w, http.StatusConflict, "could not create support offer")
 		return
 	}
 
 	response.Success(w, http.StatusCreated, res)
 }
 
-// AcceptSupportResponse lets the requester choose one response and only then open the support chat.
-func (h *Handler) AcceptSupportResponse(w http.ResponseWriter, r *http.Request) {
+// AcceptSupportOffer lets the requester choose one private offer and only then open the support chat.
+func (h *Handler) AcceptSupportOffer(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.CurrentUserID(r)
 	requestID, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
 		response.Error(w, http.StatusBadRequest, "invalid support request id")
 		return
 	}
-	responseID, err := uuid.Parse(chi.URLParam(r, "responseId"))
+	offerID, err := uuid.Parse(chi.URLParam(r, "offerId"))
 	if err != nil {
-		response.Error(w, http.StatusBadRequest, "invalid support response id")
+		response.Error(w, http.StatusBadRequest, "invalid support offer id")
 		return
 	}
 
-	req, err := h.db.AcceptSupportResponse(r.Context(), userID, requestID, responseID)
+	req, err := h.db.AcceptSupportOffer(r.Context(), userID, requestID, offerID)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
-			response.Error(w, http.StatusNotFound, "support response not found")
+			response.Error(w, http.StatusNotFound, "support offer not found")
 			return
 		}
 		if errors.Is(err, ErrConflict) {
-			response.Error(w, http.StatusConflict, "support response is no longer available")
+			response.Error(w, http.StatusConflict, "support offer is no longer available")
 			return
 		}
-		response.Error(w, http.StatusInternalServerError, "could not accept support response")
+		response.Error(w, http.StatusInternalServerError, "could not accept support offer")
 		return
 	}
 
-	response.Success(w, http.StatusOK, AcceptSupportResponseResult{Request: req})
+	response.Success(w, http.StatusOK, AcceptSupportOfferResult{Request: req})
 }
 
-// ListSupportResponses returns a paginated list of responses for a support request owned by the caller.
-func (h *Handler) ListSupportResponses(w http.ResponseWriter, r *http.Request) {
+// ListSupportOffers returns a paginated list of private offers for a support request owned by the caller.
+func (h *Handler) ListSupportOffers(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.CurrentUserID(r)
 	requestID, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
@@ -545,17 +592,175 @@ func (h *Handler) ListSupportResponses(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if ownerID != userID {
-		response.Error(w, http.StatusForbidden, "cannot view support responses")
+		response.Error(w, http.StatusForbidden, "cannot view support offers")
 		return
 	}
 
 	params := pagination.Parse(r, 50, 100)
 
-	responses, err := h.db.ListSupportResponses(r.Context(), requestID, params.Limit+1, params.Offset)
+	offers, err := h.db.ListSupportOffers(r.Context(), requestID, params.Limit+1, params.Offset)
 	if err != nil {
-		response.Error(w, http.StatusInternalServerError, "could not fetch support responses")
+		response.Error(w, http.StatusInternalServerError, "could not fetch support offers")
 		return
 	}
 
-	response.Success(w, http.StatusOK, pagination.Slice(responses, params))
+	response.Success(w, http.StatusOK, pagination.Slice(offers, params))
+}
+
+// DeclineSupportOffer lets the requester pass on one pending private offer.
+func (h *Handler) DeclineSupportOffer(w http.ResponseWriter, r *http.Request) {
+	userID := middleware.CurrentUserID(r)
+	requestID, offerID, ok := supportRequestAndOfferIDs(w, r)
+	if !ok {
+		return
+	}
+	if err := h.db.DeclineSupportOffer(r.Context(), userID, requestID, offerID); err != nil {
+		if errors.Is(err, ErrNotFound) {
+			response.Error(w, http.StatusNotFound, "support offer not found")
+			return
+		}
+		response.Error(w, http.StatusConflict, "could not decline support offer")
+		return
+	}
+	response.Success(w, http.StatusOK, map[string]string{"status": "declined"})
+}
+
+// CancelSupportOffer lets a helper cancel their own pending private offer.
+func (h *Handler) CancelSupportOffer(w http.ResponseWriter, r *http.Request) {
+	userID := middleware.CurrentUserID(r)
+	requestID, offerID, ok := supportRequestAndOfferIDs(w, r)
+	if !ok {
+		return
+	}
+	if err := h.db.CancelSupportOffer(r.Context(), userID, requestID, offerID); err != nil {
+		if errors.Is(err, ErrNotFound) {
+			response.Error(w, http.StatusNotFound, "support offer not found")
+			return
+		}
+		response.Error(w, http.StatusConflict, "could not cancel support offer")
+		return
+	}
+	response.Success(w, http.StatusOK, map[string]string{"status": "cancelled"})
+}
+
+func supportRequestAndOfferIDs(w http.ResponseWriter, r *http.Request) (uuid.UUID, uuid.UUID, bool) {
+	requestID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		response.Error(w, http.StatusBadRequest, "invalid support request id")
+		return uuid.Nil, uuid.Nil, false
+	}
+	offerID, err := uuid.Parse(chi.URLParam(r, "offerId"))
+	if err != nil {
+		response.Error(w, http.StatusBadRequest, "invalid support offer id")
+		return uuid.Nil, uuid.Nil, false
+	}
+	return requestID, offerID, true
+}
+
+// CreateSupportReply adds a public reply to a support request thread.
+func (h *Handler) CreateSupportReply(w http.ResponseWriter, r *http.Request) {
+	userID := middleware.CurrentUserID(r)
+	requestID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		response.Error(w, http.StatusBadRequest, "invalid support request id")
+		return
+	}
+	var input struct {
+		Body string `json:"body"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		response.Error(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	body := strings.TrimSpace(input.Body)
+	if body == "" || len(body) > 1000 {
+		response.ValidationError(w, map[string]string{"body": "must be between 1 and 1000 characters"})
+		return
+	}
+	_, status, err := h.db.GetSupportRequestState(r.Context(), requestID)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			response.Error(w, http.StatusNotFound, "support request not found")
+			return
+		}
+		response.Error(w, http.StatusInternalServerError, "could not fetch support request")
+		return
+	}
+	if status != "open" && status != "active" {
+		response.Error(w, http.StatusConflict, "support request is closed")
+		return
+	}
+	reply, err := h.db.CreateSupportReply(r.Context(), requestID, userID, body)
+	if err != nil {
+		response.Error(w, http.StatusConflict, "could not create support reply")
+		return
+	}
+	response.Success(w, http.StatusCreated, reply)
+}
+
+// ListSupportReplies returns public replies in a support request thread.
+func (h *Handler) ListSupportReplies(w http.ResponseWriter, r *http.Request) {
+	requestID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		response.Error(w, http.StatusBadRequest, "invalid support request id")
+		return
+	}
+	cursor, err := parseSupportReplyCursor(strings.TrimSpace(r.URL.Query().Get("cursor")))
+	if err != nil {
+		response.Error(w, http.StatusBadRequest, "invalid support reply cursor")
+		return
+	}
+	params := pagination.Parse(r, 20, 100)
+	replies, err := h.db.ListSupportReplies(r.Context(), requestID, cursor, params.Limit+1)
+	if err != nil {
+		response.Error(w, http.StatusInternalServerError, "could not fetch support replies")
+		return
+	}
+	page := supportReplySlice(replies, params.Limit)
+	response.Success(w, http.StatusOK, page)
+}
+
+func parseSupportReplyCursor(raw string) (*SupportReplyCursor, error) {
+	if raw == "" {
+		return nil, nil
+	}
+	decoded, err := base64.RawURLEncoding.DecodeString(raw)
+	if err != nil {
+		return nil, err
+	}
+	var cursor SupportReplyCursor
+	if err := json.Unmarshal(decoded, &cursor); err != nil {
+		return nil, err
+	}
+	return &cursor, nil
+}
+
+func encodeSupportReplyCursor(cursor SupportReplyCursor) (*string, error) {
+	payload, err := json.Marshal(cursor)
+	if err != nil {
+		return nil, err
+	}
+	encoded := base64.RawURLEncoding.EncodeToString(payload)
+	return &encoded, nil
+}
+
+func supportReplySlice(items []SupportReply, limit int) pagination.CursorResponse[SupportReply] {
+	hasMore := len(items) > limit
+	if hasMore {
+		items = items[:limit]
+	}
+	var nextCursor *string
+	if hasMore && len(items) > 0 {
+		last := items[len(items)-1]
+		cursor, err := encodeSupportReplyCursor(SupportReplyCursor{CreatedAt: last.CreatedAt, ID: last.ID})
+		if err == nil {
+			nextCursor = cursor
+		}
+	}
+	return pagination.CursorResponse[SupportReply]{
+		Items:      items,
+		Limit:      limit,
+		HasMore:    hasMore,
+		NextCursor: nextCursor,
+	}
 }

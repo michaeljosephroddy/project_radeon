@@ -4,16 +4,16 @@ import (
 	"testing"
 )
 
-func TestNormalizeCreateChannelSupportRequestInput(t *testing.T) {
+func TestNormalizeCreateSupportRequestInput(t *testing.T) {
 	message := "  need a chat  "
-	input := normalizeCreateChannelSupportRequestInput(createChannelSupportRequestInput{
-		Type:         " need_to_talk ",
+	input := normalizeCreateSupportRequestInput(CreateSupportRequestInput{
+		SupportType:  " chat ",
 		Urgency:      " soon ",
 		PrivacyLevel: " standard ",
 		Message:      &message,
 	})
 
-	if input.Type != "need_to_talk" || input.Urgency != "soon" || input.PrivacyLevel != "standard" {
+	if input.SupportType != "chat" || input.Urgency != "medium" || input.PrivacyLevel != "standard" {
 		t.Fatalf("unexpected normalized input: %+v", input)
 	}
 	if input.Message == nil || *input.Message != "need a chat" {
@@ -21,30 +21,30 @@ func TestNormalizeCreateChannelSupportRequestInput(t *testing.T) {
 	}
 }
 
-func TestNormalizeCreateChannelSupportRequestInputDefaults(t *testing.T) {
-	input := normalizeCreateChannelSupportRequestInput(createChannelSupportRequestInput{Type: "need_to_talk"})
-	if input.Urgency != "when_you_can" || input.PrivacyLevel != "standard" {
+func TestNormalizeCreateSupportRequestInputDefaults(t *testing.T) {
+	input := normalizeCreateSupportRequestInput(CreateSupportRequestInput{SupportType: "chat"})
+	if input.Urgency != "low" || input.PrivacyLevel != "standard" {
 		t.Fatalf("unexpected defaults: %+v", input)
 	}
 }
 
-func TestValidateCreateChannelSupportRequestInput(t *testing.T) {
-	errs := validateCreateChannelSupportRequestInput(createChannelSupportRequestInput{})
-	if errs["type"] == "" {
+func TestValidateCreateSupportRequestInput(t *testing.T) {
+	errs := validateCreateSupportRequestInput(CreateSupportRequestInput{})
+	if errs["support_type"] == "" {
 		t.Fatalf("expected type error, errs: %+v", errs)
 	}
 
-	errs = validateCreateChannelSupportRequestInput(createChannelSupportRequestInput{
-		Type:         "bad",
-		Urgency:      "when_you_can",
+	errs = validateCreateSupportRequestInput(CreateSupportRequestInput{
+		SupportType:  "bad",
+		Urgency:      "low",
 		PrivacyLevel: "standard",
 	})
-	if errs["type"] != "invalid" {
+	if errs["support_type"] != "invalid" {
 		t.Fatalf("unexpected errs: %+v", errs)
 	}
 
-	errs = validateCreateChannelSupportRequestInput(createChannelSupportRequestInput{
-		Type:         "need_to_talk",
+	errs = validateCreateSupportRequestInput(CreateSupportRequestInput{
+		SupportType:  "chat",
 		Urgency:      "bad_urgency",
 		PrivacyLevel: "standard",
 	})
@@ -52,9 +52,9 @@ func TestValidateCreateChannelSupportRequestInput(t *testing.T) {
 		t.Fatalf("unexpected urgency error, errs: %+v", errs)
 	}
 
-	errs = validateCreateChannelSupportRequestInput(createChannelSupportRequestInput{
-		Type:         "need_to_talk",
-		Urgency:      "soon",
+	errs = validateCreateSupportRequestInput(CreateSupportRequestInput{
+		SupportType:  "chat",
+		Urgency:      "medium",
 		PrivacyLevel: "bad_privacy",
 	})
 	if errs["privacy_level"] != "invalid" {
@@ -62,27 +62,27 @@ func TestValidateCreateChannelSupportRequestInput(t *testing.T) {
 	}
 }
 
-func TestNormalizeAndValidateCreateSupportResponseInput(t *testing.T) {
+func TestNormalizeAndValidateCreateSupportOfferInput(t *testing.T) {
 	message := "  here for you  "
-	input := normalizeCreateSupportResponseInput(createSupportResponseInput{
-		ResponseType: " can_chat ",
-		Message:      &message,
+	input := normalizeCreateSupportOfferInput(createSupportOfferInput{
+		OfferType: " chat ",
+		Message:   &message,
 	})
 
-	if input.ResponseType != "can_chat" {
-		t.Fatalf("ResponseType = %q, want %q", input.ResponseType, "can_chat")
+	if input.OfferType != "chat" {
+		t.Fatalf("OfferType = %q, want %q", input.OfferType, "chat")
 	}
 	if input.Message == nil || *input.Message != "here for you" {
 		t.Fatalf("unexpected message: %v", input.Message)
 	}
 
-	if errs := validateCreateSupportResponseInput(createSupportResponseInput{}); errs["response_type"] != "required" {
+	if errs := validateCreateSupportOfferInput(createSupportOfferInput{}); errs["offer_type"] != "required" {
 		t.Fatalf("unexpected errs: %+v", errs)
 	}
-	if errs := validateCreateSupportResponseInput(createSupportResponseInput{ResponseType: "invalid"}); errs["response_type"] != "invalid" {
+	if errs := validateCreateSupportOfferInput(createSupportOfferInput{OfferType: "invalid"}); errs["offer_type"] != "invalid" {
 		t.Fatalf("unexpected errs: %+v", errs)
 	}
-	if errs := validateCreateSupportResponseInput(createSupportResponseInput{ResponseType: "can_chat"}); len(errs) != 0 {
+	if errs := validateCreateSupportOfferInput(createSupportOfferInput{OfferType: "chat"}); len(errs) != 0 {
 		t.Fatalf("unexpected errs: %+v", errs)
 	}
 }

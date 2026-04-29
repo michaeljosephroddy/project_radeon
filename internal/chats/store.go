@@ -32,11 +32,11 @@ const chatSelectColumns = `SELECT
 			GREATEST(COALESCE(ch.last_message_seq, 0) - COALESCE(cr.last_read_chat_seq, 0), 0)::int AS unread_count,
 			ch.status,
 			sr.id AS support_request_id,
-			sr.type AS support_request_type,
+			sr.support_type AS support_request_type,
 			sr.message AS support_request_message,
 			sr.requester_id,
 			requester.username AS requester_username,
-			latest_support.response_type AS latest_response_type,
+			latest_support.response_type AS latest_offer_type,
 			CASE
 				WHEN sr.id IS NULL THEN NULL
 				WHEN ch.status = 'request' THEN 'pending_requester_acceptance'
@@ -235,11 +235,11 @@ func (s *pgStore) GetChatSummaries(ctx context.Context, chatID uuid.UUID, userID
 			GREATEST(COALESCE(ch.last_message_seq, 0) - COALESCE(cr.last_read_chat_seq, 0), 0)::int AS unread_count,
 			ch.status,
 			sr.id AS support_request_id,
-			sr.type AS support_request_type,
+			sr.support_type AS support_request_type,
 			sr.message AS support_request_message,
 			sr.requester_id,
 			requester.username AS requester_username,
-			latest_support.response_type AS latest_response_type,
+			latest_support.response_type AS latest_offer_type,
 			CASE
 				WHEN sr.id IS NULL THEN NULL
 				WHEN ch.status = 'request' THEN 'pending_requester_acceptance'
@@ -295,7 +295,7 @@ func (s *pgStore) GetChatSummaries(ctx context.Context, chatID uuid.UUID, userID
 		var requestMessage *string
 		var requesterID *uuid.UUID
 		var requesterUsername *string
-		var latestResponseType *string
+		var latestOfferType *string
 		var supportStatus *string
 		var awaitingUserID *uuid.UUID
 		if err := rows.Scan(
@@ -315,7 +315,7 @@ func (s *pgStore) GetChatSummaries(ctx context.Context, chatID uuid.UUID, userID
 			&requestMessage,
 			&requesterID,
 			&requesterUsername,
-			&latestResponseType,
+			&latestOfferType,
 			&supportStatus,
 			&awaitingUserID,
 		); err != nil {
@@ -323,14 +323,14 @@ func (s *pgStore) GetChatSummaries(ctx context.Context, chatID uuid.UUID, userID
 		}
 		if supportRequestID != nil && requestType != nil && requesterID != nil && requesterUsername != nil && supportStatus != nil {
 			ch.SupportContext = &SupportChatContext{
-				SupportRequestID:   *supportRequestID,
-				RequestType:        *requestType,
-				RequestMessage:     requestMessage,
-				RequesterID:        *requesterID,
-				RequesterUsername:  *requesterUsername,
-				LatestResponseType: latestResponseType,
-				Status:             *supportStatus,
-				AwaitingUserID:     awaitingUserID,
+				SupportRequestID:  *supportRequestID,
+				RequestType:       *requestType,
+				RequestMessage:    requestMessage,
+				RequesterID:       *requesterID,
+				RequesterUsername: *requesterUsername,
+				LatestOfferType:   latestOfferType,
+				Status:            *supportStatus,
+				AwaitingUserID:    awaitingUserID,
 			}
 		}
 		summary := ch
@@ -348,7 +348,7 @@ func scanChats(rows pgx.Rows) ([]Chat, error) {
 		var requestMessage *string
 		var requesterID *uuid.UUID
 		var requesterUsername *string
-		var latestResponseType *string
+		var latestOfferType *string
 		var supportStatus *string
 		var awaitingUserID *uuid.UUID
 		if err := rows.Scan(
@@ -367,7 +367,7 @@ func scanChats(rows pgx.Rows) ([]Chat, error) {
 			&requestMessage,
 			&requesterID,
 			&requesterUsername,
-			&latestResponseType,
+			&latestOfferType,
 			&supportStatus,
 			&awaitingUserID,
 		); err != nil {
@@ -375,14 +375,14 @@ func scanChats(rows pgx.Rows) ([]Chat, error) {
 		}
 		if supportRequestID != nil && requestType != nil && requesterID != nil && requesterUsername != nil && supportStatus != nil {
 			ch.SupportContext = &SupportChatContext{
-				SupportRequestID:   *supportRequestID,
-				RequestType:        *requestType,
-				RequestMessage:     requestMessage,
-				RequesterID:        *requesterID,
-				RequesterUsername:  *requesterUsername,
-				LatestResponseType: latestResponseType,
-				Status:             *supportStatus,
-				AwaitingUserID:     awaitingUserID,
+				SupportRequestID:  *supportRequestID,
+				RequestType:       *requestType,
+				RequestMessage:    requestMessage,
+				RequesterID:       *requesterID,
+				RequesterUsername: *requesterUsername,
+				LatestOfferType:   latestOfferType,
+				Status:            *supportStatus,
+				AwaitingUserID:    awaitingUserID,
 			}
 		}
 		chats = append(chats, ch)

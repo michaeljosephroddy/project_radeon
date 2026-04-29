@@ -30,8 +30,12 @@ func (s *cachedStore) CountOpenSupportRequests(ctx context.Context, userID uuid.
 	return s.inner.CountOpenSupportRequests(ctx, userID)
 }
 
-func (s *cachedStore) CreateImmediateSupportRequest(ctx context.Context, userID uuid.UUID, reqType string, message *string, urgency string, privacyLevel string) (*SupportRequest, error) {
-	request, err := s.inner.CreateImmediateSupportRequest(ctx, userID, reqType, message, urgency, privacyLevel)
+func (s *cachedStore) CountHighUrgencySupportRequestsSince(ctx context.Context, userID uuid.UUID, since time.Time) (int, error) {
+	return s.inner.CountHighUrgencySupportRequestsSince(ctx, userID, since)
+}
+
+func (s *cachedStore) CreateSupportRequest(ctx context.Context, userID uuid.UUID, input CreateSupportRequestInput) (*SupportRequest, error) {
+	request, err := s.inner.CreateSupportRequest(ctx, userID, input)
 	if err != nil {
 		return nil, err
 	}
@@ -44,22 +48,8 @@ func (s *cachedStore) CreateImmediateSupportRequest(ctx context.Context, userID 
 	return request, nil
 }
 
-func (s *cachedStore) CreateCommunitySupportRequest(ctx context.Context, userID uuid.UUID, reqType string, message *string, urgency string, privacyLevel string) (*SupportRequest, error) {
-	request, err := s.inner.CreateCommunitySupportRequest(ctx, userID, reqType, message, urgency, privacyLevel)
-	if err != nil {
-		return nil, err
-	}
-
-	_ = s.cache.BumpVersions(ctx,
-		s.myRequestsVersionKey(userID),
-		s.visibleVersionKey(),
-		s.requestVersionKey(request.ID),
-	)
-	return request, nil
-}
-
-func (s *cachedStore) AcceptSupportResponse(ctx context.Context, requesterID, requestID, responseID uuid.UUID) (*SupportRequest, error) {
-	request, err := s.inner.AcceptSupportResponse(ctx, requesterID, requestID, responseID)
+func (s *cachedStore) AcceptSupportOffer(ctx context.Context, requesterID, requestID, offerID uuid.UUID) (*SupportRequest, error) {
+	request, err := s.inner.AcceptSupportOffer(ctx, requesterID, requestID, offerID)
 	if err != nil {
 		return nil, err
 	}
@@ -162,14 +152,14 @@ func (s *cachedStore) ListMySupportRequests(ctx context.Context, userID uuid.UUI
 	return requests, nil
 }
 
-func (s *cachedStore) ListVisibleSupportRequests(ctx context.Context, userID uuid.UUID, channel SupportChannel, cursor *SupportQueueCursor, limit int) ([]SupportRequest, error) {
+func (s *cachedStore) ListVisibleSupportRequests(ctx context.Context, userID uuid.UUID, filter SupportRequestFilter, cursor *SupportFeedCursor, limit int) ([]SupportRequest, error) {
 	globalVersion, err := s.cache.GetVersion(ctx, s.visibleVersionKey())
 	if err != nil {
-		return s.inner.ListVisibleSupportRequests(ctx, userID, channel, cursor, limit)
+		return s.inner.ListVisibleSupportRequests(ctx, userID, filter, cursor, limit)
 	}
 	viewerVersion, err := s.cache.GetVersion(ctx, s.viewerVisibleVersionKey(userID))
 	if err != nil {
-		return s.inner.ListVisibleSupportRequests(ctx, userID, channel, cursor, limit)
+		return s.inner.ListVisibleSupportRequests(ctx, userID, filter, cursor, limit)
 	}
 
 	key := s.cache.Key(
@@ -178,14 +168,14 @@ func (s *cachedStore) ListVisibleSupportRequests(ctx context.Context, userID uui
 		"global_v", strconv.FormatInt(globalVersion, 10),
 		"viewer_v", strconv.FormatInt(viewerVersion, 10),
 		"user", userID.String(),
-		"channel", string(channel),
-		"cursor", supportQueueCursorPart(cursor),
+		"filter", string(filter),
+		"cursor", supportFeedCursorPart(cursor),
 		"limit", strconv.Itoa(limit),
 	)
 
 	var requests []SupportRequest
 	if err := s.cache.ReadThrough(ctx, key, supportListTTL, &requests, func(ctx context.Context, dest any) error {
-		loaded, err := s.inner.ListVisibleSupportRequests(ctx, userID, channel, cursor, limit)
+		loaded, err := s.inner.ListVisibleSupportRequests(ctx, userID, filter, cursor, limit)
 		if err != nil {
 			return err
 		}
@@ -202,8 +192,8 @@ func (s *cachedStore) GetSupportRequestState(ctx context.Context, requestID uuid
 	return s.inner.GetSupportRequestState(ctx, requestID)
 }
 
-func (s *cachedStore) CreateSupportResponse(ctx context.Context, requestID, userID uuid.UUID, responseType string, message *string, scheduledFor *time.Time) (*CreateSupportResponseResult, error) {
-	result, err := s.inner.CreateSupportResponse(ctx, requestID, userID, responseType, message, scheduledFor)
+func (s *cachedStore) CreateSupportOffer(ctx context.Context, requestID, userID uuid.UUID, offerType string, message *string, scheduledFor *time.Time) (*CreateSupportOfferResult, error) {
+	result, err := s.inner.CreateSupportOffer(ctx, requestID, userID, offerType, message, scheduledFor)
 	if err != nil {
 		return nil, err
 	}
@@ -224,8 +214,46 @@ func (s *cachedStore) GetSupportRequestOwner(ctx context.Context, requestID uuid
 	return s.inner.GetSupportRequestOwner(ctx, requestID)
 }
 
-func (s *cachedStore) ListSupportResponses(ctx context.Context, requestID uuid.UUID, limit, offset int) ([]SupportResponse, error) {
-	return s.inner.ListSupportResponses(ctx, requestID, limit, offset)
+func (s *cachedStore) ListSupportOffers(ctx context.Context, requestID uuid.UUID, limit, offset int) ([]SupportOffer, error) {
+	return s.inner.ListSupportOffers(ctx, requestID, limit, offset)
+}
+
+func (s *cachedStore) CreateSupportReply(ctx context.Context, requestID, authorID uuid.UUID, body string) (*SupportReply, error) {
+	reply, err := s.inner.CreateSupportReply(ctx, requestID, authorID, body)
+	if err != nil {
+		return nil, err
+	}
+
+	keys := []string{
+		s.visibleVersionKey(),
+		s.viewerVisibleVersionKey(authorID),
+		s.requestVersionKey(requestID),
+	}
+	if ownerID, ownerErr := s.inner.GetSupportRequestOwner(ctx, requestID); ownerErr == nil {
+		keys = append(keys, s.myRequestsVersionKey(ownerID))
+	}
+	_ = s.cache.BumpVersions(ctx, keys...)
+	return reply, nil
+}
+
+func (s *cachedStore) ListSupportReplies(ctx context.Context, requestID uuid.UUID, cursor *SupportReplyCursor, limit int) ([]SupportReply, error) {
+	return s.inner.ListSupportReplies(ctx, requestID, cursor, limit)
+}
+
+func (s *cachedStore) DeclineSupportOffer(ctx context.Context, requesterID, requestID, offerID uuid.UUID) error {
+	if err := s.inner.DeclineSupportOffer(ctx, requesterID, requestID, offerID); err != nil {
+		return err
+	}
+	_ = s.cache.BumpVersions(ctx, s.visibleVersionKey(), s.requestVersionKey(requestID), s.myRequestsVersionKey(requesterID))
+	return nil
+}
+
+func (s *cachedStore) CancelSupportOffer(ctx context.Context, responderID, requestID, offerID uuid.UUID) error {
+	if err := s.inner.CancelSupportOffer(ctx, responderID, requestID, offerID); err != nil {
+		return err
+	}
+	_ = s.cache.BumpVersions(ctx, s.visibleVersionKey(), s.requestVersionKey(requestID), s.viewerVisibleVersionKey(responderID))
+	return nil
 }
 
 func (s *cachedStore) myRequestsVersionKey(userID uuid.UUID) string {
@@ -251,12 +279,12 @@ func supportTimePart(value *time.Time) string {
 	return value.UTC().Format(time.RFC3339Nano)
 }
 
-func supportQueueCursorPart(cursor *SupportQueueCursor) string {
+func supportFeedCursorPart(cursor *SupportFeedCursor) string {
 	if cursor == nil {
 		return "none"
 	}
 
-	encoded, err := encodeSupportQueueCursor(*cursor)
+	encoded, err := encodeSupportFeedCursor(*cursor)
 	if err != nil || encoded == nil {
 		return "invalid"
 	}
