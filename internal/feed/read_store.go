@@ -123,6 +123,7 @@ func (s *pgStore) listRankedHomeFeed(ctx context.Context, viewerID uuid.UUID, be
 	if err != nil {
 		return nil, err
 	}
+	items = trimFeedRankingCandidatePool(items, poolLimit)
 
 	if err := enrichForYouRankingSignals(ctx, s, viewerID, items); err != nil {
 		return nil, err
@@ -132,6 +133,19 @@ func (s *pgStore) listRankedHomeFeed(ctx context.Context, viewerID uuid.UUID, be
 		items = items[:limit]
 	}
 	return items, nil
+}
+
+func trimFeedRankingCandidatePool(items []FeedItem, limit int) []FeedItem {
+	if limit < 1 || len(items) <= limit {
+		return items
+	}
+	sort.SliceStable(items, func(i, j int) bool {
+		if !items[i].CreatedAt.Equal(items[j].CreatedAt) {
+			return items[i].CreatedAt.After(items[j].CreatedAt)
+		}
+		return items[i].ID.String() < items[j].ID.String()
+	})
+	return items[:limit]
 }
 
 func (s *pgStore) friendIDSet(ctx context.Context, viewerID uuid.UUID) (map[uuid.UUID]struct{}, error) {

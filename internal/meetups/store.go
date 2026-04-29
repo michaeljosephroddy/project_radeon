@@ -79,14 +79,14 @@ func (s *pgStore) DiscoverMeetups(ctx context.Context, userID uuid.UUID, params 
 		return s.discoverRecommendedMeetups(ctx, userID, params, viewer)
 	}
 	dateFrom, dateTo := resolveDateWindow(params)
-	meetups, err := s.loadDiscoverMeetups(ctx, userID, params, dateFrom, dateTo)
+	offset := decodeCursorToOffset(params.Cursor)
+	meetups, err := s.loadDiscoverMeetups(ctx, userID, params, viewer, dateFrom, dateTo, offset)
 	if err != nil {
 		return nil, err
 	}
-	s.decorateMeetups(meetups, viewer)
-	meetups = filterMeetups(meetups, params, viewer, false)
-	sortMeetups(meetups, params.Sort, viewer)
-	return sliceMeetups(meetups, params.Limit, decodeCursorToOffset(params.Cursor)), nil
+	page := sliceLoadedMeetups(meetups, params.Limit, offset)
+	s.decorateMeetups(ctx, page.Items, viewer)
+	return page, nil
 }
 
 func (s *pgStore) ListMyMeetups(ctx context.Context, userID uuid.UUID, params MyMeetupsParams) (*CursorPage[Meetup], error) {
@@ -94,13 +94,14 @@ func (s *pgStore) ListMyMeetups(ctx context.Context, userID uuid.UUID, params My
 	if err != nil {
 		return nil, err
 	}
-	meetups, err := s.loadMyMeetups(ctx, userID, params.Scope)
+	offset := decodeCursorToOffset(params.Cursor)
+	meetups, err := s.loadMyMeetups(ctx, userID, params.Scope, params.Limit, offset)
 	if err != nil {
 		return nil, err
 	}
-	s.decorateMeetups(meetups, viewer)
-	sortMyMeetups(meetups, params.Scope)
-	return sliceMeetups(meetups, params.Limit, decodeCursorToOffset(params.Cursor)), nil
+	page := sliceLoadedMeetups(meetups, params.Limit, offset)
+	s.decorateMeetups(ctx, page.Items, viewer)
+	return page, nil
 }
 
 func (s *pgStore) GetMeetup(ctx context.Context, meetupID, userID uuid.UUID) (*Meetup, error) {
@@ -641,7 +642,7 @@ func syncMeetupHosts(ctx context.Context, execer meetupHostExecutor, meetupID, o
 	return nil
 }
 
-func (s *pgStore) loadDiscoverMeetups(ctx context.Context, userID uuid.UUID, params DiscoverMeetupsParams, dateFrom, dateTo *time.Time) ([]Meetup, error) {
+func (s *pgStore) loadDiscoverMeetups(ctx context.Context, userID uuid.UUID, params DiscoverMeetupsParams, viewer viewerContext, dateFrom, dateTo *time.Time, offset int) ([]Meetup, error) {
 	query := `
 		SELECT
 			m.id,
@@ -690,6 +691,18 @@ func (s *pgStore) loadDiscoverMeetups(ctx context.Context, userID uuid.UUID, par
 		args = append(args, value)
 		return fmt.Sprintf("$%d", len(args))
 	}
+	distanceExpr := ""
+	if viewer.Latitude != nil && viewer.Longitude != nil {
+		latArg := arg(*viewer.Latitude)
+		lngArg := arg(*viewer.Longitude)
+		distanceExpr = fmt.Sprintf(`(
+			2.0 * 6371.0 * ASIN(SQRT(
+				POWER(SIN(RADIANS((m.lat - %s::float8) / 2.0)), 2)
+				+ COS(RADIANS(%s::float8)) * COS(RADIANS(m.lat))
+				* POWER(SIN(RADIANS((m.lng - %s::float8) / 2.0)), 2)
+			))
+		)`, latArg, latArg, lngArg)
+	}
 	if params.Query != "" {
 		like := "%" + params.Query + "%"
 		placeholder := arg(like)
@@ -722,6 +735,17 @@ func (s *pgStore) loadDiscoverMeetups(ctx context.Context, userID uuid.UUID, par
 	if params.OpenSpotsOnly {
 		query += " AND (m.capacity IS NULL OR m.attendee_count < m.capacity)"
 	}
+	if params.DistanceKM != nil {
+		if distanceExpr == "" {
+			query += " AND FALSE"
+		} else {
+			query += fmt.Sprintf(
+				" AND m.lat IS NOT NULL AND m.lng IS NOT NULL AND %s <= %s::float8",
+				distanceExpr,
+				arg(float64(*params.DistanceKM)),
+			)
+		}
+	}
 	if dateFrom != nil {
 		query += fmt.Sprintf(" AND m.starts_at >= %s", arg(*dateFrom))
 	}
@@ -749,6 +773,8 @@ func (s *pgStore) loadDiscoverMeetups(ctx context.Context, userID uuid.UUID, par
 			query += " AND (" + strings.Join(clauses, " OR ") + ")"
 		}
 	}
+	query += meetupDiscoverOrderBy(params.Sort, distanceExpr)
+	query += fmt.Sprintf(" LIMIT %s OFFSET %s", arg(params.Limit+1), arg(offset))
 
 	rows, err := s.pool.Query(ctx, query, args...)
 	if err != nil {
@@ -759,7 +785,7 @@ func (s *pgStore) loadDiscoverMeetups(ctx context.Context, userID uuid.UUID, par
 	return scanMeetupRows(rows)
 }
 
-func (s *pgStore) loadMyMeetups(ctx context.Context, userID uuid.UUID, scope string) ([]Meetup, error) {
+func (s *pgStore) loadMyMeetups(ctx context.Context, userID uuid.UUID, scope string, limit, offset int) ([]Meetup, error) {
 	query := `
 		SELECT
 			m.id,
@@ -828,13 +854,15 @@ func (s *pgStore) loadMyMeetups(ctx context.Context, userID uuid.UUID, scope str
 		`
 	default:
 		query += `
-			m.organiser_id = $1
-			AND m.status = 'published'
-			AND m.starts_at >= NOW()
-		`
+				m.organiser_id = $1
+				AND m.status = 'published'
+				AND m.starts_at >= NOW()
+			`
 	}
+	query += myMeetupsOrderBy(scope)
+	query += ` LIMIT $2 OFFSET $3`
 
-	rows, err := s.pool.Query(ctx, query, userID)
+	rows, err := s.pool.Query(ctx, query, userID, limit+1, offset)
 	if err != nil {
 		return nil, err
 	}
@@ -946,12 +974,12 @@ func scanMeetupRows(rows pgx.Rows) ([]Meetup, error) {
 	return meetups, rows.Err()
 }
 
-func (s *pgStore) decorateMeetups(meetups []Meetup, viewer viewerContext) {
+func (s *pgStore) decorateMeetups(ctx context.Context, meetups []Meetup, viewer viewerContext) {
 	if len(meetups) == 0 {
 		return
 	}
-	_ = s.attachAttendeePreviews(context.Background(), meetups, 3)
-	_ = s.attachHosts(context.Background(), meetups)
+	_ = s.attachAttendeePreviews(ctx, meetups, 3)
+	_ = s.attachHosts(ctx, meetups)
 	for index := range meetups {
 		meetups[index].CanManage = meetups[index].OrganizerID == viewer.UserID
 		if viewer.Latitude != nil && viewer.Longitude != nil && meetups[index].Latitude != nil && meetups[index].Longitude != nil {
@@ -1110,6 +1138,29 @@ func filterMeetups(meetups []Meetup, params DiscoverMeetupsParams, viewer viewer
 	return filtered
 }
 
+func meetupDiscoverOrderBy(sortKey, distanceExpr string) string {
+	switch sortKey {
+	case "distance":
+		if distanceExpr == "" {
+			return " ORDER BY m.starts_at ASC, m.title ASC, m.id ASC"
+		}
+		return " ORDER BY " + distanceExpr + " ASC, m.starts_at ASC, m.id ASC"
+	case "popular":
+		return " ORDER BY m.attendee_count DESC, m.starts_at ASC, m.id ASC"
+	case "newest":
+		return " ORDER BY COALESCE(m.published_at, m.created_at) DESC, m.starts_at ASC, m.id ASC"
+	default:
+		return " ORDER BY m.starts_at ASC, m.title ASC, m.id ASC"
+	}
+}
+
+func myMeetupsOrderBy(scope string) string {
+	if scope == "past" {
+		return " ORDER BY m.starts_at DESC, m.title ASC, m.id ASC"
+	}
+	return " ORDER BY m.starts_at ASC, m.title ASC, m.id ASC"
+}
+
 func sortMeetups(meetups []Meetup, sortKey string, viewer viewerContext) {
 	sort.SliceStable(meetups, func(i, j int) bool {
 		left := meetups[i]
@@ -1223,6 +1274,27 @@ func sliceMeetups(meetups []Meetup, limit, offset int) *CursorPage[Meetup] {
 	}
 	return &CursorPage[Meetup]{
 		Items:      meetups[offset:end],
+		Limit:      limit,
+		HasMore:    hasMore,
+		NextCursor: nextCursor,
+	}
+}
+
+func sliceLoadedMeetups(meetups []Meetup, limit, offset int) *CursorPage[Meetup] {
+	if limit < 1 {
+		limit = 20
+	}
+	hasMore := len(meetups) > limit
+	items := meetups
+	if hasMore {
+		items = meetups[:limit]
+	}
+	nextCursor := (*string)(nil)
+	if hasMore {
+		nextCursor = encodeOffsetCursor(offset + limit)
+	}
+	return &CursorPage[Meetup]{
+		Items:      items,
 		Limit:      limit,
 		HasMore:    hasMore,
 		NextCursor: nextCursor,

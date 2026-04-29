@@ -140,7 +140,7 @@ func (s *cachedStore) discoverRecommendedMeetupsFromWindowCache(ctx context.Cont
 
 	page := sliceRecommendedMeetups(ranked, params.Limit, params.Cursor)
 	if len(page.Items) > 0 {
-		store.decorateMeetups(page.Items, viewer)
+		store.decorateMeetups(ctx, page.Items, viewer)
 	}
 	return page, nil
 }

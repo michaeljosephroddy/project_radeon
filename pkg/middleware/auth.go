@@ -4,6 +4,8 @@ import (
 	"context"
 	"net/http"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -20,21 +22,60 @@ type UserChecker interface {
 }
 
 type pgUserChecker struct {
-	pool *pgxpool.Pool
+	pool  *pgxpool.Pool
+	mu    sync.Mutex
+	cache map[uuid.UUID]userExistsCacheEntry
 }
 
 func NewPGUserChecker(pool *pgxpool.Pool) UserChecker {
-	return &pgUserChecker{pool: pool}
+	return &pgUserChecker{pool: pool, cache: make(map[uuid.UUID]userExistsCacheEntry)}
 }
 
 func (c *pgUserChecker) UserExists(ctx context.Context, userID uuid.UUID) (bool, error) {
+	if exists, ok := c.cachedUserExists(userID); ok {
+		return exists, nil
+	}
+
 	var exists bool
 	if err := c.pool.QueryRow(ctx, `
 		SELECT EXISTS(SELECT 1 FROM users WHERE id = $1)
 	`, userID).Scan(&exists); err != nil {
 		return false, err
 	}
+	c.storeUserExists(userID, exists)
 	return exists, nil
+}
+
+type userExistsCacheEntry struct {
+	exists    bool
+	expiresAt time.Time
+}
+
+const userExistsCacheTTL = 30 * time.Second
+
+func (c *pgUserChecker) cachedUserExists(userID uuid.UUID) (bool, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	entry, ok := c.cache[userID]
+	if !ok {
+		return false, false
+	}
+	if time.Now().After(entry.expiresAt) {
+		delete(c.cache, userID)
+		return false, false
+	}
+	return entry.exists, true
+}
+
+func (c *pgUserChecker) storeUserExists(userID uuid.UUID, exists bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.cache[userID] = userExistsCacheEntry{
+		exists:    exists,
+		expiresAt: time.Now().Add(userExistsCacheTTL),
+	}
 }
 
 // Authenticate validates the bearer token and injects the authenticated user ID into the request context.

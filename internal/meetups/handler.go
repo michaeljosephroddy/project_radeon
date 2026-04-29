@@ -209,6 +209,7 @@ func (h *Handler) UploadCoverImage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	userID := middleware.CurrentUserID(r)
+	r.Body = http.MaxBytesReader(w, r.Body, maxMeetupImageBytes+(4<<20))
 	if err := r.ParseMultipartForm(24 << 20); err != nil {
 		response.Error(w, http.StatusBadRequest, "file too large or invalid form data")
 		return
@@ -423,6 +424,8 @@ type uploadedMeetupImage struct {
 	extension   string
 }
 
+const maxMeetupImageBytes = 20 << 20
+
 func readUploadedMeetupImage(r *http.Request, fieldName string) (*uploadedMeetupImage, error) {
 	file, header, err := r.FormFile(fieldName)
 	if err != nil {
@@ -433,7 +436,7 @@ func readUploadedMeetupImage(r *http.Request, fieldName string) (*uploadedMeetup
 	}
 	defer file.Close()
 
-	fileBytes, err := io.ReadAll(file)
+	fileBytes, err := io.ReadAll(io.LimitReader(file, maxMeetupImageBytes+1))
 	if err != nil {
 		return nil, errors.New("could not read image")
 	}
@@ -449,7 +452,7 @@ func readUploadedMeetupImage(r *http.Request, fieldName string) (*uploadedMeetup
 		return nil, errors.New("only jpeg and png images are supported")
 	}
 
-	if len(fileBytes) > 20<<20 {
+	if len(fileBytes) > maxMeetupImageBytes {
 		return nil, errors.New("image must be 20MB or smaller")
 	}
 
