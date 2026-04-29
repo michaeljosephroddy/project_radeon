@@ -38,7 +38,7 @@ type Registry struct {
 	timers   map[string]*timerStats
 }
 
-func NewRegistry() *Registry {
+func newRegistry() *Registry {
 	return &Registry{
 		started:  time.Now().UTC(),
 		counters: make(map[string]int64),
@@ -47,11 +47,7 @@ func NewRegistry() *Registry {
 	}
 }
 
-var defaultRegistry = NewRegistry()
-
-func Default() *Registry {
-	return defaultRegistry
-}
+var defaultRegistry = newRegistry()
 
 func IncrementCounter(name string, delta int64) {
 	defaultRegistry.IncrementCounter(name, delta)
@@ -59,10 +55,6 @@ func IncrementCounter(name string, delta int64) {
 
 func AddGauge(name string, delta int64) {
 	defaultRegistry.AddGauge(name, delta)
-}
-
-func SetGauge(name string, value int64) {
-	defaultRegistry.SetGauge(name, value)
 }
 
 func ObserveDuration(name string, duration time.Duration, err error) {
@@ -83,12 +75,6 @@ func (r *Registry) AddGauge(name string, delta int64) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.gauges[name] += delta
-}
-
-func (r *Registry) SetGauge(name string, value int64) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.gauges[name] = value
 }
 
 func (r *Registry) ObserveDuration(name string, duration time.Duration, err error) {
