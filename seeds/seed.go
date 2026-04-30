@@ -239,6 +239,9 @@ func seed(ctx context.Context, pool *pgxpool.Pool) error {
 	if err := insertSupportChats(ctx, tx, supportRequests, users); err != nil {
 		return err
 	}
+	if err := refreshChatSummaries(ctx, tx); err != nil {
+		return err
+	}
 
 	fmt.Println("→ refreshing derived discovery/profile counters…")
 	if err := refreshDerivedUserState(ctx, tx); err != nil {
@@ -1765,6 +1768,66 @@ func insertSupportChats(ctx context.Context, tx pgx.Tx, requests []supportReques
 		}
 		created++
 	}
+	return nil
+}
+
+// refreshChatSummaries backfills the per-message chat_seq and the denormalized
+// last_message_* / next_message_seq columns on chats from the messages table.
+// The seed inserts messages in bulk and bypasses the production send path that
+// would normally maintain these in lockstep, so without this the chats list
+// returns NULL previews and zero unread counts.
+func refreshChatSummaries(ctx context.Context, tx pgx.Tx) error {
+	if _, err := tx.Exec(ctx, `
+		WITH ranked_messages AS (
+			SELECT
+				id,
+				ROW_NUMBER() OVER (
+					PARTITION BY chat_id
+					ORDER BY sent_at ASC, id ASC
+				) AS next_chat_seq
+			FROM messages
+		)
+		UPDATE messages AS m
+		SET chat_seq = ranked_messages.next_chat_seq
+		FROM ranked_messages
+		WHERE m.id = ranked_messages.id
+		  AND m.chat_seq IS NULL`); err != nil {
+		return fmt.Errorf("backfill messages.chat_seq: %w", err)
+	}
+
+	if _, err := tx.Exec(ctx, `
+		WITH latest_messages AS (
+			SELECT DISTINCT ON (m.chat_id)
+				m.chat_id,
+				m.id,
+				m.sender_id,
+				m.body,
+				m.sent_at,
+				m.chat_seq
+			FROM messages m
+			ORDER BY m.chat_id, m.chat_seq DESC, m.sent_at DESC, m.id DESC
+		),
+		max_sequences AS (
+			SELECT
+				m.chat_id,
+				MAX(m.chat_seq) AS max_chat_seq
+			FROM messages m
+			GROUP BY m.chat_id
+		)
+		UPDATE chats ch
+		SET next_message_seq = COALESCE(max_sequences.max_chat_seq, 0) + 1,
+			last_message_id = latest_messages.id,
+			last_message_sender_id = latest_messages.sender_id,
+			last_message_body = latest_messages.body,
+			last_message_at = latest_messages.sent_at,
+			last_message_seq = COALESCE(max_sequences.max_chat_seq, 0)
+		FROM max_sequences
+		LEFT JOIN latest_messages
+			ON latest_messages.chat_id = max_sequences.chat_id
+		WHERE ch.id = max_sequences.chat_id`); err != nil {
+		return fmt.Errorf("backfill chats.last_message_*: %w", err)
+	}
+
 	return nil
 }
 
