@@ -163,20 +163,110 @@ func (s *pgStore) ListNotifications(ctx context.Context, userID uuid.UUID, befor
 	return items, rows.Err()
 }
 
+func (s *pgStore) GetSummary(ctx context.Context, userID uuid.UUID) (*NotificationSummary, error) {
+	var summary NotificationSummary
+	if err := s.pool.QueryRow(ctx,
+		`SELECT COALESCE((
+			SELECT unread_count
+			FROM notification_counters
+			WHERE user_id = $1
+		), 0)`,
+		userID,
+	).Scan(&summary.UnreadCount); err != nil {
+		return nil, err
+	}
+	return &summary, nil
+}
+
 func (s *pgStore) MarkNotificationRead(ctx context.Context, userID, notificationID uuid.UUID, readAt time.Time) error {
-	tag, err := s.pool.Exec(ctx,
-		`UPDATE notifications
-		SET read_at = COALESCE(read_at, $3)
-		WHERE id = $1 AND user_id = $2`,
-		notificationID, userID, readAt,
-	)
+	updated, err := s.MarkNotificationsRead(ctx, userID, []uuid.UUID{notificationID}, readAt)
 	if err != nil {
 		return err
 	}
-	if tag.RowsAffected() == 0 {
+	if updated > 0 {
+		return nil
+	}
+
+	var exists bool
+	if err := s.pool.QueryRow(ctx,
+		`SELECT EXISTS (
+			SELECT 1
+			FROM notifications
+			WHERE id = $1 AND user_id = $2
+		)`,
+		notificationID, userID,
+	).Scan(&exists); err != nil {
+		return err
+	}
+	if !exists {
 		return ErrNotFound
 	}
 	return nil
+}
+
+func (s *pgStore) MarkNotificationsRead(ctx context.Context, userID uuid.UUID, notificationIDs []uuid.UUID, readAt time.Time) (int, error) {
+	if len(notificationIDs) == 0 {
+		return 0, nil
+	}
+
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback(ctx)
+
+	updated, err := markNotificationIDsRead(ctx, tx, userID, notificationIDs, readAt)
+	if err != nil {
+		return 0, err
+	}
+	if updated > 0 {
+		if err := decrementUnreadCounter(ctx, tx, userID, updated); err != nil {
+			return 0, err
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, err
+	}
+	return updated, nil
+}
+
+func (s *pgStore) MarkAllNotificationsRead(ctx context.Context, userID uuid.UUID, readAt time.Time) (int, error) {
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback(ctx)
+
+	var updated int
+	if err := tx.QueryRow(ctx,
+		`WITH updated AS (
+			UPDATE notifications
+			SET read_at = $2
+			WHERE user_id = $1
+				AND read_at IS NULL
+			RETURNING id
+		)
+		SELECT COUNT(*)::int FROM updated`,
+		userID, readAt,
+	).Scan(&updated); err != nil {
+		return 0, err
+	}
+
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO notification_counters (user_id, unread_count, updated_at)
+		VALUES ($1, 0, $2)
+		ON CONFLICT (user_id) DO UPDATE
+		SET unread_count = 0,
+			updated_at = EXCLUDED.updated_at`,
+		userID, readAt,
+	); err != nil {
+		return 0, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return 0, err
+	}
+	return updated, nil
 }
 
 func (s *pgStore) MarkChatRead(ctx context.Context, chatID, userID uuid.UUID, lastReadMessageID *uuid.UUID, readAt time.Time) error {
@@ -294,6 +384,10 @@ func (s *pgStore) CreateChatMessageNotifications(ctx context.Context, chatID, me
 			return err
 		}
 
+		if err := incrementUnreadCounter(ctx, tx, recipient.userID, 1); err != nil {
+			return err
+		}
+
 		if err := s.enqueueDeliveriesForNotification(ctx, tx, notificationID, recipient.userID); err != nil {
 			return err
 		}
@@ -377,12 +471,65 @@ func (s *pgStore) CreateCommentMentionNotifications(ctx context.Context, postID,
 			return err
 		}
 
+		if err := incrementUnreadCounter(ctx, tx, mentionedUserID, 1); err != nil {
+			return err
+		}
+
 		if err := s.enqueueDeliveriesForNotification(ctx, tx, notificationID, mentionedUserID); err != nil {
 			return err
 		}
 	}
 
 	return tx.Commit(ctx)
+}
+
+func markNotificationIDsRead(ctx context.Context, tx pgx.Tx, userID uuid.UUID, notificationIDs []uuid.UUID, readAt time.Time) (int, error) {
+	var updated int
+	if err := tx.QueryRow(ctx,
+		`WITH updated AS (
+			UPDATE notifications
+			SET read_at = $3
+			WHERE user_id = $1
+				AND id = ANY($2::uuid[])
+				AND read_at IS NULL
+			RETURNING id
+		)
+		SELECT COUNT(*)::int FROM updated`,
+		userID, notificationIDs, readAt,
+	).Scan(&updated); err != nil {
+		return 0, err
+	}
+	return updated, nil
+}
+
+func incrementUnreadCounter(ctx context.Context, tx pgx.Tx, userID uuid.UUID, amount int) error {
+	if amount <= 0 {
+		return nil
+	}
+	_, err := tx.Exec(ctx,
+		`INSERT INTO notification_counters (user_id, unread_count, updated_at)
+		VALUES ($1, $2, NOW())
+		ON CONFLICT (user_id) DO UPDATE
+		SET unread_count = notification_counters.unread_count + EXCLUDED.unread_count,
+			updated_at = NOW()`,
+		userID, amount,
+	)
+	return err
+}
+
+func decrementUnreadCounter(ctx context.Context, tx pgx.Tx, userID uuid.UUID, amount int) error {
+	if amount <= 0 {
+		return nil
+	}
+	_, err := tx.Exec(ctx,
+		`INSERT INTO notification_counters (user_id, unread_count, updated_at)
+		VALUES ($1, 0, NOW())
+		ON CONFLICT (user_id) DO UPDATE
+		SET unread_count = GREATEST(notification_counters.unread_count - $2, 0),
+			updated_at = NOW()`,
+		userID, amount,
+	)
+	return err
 }
 
 func (s *pgStore) enqueueDeliveriesForNotification(ctx context.Context, tx pgx.Tx, notificationID, userID uuid.UUID) error {

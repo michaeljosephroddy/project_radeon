@@ -54,8 +54,28 @@ func (s *Service) ListNotifications(ctx context.Context, userID uuid.UUID, befor
 	return s.store.ListNotifications(ctx, userID, before, limit)
 }
 
+func (s *Service) GetSummary(ctx context.Context, userID uuid.UUID) (*NotificationSummary, error) {
+	return s.store.GetSummary(ctx, userID)
+}
+
 func (s *Service) MarkNotificationRead(ctx context.Context, userID, notificationID uuid.UUID) error {
 	return s.store.MarkNotificationRead(ctx, userID, notificationID, s.now().UTC())
+}
+
+func (s *Service) MarkNotificationsRead(ctx context.Context, userID uuid.UUID, notificationIDs []uuid.UUID) (*BulkReadResult, error) {
+	updated, err := s.store.MarkNotificationsRead(ctx, userID, notificationIDs, s.now().UTC())
+	if err != nil {
+		return nil, err
+	}
+	return &BulkReadResult{Read: true, Updated: updated}, nil
+}
+
+func (s *Service) MarkAllNotificationsRead(ctx context.Context, userID uuid.UUID) (*BulkReadResult, error) {
+	updated, err := s.store.MarkAllNotificationsRead(ctx, userID, s.now().UTC())
+	if err != nil {
+		return nil, err
+	}
+	return &BulkReadResult{Read: true, Updated: updated}, nil
 }
 
 func (s *Service) MarkChatRead(ctx context.Context, chatID, userID uuid.UUID, lastReadMessageID *uuid.UUID, readAt time.Time) error {

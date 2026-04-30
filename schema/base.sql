@@ -842,6 +842,12 @@ CREATE INDEX IF NOT EXISTS idx_notifications_user_id_unread
     ON notifications(user_id, created_at DESC)
     WHERE read_at IS NULL;
 
+CREATE TABLE IF NOT EXISTS notification_counters (
+    user_id UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    unread_count INTEGER NOT NULL DEFAULT 0 CHECK (unread_count >= 0),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 CREATE TABLE IF NOT EXISTS notification_deliveries (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     notification_id UUID NOT NULL REFERENCES notifications(id) ON DELETE CASCADE,

@@ -41,6 +41,15 @@ type Notification struct {
 	ReadAt       *time.Time     `json:"read_at,omitempty"`
 }
 
+type NotificationSummary struct {
+	UnreadCount int `json:"unread_count"`
+}
+
+type BulkReadResult struct {
+	Read    bool `json:"read"`
+	Updated int  `json:"updated"`
+}
+
 type Device struct {
 	ID         uuid.UUID  `json:"id"`
 	UserID     uuid.UUID  `json:"user_id"`
@@ -82,7 +91,10 @@ type Store interface {
 	GetPreferences(ctx context.Context, userID uuid.UUID) (*Preferences, error)
 	UpdatePreferences(ctx context.Context, userID uuid.UUID, input Preferences) (*Preferences, error)
 	ListNotifications(ctx context.Context, userID uuid.UUID, before *time.Time, limit int) ([]Notification, error)
+	GetSummary(ctx context.Context, userID uuid.UUID) (*NotificationSummary, error)
 	MarkNotificationRead(ctx context.Context, userID, notificationID uuid.UUID, readAt time.Time) error
+	MarkNotificationsRead(ctx context.Context, userID uuid.UUID, notificationIDs []uuid.UUID, readAt time.Time) (int, error)
+	MarkAllNotificationsRead(ctx context.Context, userID uuid.UUID, readAt time.Time) (int, error)
 	MarkChatRead(ctx context.Context, chatID, userID uuid.UUID, lastReadMessageID *uuid.UUID, readAt time.Time) error
 	CreateChatMessageNotifications(ctx context.Context, chatID, messageID, senderID uuid.UUID, body string) error
 	CreateCommentMentionNotifications(ctx context.Context, postID, commentID, authorID uuid.UUID, mentionedUserIDs []uuid.UUID, body string) error
