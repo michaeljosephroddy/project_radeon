@@ -76,7 +76,11 @@ CREATE TABLE IF NOT EXISTS posts (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     body TEXT,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    source_type TEXT,
+    source_id UUID,
+    source_label TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT posts_source_type_chk CHECK (source_type IS NULL OR source_type IN ('daily_reflection'))
 );
 
 CREATE TABLE IF NOT EXISTS post_images (
@@ -103,6 +107,26 @@ CREATE INDEX IF NOT EXISTS idx_posts_user_id_created_at
 
 CREATE INDEX IF NOT EXISTS idx_post_images_post_id_sort_order
     ON post_images(post_id, sort_order, created_at);
+
+CREATE TABLE IF NOT EXISTS daily_reflections (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    reflection_date DATE NOT NULL,
+    prompt_key TEXT,
+    prompt_text TEXT,
+    grateful_for TEXT,
+    on_mind TEXT,
+    blocking_today TEXT,
+    body TEXT NOT NULL,
+    shared_post_id UUID REFERENCES posts(id) ON DELETE SET NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (user_id, reflection_date),
+    CHECK (length(body) <= 2000)
+);
+
+CREATE INDEX IF NOT EXISTS idx_daily_reflections_user_date_desc
+    ON daily_reflections(user_id, reflection_date DESC);
 
 CREATE TABLE IF NOT EXISTS post_reactions (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

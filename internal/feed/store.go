@@ -30,6 +30,9 @@ func (s *pgStore) ListUserPosts(ctx context.Context, userID uuid.UUID, before *t
 			u.username,
 			u.avatar_url,
 			COALESCE(p.body, ''),
+			p.source_type,
+			p.source_id,
+			p.source_label,
 			p.created_at,
 			COALESCE(cc.cnt, 0) AS comment_count,
 			COALESCE(lc.cnt, 0) AS like_count
@@ -308,7 +311,19 @@ func scanPosts(rows interface {
 	var posts []Post
 	for rows.Next() {
 		var p Post
-		if err := rows.Scan(&p.ID, &p.UserID, &p.Username, &p.AvatarURL, &p.Body, &p.CreatedAt, &p.CommentCount, &p.LikeCount); err != nil {
+		if err := rows.Scan(
+			&p.ID,
+			&p.UserID,
+			&p.Username,
+			&p.AvatarURL,
+			&p.Body,
+			&p.SourceType,
+			&p.SourceID,
+			&p.SourceLabel,
+			&p.CreatedAt,
+			&p.CommentCount,
+			&p.LikeCount,
+		); err != nil {
 			return nil, err
 		}
 		posts = append(posts, p)

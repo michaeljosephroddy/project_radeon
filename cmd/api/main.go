@@ -25,6 +25,7 @@ import (
 	"github.com/project_radeon/api/internal/friends"
 	"github.com/project_radeon/api/internal/meetups"
 	"github.com/project_radeon/api/internal/notifications"
+	"github.com/project_radeon/api/internal/reflections"
 	"github.com/project_radeon/api/internal/support"
 	"github.com/project_radeon/api/internal/user"
 	"github.com/project_radeon/api/pkg/cache"
@@ -91,6 +92,7 @@ func main() {
 	}), cacheStore)
 	supportStore := support.NewCachedStore(support.NewPgStore(db), cacheStore)
 	friendsStore := friends.NewCachedStore(friends.NewPgStore(db), cacheStore)
+	reflectionsStore := reflections.NewPgStore(db)
 
 	userHandler := user.NewHandler(userStore, uploader)
 	notificationsService := notifications.NewService(
@@ -105,6 +107,7 @@ func main() {
 	feedHandler := feed.NewHandlerWithNotifier(feedStore, notificationsService, uploader)
 	meetupsHandler := meetups.NewHandler(meetupsStore, uploader)
 	supportHandler := support.NewHandlerWithChatBroadcaster(supportStore, chatsHandler)
+	reflectionsHandler := reflections.NewHandler(reflectionsStore)
 
 	r := chi.NewRouter()
 
@@ -115,7 +118,7 @@ func main() {
 	r.Use(middleware.RateLimitIPWithStore(cacheStore))
 	r.Use(cors.Handler(cors.Options{
 		AllowedOrigins:   []string{"*"},
-		AllowedMethods:   []string{"GET", "POST", "PATCH", "DELETE", "OPTIONS"},
+		AllowedMethods:   []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
 		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type"},
 		AllowCredentials: false,
 	}))
@@ -164,6 +167,15 @@ func main() {
 		r.Post("/feed/authors/{id}/mute", feedHandler.MuteFeedAuthor)
 		r.Post("/feed/impressions", feedHandler.LogFeedImpressions)
 		r.Post("/feed/events", feedHandler.LogFeedEvents)
+
+		// Reflections
+		r.Get("/reflections", reflectionsHandler.ListReflections)
+		r.Get("/reflections/today", reflectionsHandler.GetTodayReflection)
+		r.Put("/reflections/today", reflectionsHandler.UpsertTodayReflection)
+		r.Get("/reflections/{id}", reflectionsHandler.GetReflection)
+		r.Patch("/reflections/{id}", reflectionsHandler.UpdateReflection)
+		r.Delete("/reflections/{id}", reflectionsHandler.DeleteReflection)
+		r.Post("/reflections/{id}/share", reflectionsHandler.ShareReflection)
 
 		// Posts
 		r.Post("/posts", feedHandler.CreatePost)

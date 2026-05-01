@@ -1,0 +1,4 @@
+ALTER TABLE daily_reflections
+    ADD COLUMN IF NOT EXISTS grateful_for TEXT NULL,
+    ADD COLUMN IF NOT EXISTS on_mind TEXT NULL,
+    ADD COLUMN IF NOT EXISTS blocking_today TEXT NULL;

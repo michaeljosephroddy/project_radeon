@@ -76,6 +76,9 @@ type Post struct {
 	Username     string      `json:"username"`
 	AvatarURL    *string     `json:"avatar_url"`
 	Body         string      `json:"body"`
+	SourceType   *string     `json:"source_type,omitempty"`
+	SourceID     *uuid.UUID  `json:"source_id,omitempty"`
+	SourceLabel  *string     `json:"source_label,omitempty"`
 	CreatedAt    time.Time   `json:"created_at"`
 	CommentCount int         `json:"comment_count"`
 	LikeCount    int         `json:"like_count"`
