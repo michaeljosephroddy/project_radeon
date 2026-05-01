@@ -19,7 +19,7 @@ var (
 type FeedMode string
 
 const (
-	FeedModeHome    FeedMode = "home"
+	FeedModeHome FeedMode = "home"
 )
 
 func (m FeedMode) Valid() bool {
@@ -121,6 +121,9 @@ type FeedItem struct {
 	ServedAtKey     time.Time        `json:"served_at_key"`
 	Author          FeedActor        `json:"author"`
 	Body            string           `json:"body"`
+	SourceType      *string          `json:"source_type,omitempty"`
+	SourceID        *uuid.UUID       `json:"source_id,omitempty"`
+	SourceLabel     *string          `json:"source_label,omitempty"`
 	Images          []PostImage      `json:"images"`
 	CreatedAt       time.Time        `json:"created_at"`
 	LikeCount       int              `json:"like_count"`
