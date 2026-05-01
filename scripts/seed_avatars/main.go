@@ -359,7 +359,8 @@ func expandHome(path string) string {
 }
 
 func printPlan(plan []assignment) {
-	fmt.Println("DRY RUN — no uploads will happen.\n")
+	fmt.Println("DRY RUN — no uploads will happen.")
+	fmt.Println()
 	for _, a := range plan {
 		marker := " "
 		if a.User.InChats {
