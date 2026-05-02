@@ -25,7 +25,7 @@ type mockQuerier struct {
 	listHomeFeed           func(ctx context.Context, viewerID uuid.UUID, before *time.Time, limit int) ([]FeedItem, error)
 	listHiddenFeedItems    func(ctx context.Context, userID uuid.UUID, before *time.Time, limit int) ([]HiddenFeedItem, error)
 	listUserPosts          func(ctx context.Context, userID uuid.UUID, before *time.Time, limit int) ([]Post, error)
-	createPost             func(ctx context.Context, userID uuid.UUID, body string, images []PostImage) (uuid.UUID, error)
+	createPost             func(ctx context.Context, userID uuid.UUID, input CreatePostInput) (uuid.UUID, error)
 	sharePost              func(ctx context.Context, userID, postID uuid.UUID, commentary string) (uuid.UUID, error)
 	deletePost             func(ctx context.Context, postID, userID uuid.UUID) error
 	hideFeedItem           func(ctx context.Context, userID, itemID uuid.UUID, itemKind FeedItemKind) error
@@ -61,9 +61,9 @@ func (m *mockQuerier) ListUserPosts(ctx context.Context, userID uuid.UUID, befor
 	}
 	return nil, nil
 }
-func (m *mockQuerier) CreatePost(ctx context.Context, userID uuid.UUID, body string, images []PostImage) (uuid.UUID, error) {
+func (m *mockQuerier) CreatePost(ctx context.Context, userID uuid.UUID, input CreatePostInput) (uuid.UUID, error) {
 	if m.createPost != nil {
-		return m.createPost(ctx, userID, body, images)
+		return m.createPost(ctx, userID, input)
 	}
 	return uuid.New(), nil
 }
@@ -250,11 +250,11 @@ func TestCreatePostRejectsEmptyBody(t *testing.T) {
 func TestCreatePostAllowsImageOnly(t *testing.T) {
 	var gotImages []PostImage
 	h := NewHandler(&mockQuerier{
-		createPost: func(_ context.Context, _ uuid.UUID, body string, images []PostImage) (uuid.UUID, error) {
-			if body != "" {
-				t.Fatalf("body = %q, want empty", body)
+		createPost: func(_ context.Context, _ uuid.UUID, input CreatePostInput) (uuid.UUID, error) {
+			if input.Body != "" {
+				t.Fatalf("body = %q, want empty", input.Body)
 			}
-			gotImages = images
+			gotImages = input.Images
 			return uuid.New(), nil
 		},
 	}, &mockUploader{})
@@ -288,9 +288,63 @@ func TestCreatePostSuccess(t *testing.T) {
 	}
 }
 
+func TestCreatePostNormalizesTags(t *testing.T) {
+	var gotTags []string
+	h := NewHandler(&mockQuerier{
+		createPost: func(_ context.Context, _ uuid.UUID, input CreatePostInput) (uuid.UUID, error) {
+			gotTags = input.Tags
+			return uuid.New(), nil
+		},
+	}, &mockUploader{})
+	req := httptest.NewRequest(http.MethodPost, "/posts", strings.NewReader(`{"body":"hello world","tags":["Milestone","#support","support","check-in"]}`))
+	req = withUserID(req, fixedUser)
+	rec := httptest.NewRecorder()
+
+	h.CreatePost(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusCreated)
+	}
+	want := []string{"milestone", "support", "check-in"}
+	if len(gotTags) != len(want) {
+		t.Fatalf("tags = %#v, want %#v", gotTags, want)
+	}
+	for index := range want {
+		if gotTags[index] != want[index] {
+			t.Fatalf("tags = %#v, want %#v", gotTags, want)
+		}
+	}
+}
+
+func TestCreatePostRejectsInvalidTags(t *testing.T) {
+	h := NewHandler(&mockQuerier{}, &mockUploader{})
+	req := httptest.NewRequest(http.MethodPost, "/posts", strings.NewReader(`{"body":"hello","tags":["not valid"]}`))
+	req = withUserID(req, fixedUser)
+	rec := httptest.NewRecorder()
+
+	h.CreatePost(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+}
+
+func TestCreatePostRejectsTagOnlyPost(t *testing.T) {
+	h := NewHandler(&mockQuerier{}, &mockUploader{})
+	req := httptest.NewRequest(http.MethodPost, "/posts", strings.NewReader(`{"tags":["support"]}`))
+	req = withUserID(req, fixedUser)
+	rec := httptest.NewRecorder()
+
+	h.CreatePost(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+}
+
 func TestCreatePostDBError(t *testing.T) {
 	h := NewHandler(&mockQuerier{
-		createPost: func(_ context.Context, _ uuid.UUID, _ string, _ []PostImage) (uuid.UUID, error) {
+		createPost: func(_ context.Context, _ uuid.UUID, _ CreatePostInput) (uuid.UUID, error) {
 			return uuid.Nil, errors.New("db error")
 		},
 	}, &mockUploader{})

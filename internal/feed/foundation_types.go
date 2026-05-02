@@ -101,6 +101,7 @@ type EmbeddedPost struct {
 	Author       FeedActor   `json:"author"`
 	Body         string      `json:"body"`
 	Images       []PostImage `json:"images"`
+	Tags         []string    `json:"tags"`
 	CreatedAt    time.Time   `json:"created_at"`
 	LikeCount    int         `json:"like_count"`
 	CommentCount int         `json:"comment_count"`
@@ -125,6 +126,7 @@ type FeedItem struct {
 	SourceID        *uuid.UUID       `json:"source_id,omitempty"`
 	SourceLabel     *string          `json:"source_label,omitempty"`
 	Images          []PostImage      `json:"images"`
+	Tags            []string         `json:"tags"`
 	CreatedAt       time.Time        `json:"created_at"`
 	LikeCount       int              `json:"like_count"`
 	CommentCount    int              `json:"comment_count"`

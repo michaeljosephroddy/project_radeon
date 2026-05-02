@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -483,6 +484,231 @@ func (s *pgStore) CreateCommentMentionNotifications(ctx context.Context, postID,
 	return tx.Commit(ctx)
 }
 
+func (s *pgStore) CreateGroupJoinRequestNotifications(ctx context.Context, groupID, requesterID uuid.UUID) error {
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	groupName, actorUsername, err := groupNotificationContext(ctx, tx, groupID, requesterID)
+	if err != nil {
+		return err
+	}
+	recipients, err := groupAdminNotificationRecipients(ctx, tx, groupID, requesterID)
+	if err != nil {
+		return err
+	}
+	for _, recipientID := range recipients {
+		payload := groupPayload(NotificationTypeGroupJoinRequest, groupID, requesterID)
+		if err := s.createNotification(ctx, tx, recipientID, NotificationTypeGroupJoinRequest, requesterID, ResourceTypeGroup, groupID, groupName, actorUsername+" requested to join", payload); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
+}
+
+func (s *pgStore) CreateGroupJoinApprovedNotification(ctx context.Context, groupID, reviewerID, approvedUserID uuid.UUID) error {
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	groupName, _, err := groupNotificationContext(ctx, tx, groupID, reviewerID)
+	if err != nil {
+		return err
+	}
+	if reviewerID == approvedUserID {
+		return tx.Commit(ctx)
+	}
+	enabled, err := groupNotificationEnabled(ctx, tx, groupID, approvedUserID, "admin")
+	if err != nil {
+		return err
+	}
+	if enabled {
+		payload := groupPayload(NotificationTypeGroupJoinApproved, groupID, reviewerID)
+		if err := s.createNotification(ctx, tx, approvedUserID, NotificationTypeGroupJoinApproved, reviewerID, ResourceTypeGroup, groupID, groupName, "Your join request was approved", payload); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
+}
+
+func (s *pgStore) CreateGroupPostNotifications(ctx context.Context, groupID, postID, authorID uuid.UUID, postType, body string) error {
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	groupName, actorUsername, err := groupNotificationContext(ctx, tx, groupID, authorID)
+	if err != nil {
+		return err
+	}
+	recipients, err := groupMemberNotificationRecipients(ctx, tx, groupID, authorID, "post")
+	if err != nil {
+		return err
+	}
+	notificationBody := actorUsername + ": " + truncateNotificationBody(body, 120)
+	if postType == "admin_announcement" {
+		notificationBody = "Announcement from " + actorUsername + ": " + truncateNotificationBody(body, 100)
+	}
+	for _, recipientID := range recipients {
+		payload := groupPayload(NotificationTypeGroupPost, groupID, authorID)
+		payload["post_id"] = postID.String()
+		payload["post_type"] = postType
+		if err := s.createNotification(ctx, tx, recipientID, NotificationTypeGroupPost, authorID, ResourceTypeGroupPost, postID, groupName, notificationBody, payload); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
+}
+
+func (s *pgStore) CreateGroupCommentNotifications(ctx context.Context, groupID, postID, commentID, authorID uuid.UUID, body string) error {
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	groupName, actorUsername, err := groupNotificationContext(ctx, tx, groupID, authorID)
+	if err != nil {
+		return err
+	}
+	rows, err := tx.Query(ctx,
+		`SELECT DISTINCT recipient_id
+		FROM (
+			SELECT user_id AS recipient_id
+			FROM group_posts
+			WHERE id = $2 AND group_id = $1 AND deleted_at IS NULL
+			UNION
+			SELECT user_id AS recipient_id
+			FROM group_comments
+			WHERE post_id = $2 AND group_id = $1 AND deleted_at IS NULL
+		) recipients
+		JOIN group_memberships gm
+			ON gm.group_id = $1
+			AND gm.user_id = recipients.recipient_id
+			AND gm.status = 'active'
+		LEFT JOIN group_notification_preferences gnp
+			ON gnp.group_id = $1
+			AND gnp.user_id = recipients.recipient_id
+		WHERE recipients.recipient_id <> $3
+			AND COALESCE(gnp.comment_notifications, TRUE)
+			AND (gnp.muted_until IS NULL OR gnp.muted_until < NOW())`,
+		groupID,
+		postID,
+		authorID,
+	)
+	if err != nil {
+		return err
+	}
+	recipients, err := scanRecipientIDs(rows)
+	if err != nil {
+		return err
+	}
+	for _, recipientID := range recipients {
+		payload := groupPayload(NotificationTypeGroupComment, groupID, authorID)
+		payload["post_id"] = postID.String()
+		payload["comment_id"] = commentID.String()
+		if err := s.createNotification(ctx, tx, recipientID, NotificationTypeGroupComment, authorID, ResourceTypeGroupComment, commentID, groupName, actorUsername+" commented: "+truncateNotificationBody(body, 110), payload); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
+}
+
+func (s *pgStore) CreateGroupAdminContactNotifications(ctx context.Context, groupID, threadID, senderID uuid.UUID, body string) error {
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	groupName, actorUsername, err := groupNotificationContext(ctx, tx, groupID, senderID)
+	if err != nil {
+		return err
+	}
+	recipients, err := groupAdminNotificationRecipients(ctx, tx, groupID, senderID)
+	if err != nil {
+		return err
+	}
+	for _, recipientID := range recipients {
+		payload := groupPayload(NotificationTypeGroupAdminContact, groupID, senderID)
+		payload["thread_id"] = threadID.String()
+		if err := s.createNotification(ctx, tx, recipientID, NotificationTypeGroupAdminContact, senderID, ResourceTypeGroupAdminThread, threadID, groupName, actorUsername+" contacted admins: "+truncateNotificationBody(body, 95), payload); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
+}
+
+func (s *pgStore) CreateGroupAdminReplyNotification(ctx context.Context, groupID, threadID, messageID, senderID uuid.UUID, body string) error {
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	groupName, actorUsername, err := groupNotificationContext(ctx, tx, groupID, senderID)
+	if err != nil {
+		return err
+	}
+	var threadOwnerID uuid.UUID
+	if err := tx.QueryRow(ctx,
+		`SELECT user_id
+		FROM group_admin_threads
+		WHERE id = $1 AND group_id = $2`,
+		threadID,
+		groupID,
+	).Scan(&threadOwnerID); err != nil {
+		return err
+	}
+	if threadOwnerID == senderID {
+		return tx.Commit(ctx)
+	}
+	enabled, err := groupNotificationEnabled(ctx, tx, groupID, threadOwnerID, "admin")
+	if err != nil {
+		return err
+	}
+	if enabled {
+		payload := groupPayload(NotificationTypeGroupAdminReply, groupID, senderID)
+		payload["thread_id"] = threadID.String()
+		payload["message_id"] = messageID.String()
+		if err := s.createNotification(ctx, tx, threadOwnerID, NotificationTypeGroupAdminReply, senderID, ResourceTypeGroupAdminThread, threadID, groupName, actorUsername+" replied: "+truncateNotificationBody(body, 110), payload); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
+}
+
+func (s *pgStore) CreateGroupReportNotifications(ctx context.Context, groupID, reportID, reporterID uuid.UUID, targetType, reason string) error {
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	groupName, actorUsername, err := groupNotificationContext(ctx, tx, groupID, reporterID)
+	if err != nil {
+		return err
+	}
+	recipients, err := groupAdminNotificationRecipients(ctx, tx, groupID, reporterID)
+	if err != nil {
+		return err
+	}
+	for _, recipientID := range recipients {
+		payload := groupPayload(NotificationTypeGroupReport, groupID, reporterID)
+		payload["report_id"] = reportID.String()
+		payload["target_type"] = targetType
+		if err := s.createNotification(ctx, tx, recipientID, NotificationTypeGroupReport, reporterID, ResourceTypeGroupReport, reportID, groupName, actorUsername+" reported "+targetType+": "+truncateNotificationBody(reason, 80), payload); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
+}
+
 func markNotificationIDsRead(ctx context.Context, tx pgx.Tx, userID uuid.UUID, notificationIDs []uuid.UUID, readAt time.Time) (int, error) {
 	var updated int
 	if err := tx.QueryRow(ctx,
@@ -530,6 +756,174 @@ func decrementUnreadCounter(ctx context.Context, tx pgx.Tx, userID uuid.UUID, am
 		userID, amount,
 	)
 	return err
+}
+
+func groupNotificationContext(ctx context.Context, tx pgx.Tx, groupID, actorID uuid.UUID) (string, string, error) {
+	var groupName string
+	var actorUsername string
+	if err := tx.QueryRow(ctx,
+		`SELECT g.name, u.username
+		FROM groups g
+		JOIN users u ON u.id = $2
+		WHERE g.id = $1 AND g.deleted_at IS NULL`,
+		groupID,
+		actorID,
+	).Scan(&groupName, &actorUsername); err != nil {
+		return "", "", err
+	}
+	return groupName, actorUsername, nil
+}
+
+func groupPayload(notificationType string, groupID, actorID uuid.UUID) map[string]any {
+	return map[string]any{
+		"type":            notificationType,
+		"group_id":        groupID.String(),
+		"notification_id": "",
+		"actor_user_id":   actorID.String(),
+	}
+}
+
+func (s *pgStore) createNotification(ctx context.Context, tx pgx.Tx, userID uuid.UUID, notificationType string, actorID uuid.UUID, resourceType string, resourceID uuid.UUID, title string, body string, payload map[string]any) error {
+	payloadBytes, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+
+	var notificationID uuid.UUID
+	if err := tx.QueryRow(ctx,
+		`INSERT INTO notifications (user_id, type, actor_id, resource_type, resource_id, title, body, payload)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		RETURNING id`,
+		userID,
+		notificationType,
+		actorID,
+		resourceType,
+		resourceID,
+		title,
+		body,
+		payloadBytes,
+	).Scan(&notificationID); err != nil {
+		return err
+	}
+
+	payload["notification_id"] = notificationID.String()
+	payloadBytes, err = json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `UPDATE notifications SET payload = $2 WHERE id = $1`, notificationID, payloadBytes); err != nil {
+		return err
+	}
+	if err := incrementUnreadCounter(ctx, tx, userID, 1); err != nil {
+		return err
+	}
+	return s.enqueueDeliveriesForNotification(ctx, tx, notificationID, userID)
+}
+
+func groupAdminNotificationRecipients(ctx context.Context, tx pgx.Tx, groupID, excludeUserID uuid.UUID) ([]uuid.UUID, error) {
+	rows, err := tx.Query(ctx,
+		`SELECT gm.user_id
+		FROM group_memberships gm
+		LEFT JOIN group_notification_preferences gnp
+			ON gnp.group_id = gm.group_id
+			AND gnp.user_id = gm.user_id
+		WHERE gm.group_id = $1
+			AND gm.user_id <> $2
+			AND gm.status = 'active'
+			AND gm.role IN ('owner', 'admin', 'moderator')
+			AND COALESCE(gnp.admin_notifications, TRUE)
+			AND (gnp.muted_until IS NULL OR gnp.muted_until < NOW())`,
+		groupID,
+		excludeUserID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return scanRecipientIDs(rows)
+}
+
+func groupMemberNotificationRecipients(ctx context.Context, tx pgx.Tx, groupID, excludeUserID uuid.UUID, preference string) ([]uuid.UUID, error) {
+	preferenceColumn := "post_notifications"
+	if preference == "comment" {
+		preferenceColumn = "comment_notifications"
+	}
+	rows, err := tx.Query(ctx,
+		fmt.Sprintf(`SELECT gm.user_id
+		FROM group_memberships gm
+		LEFT JOIN group_notification_preferences gnp
+			ON gnp.group_id = gm.group_id
+			AND gnp.user_id = gm.user_id
+		WHERE gm.group_id = $1
+			AND gm.user_id <> $2
+			AND gm.status = 'active'
+			AND COALESCE(gnp.%s, TRUE)
+			AND (gnp.muted_until IS NULL OR gnp.muted_until < NOW())`, preferenceColumn),
+		groupID,
+		excludeUserID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return scanRecipientIDs(rows)
+}
+
+func groupNotificationEnabled(ctx context.Context, tx pgx.Tx, groupID, userID uuid.UUID, preference string) (bool, error) {
+	preferenceColumn := "post_notifications"
+	switch preference {
+	case "admin":
+		preferenceColumn = "admin_notifications"
+	case "comment":
+		preferenceColumn = "comment_notifications"
+	}
+	var enabled bool
+	if err := tx.QueryRow(ctx,
+		fmt.Sprintf(`SELECT EXISTS (
+			SELECT 1
+			FROM group_memberships gm
+			LEFT JOIN group_notification_preferences gnp
+				ON gnp.group_id = gm.group_id
+				AND gnp.user_id = gm.user_id
+			WHERE gm.group_id = $1
+				AND gm.user_id = $2
+				AND gm.status = 'active'
+				AND COALESCE(gnp.%s, TRUE)
+				AND (gnp.muted_until IS NULL OR gnp.muted_until < NOW())
+		)`, preferenceColumn),
+		groupID,
+		userID,
+	).Scan(&enabled); err != nil {
+		return false, err
+	}
+	return enabled, nil
+}
+
+func scanRecipientIDs(rows pgx.Rows) ([]uuid.UUID, error) {
+	defer rows.Close()
+
+	recipients := make([]uuid.UUID, 0, 8)
+	for rows.Next() {
+		var userID uuid.UUID
+		if err := rows.Scan(&userID); err != nil {
+			return nil, err
+		}
+		recipients = append(recipients, userID)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return recipients, nil
+}
+
+func truncateNotificationBody(body string, limit int) string {
+	body = strings.Join(strings.Fields(body), " ")
+	runes := []rune(body)
+	if len(runes) <= limit {
+		return body
+	}
+	if limit <= 1 {
+		return string(runes[:limit])
+	}
+	return string(runes[:limit-1]) + "..."
 }
 
 func (s *pgStore) enqueueDeliveriesForNotification(ctx context.Context, tx pgx.Tx, notificationID, userID uuid.UUID) error {

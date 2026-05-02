@@ -97,6 +97,63 @@ func (s *Service) NotifyCommentMentions(ctx context.Context, postID, commentID, 
 	return s.store.CreateCommentMentionNotifications(ctx, postID, commentID, authorID, mentionedUserIDs, body)
 }
 
+func (s *Service) NotifyGroupJoinRequest(ctx context.Context, groupID, requesterID uuid.UUID) error {
+	go s.runGroupNotification("create group join request notifications", func(ctx context.Context) error {
+		return s.store.CreateGroupJoinRequestNotifications(ctx, groupID, requesterID)
+	})
+	return nil
+}
+
+func (s *Service) NotifyGroupJoinApproved(ctx context.Context, groupID, reviewerID, approvedUserID uuid.UUID) error {
+	go s.runGroupNotification("create group join approved notification", func(ctx context.Context) error {
+		return s.store.CreateGroupJoinApprovedNotification(ctx, groupID, reviewerID, approvedUserID)
+	})
+	return nil
+}
+
+func (s *Service) NotifyGroupPost(ctx context.Context, groupID, postID, authorID uuid.UUID, postType, body string) error {
+	go s.runGroupNotification("create group post notifications", func(ctx context.Context) error {
+		return s.store.CreateGroupPostNotifications(ctx, groupID, postID, authorID, postType, body)
+	})
+	return nil
+}
+
+func (s *Service) NotifyGroupComment(ctx context.Context, groupID, postID, commentID, authorID uuid.UUID, body string) error {
+	go s.runGroupNotification("create group comment notifications", func(ctx context.Context) error {
+		return s.store.CreateGroupCommentNotifications(ctx, groupID, postID, commentID, authorID, body)
+	})
+	return nil
+}
+
+func (s *Service) NotifyGroupAdminContact(ctx context.Context, groupID, threadID, senderID uuid.UUID, body string) error {
+	go s.runGroupNotification("create group admin contact notifications", func(ctx context.Context) error {
+		return s.store.CreateGroupAdminContactNotifications(ctx, groupID, threadID, senderID, body)
+	})
+	return nil
+}
+
+func (s *Service) NotifyGroupAdminReply(ctx context.Context, groupID, threadID, messageID, senderID uuid.UUID, body string) error {
+	go s.runGroupNotification("create group admin reply notification", func(ctx context.Context) error {
+		return s.store.CreateGroupAdminReplyNotification(ctx, groupID, threadID, messageID, senderID, body)
+	})
+	return nil
+}
+
+func (s *Service) NotifyGroupReport(ctx context.Context, groupID, reportID, reporterID uuid.UUID, targetType, reason string) error {
+	go s.runGroupNotification("create group report notifications", func(ctx context.Context) error {
+		return s.store.CreateGroupReportNotifications(ctx, groupID, reportID, reporterID, targetType, reason)
+	})
+	return nil
+}
+
+func (s *Service) runGroupNotification(label string, create func(context.Context) error) {
+	notifyCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := create(notifyCtx); err != nil {
+		log.Printf("%s: %v", label, err)
+	}
+}
+
 func (s *Service) ProcessPendingDeliveries(ctx context.Context, limit int) error {
 	if s.provider == nil {
 		return nil

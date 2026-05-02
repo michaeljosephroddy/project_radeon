@@ -61,10 +61,13 @@ func (s *pgStore) ListUserPosts(ctx context.Context, userID uuid.UUID, before *t
 	if err := s.attachPostImages(ctx, posts); err != nil {
 		return nil, err
 	}
+	if err := s.attachPostTags(ctx, posts); err != nil {
+		return nil, err
+	}
 	return posts, nil
 }
 
-func (s *pgStore) CreatePost(ctx context.Context, userID uuid.UUID, body string, images []PostImage) (uuid.UUID, error) {
+func (s *pgStore) CreatePost(ctx context.Context, userID uuid.UUID, input CreatePostInput) (uuid.UUID, error) {
 	var id uuid.UUID
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
@@ -74,17 +77,27 @@ func (s *pgStore) CreatePost(ctx context.Context, userID uuid.UUID, body string,
 
 	err = tx.QueryRow(ctx,
 		`INSERT INTO posts (user_id, body) VALUES ($1, NULLIF($2, '')) RETURNING id`,
-		userID, body,
+		userID, input.Body,
 	).Scan(&id)
 	if err != nil {
 		return uuid.Nil, err
 	}
 
-	for _, image := range images {
+	for _, image := range input.Images {
 		if _, err := tx.Exec(ctx,
 			`INSERT INTO post_images (post_id, image_url, width, height, sort_order)
 			VALUES ($1, $2, $3, $4, $5)`,
 			id, image.ImageURL, image.Width, image.Height, image.SortOrder,
+		); err != nil {
+			return uuid.Nil, err
+		}
+	}
+	for _, tag := range input.Tags {
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO post_tags (post_id, tag)
+			VALUES ($1, $2)
+			ON CONFLICT (post_id, tag) DO NOTHING`,
+			id, tag,
 		); err != nil {
 			return uuid.Nil, err
 		}
@@ -376,6 +389,62 @@ func (s *pgStore) attachPostImages(ctx context.Context, posts []Post) error {
 	}
 
 	return rows.Err()
+}
+
+func (s *pgStore) attachPostTags(ctx context.Context, posts []Post) error {
+	if len(posts) == 0 {
+		return nil
+	}
+
+	postIDs := make([]uuid.UUID, 0, len(posts))
+	postByID := make(map[uuid.UUID]*Post, len(posts))
+	for index := range posts {
+		posts[index].Tags = []string{}
+		postIDs = append(postIDs, posts[index].ID)
+		postByID[posts[index].ID] = &posts[index]
+	}
+
+	tagsByID, err := s.loadPostTagsByID(ctx, postIDs)
+	if err != nil {
+		return err
+	}
+	for postID, tags := range tagsByID {
+		post, ok := postByID[postID]
+		if !ok {
+			return fmt.Errorf("post tag references unknown post %s", postID)
+		}
+		post.Tags = tags
+	}
+	return nil
+}
+
+func (s *pgStore) loadPostTagsByID(ctx context.Context, postIDs []uuid.UUID) (map[uuid.UUID][]string, error) {
+	tagsByID := make(map[uuid.UUID][]string, len(postIDs))
+	if len(postIDs) == 0 {
+		return tagsByID, nil
+	}
+
+	rows, err := s.pool.Query(ctx,
+		`SELECT post_id, tag
+		FROM post_tags
+		WHERE post_id = ANY($1::uuid[])
+		ORDER BY post_id ASC, created_at ASC, tag ASC`,
+		postIDs,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var postID uuid.UUID
+		var tag string
+		if err := rows.Scan(&postID, &tag); err != nil {
+			return nil, err
+		}
+		tagsByID[postID] = append(tagsByID[postID], tag)
+	}
+	return tagsByID, rows.Err()
 }
 
 func (s *pgStore) attachCommentMentions(ctx context.Context, comments []Comment) error {
