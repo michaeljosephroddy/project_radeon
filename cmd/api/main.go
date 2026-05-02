@@ -92,7 +92,7 @@ func main() {
 	}), cacheStore)
 	supportStore := support.NewCachedStore(support.NewPgStore(db), cacheStore)
 	friendsStore := friends.NewCachedStore(friends.NewPgStore(db), cacheStore)
-	groupsStore := groups.NewPgStore(db)
+	groupsStore := groups.NewCachedStore(groups.NewPgStore(db), cacheStore)
 
 	userHandler := user.NewHandler(userStore, uploader)
 	notificationsService := notifications.NewService(

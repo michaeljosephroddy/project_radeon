@@ -36,12 +36,13 @@ type assignment struct {
 
 func main() {
 	var (
-		dbURL     = flag.String("db", os.Getenv("DATABASE_URL"), "Postgres connection string (defaults to $DATABASE_URL)")
-		apiURL    = flag.String("api", "http://localhost:8080", "API base URL")
-		imagesDir = flag.String("images", expandHome("~/Downloads"), "Directory containing manN.jpg / womanN.jpg")
-		password  = flag.String("password", "password123", "Shared password for seed users")
-		testEmail = flag.String("test-email", "test@radeon.dev", "Email of the user whose chat partners need unique photos")
-		dryRun    = flag.Bool("dry-run", false, "Print the planned assignments without uploading")
+		dbURL           = flag.String("db", os.Getenv("DATABASE_URL"), "Postgres connection string (defaults to $DATABASE_URL)")
+		apiURL          = flag.String("api", "http://localhost:8080", "API base URL")
+		imagesDir       = flag.String("images", expandHome("~/Downloads"), "Directory containing manN.jpg / womanN.jpg")
+		password        = flag.String("password", "password123", "Shared password for seed users")
+		testEmail       = flag.String("test-email", "test@radeon.dev", "Email of the user whose chat partners need unique photos")
+		includeTestUser = flag.Bool("include-test-user", true, "Include the test user in avatar uploads")
+		dryRun          = flag.Bool("dry-run", false, "Print the planned assignments without uploading")
 	)
 	flag.Parse()
 
@@ -56,7 +57,7 @@ func main() {
 	}
 	defer pool.Close()
 
-	users, err := loadUsers(ctx, pool, *testEmail)
+	users, err := loadUsers(ctx, pool, *testEmail, *includeTestUser)
 	if err != nil {
 		log.Fatalf("load users: %v", err)
 	}
@@ -97,7 +98,7 @@ func main() {
 	fmt.Printf("\nDone: %d uploaded, %d failed (★ = chat-list partner)\n", successes, failures)
 }
 
-func loadUsers(ctx context.Context, pool *pgxpool.Pool, testEmail string) ([]userToSeed, error) {
+func loadUsers(ctx context.Context, pool *pgxpool.Pool, testEmail string, includeTestUser bool) ([]userToSeed, error) {
 	rows, err := pool.Query(ctx, `
 		WITH test_user AS (
 			SELECT id FROM users WHERE email = $1
@@ -111,8 +112,8 @@ func loadUsers(ctx context.Context, pool *pgxpool.Pool, testEmail string) ([]use
 		SELECT u.id::text, u.email, u.username, COALESCE(u.gender, ''),
 		       EXISTS(SELECT 1 FROM chat_partners cp WHERE cp.user_id = u.id) AS in_chats
 		FROM users u
-		WHERE u.id != (SELECT id FROM test_user)
-		ORDER BY in_chats DESC, u.username`, testEmail)
+		WHERE ($2::boolean OR u.id != (SELECT id FROM test_user))
+		ORDER BY in_chats DESC, u.username`, testEmail, includeTestUser)
 	if err != nil {
 		return nil, err
 	}

@@ -57,6 +57,7 @@ type seededUser struct {
 	ID                 uuid.UUID
 	Username           string
 	Email              string
+	AvatarURL          string
 	FirstName          string
 	LastName           string
 	City               string
@@ -406,6 +407,7 @@ func buildUsers(interestNames []string) []seededUser {
 		ID:                 uuid.New(),
 		Username:           "testuser",
 		Email:              "test@radeon.dev",
+		AvatarURL:          seededAvatarURL("man", 0),
 		FirstName:          "Test",
 		LastName:           "User",
 		City:               testCity.City,
@@ -471,6 +473,7 @@ func buildUsers(interestNames []string) []seededUser {
 			ID:                 uuid.New(),
 			Username:           username,
 			Email:              email,
+			AvatarURL:          seededAvatarURL(gender, index+1),
 			FirstName:          firstName,
 			LastName:           lastName,
 			City:               city.City,
@@ -507,6 +510,14 @@ func weightedGender(index int) string {
 	default:
 		return "man"
 	}
+}
+
+func seededAvatarURL(gender string, index int) string {
+	collection := "men"
+	if gender == "woman" {
+		collection = "women"
+	}
+	return fmt.Sprintf("https://randomuser.me/api/portraits/%s/%d.jpg", collection, index%96)
 }
 
 func chooseFirstName(gender string, womenNames, menNames, neutralNames []string) string {
@@ -715,24 +726,24 @@ func insertUsers(ctx context.Context, tx pgx.Tx, users []seededUser, passwordHas
 		sobrietyBand := computeSobrietyBand(user.SoberSince)
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO users (
-				id, username, email, password_hash,
+				id, username, email, password_hash, avatar_url,
 				city, country, bio, gender, birth_date, sober_since,
 				subscription_tier, subscription_status,
 				lat, lng, current_lat, current_lng, current_city, location_updated_at,
 				discover_lat, discover_lng, sobriety_band, profile_completeness, last_active_at, created_at
 			)
 			VALUES (
-				$1, $2, $3, $4,
-				$5, $6, $7, $8, $9, $10,
-				$11, $12,
-				$13, $14, $15, $16, $17, $18,
-				$19, $20, $21, $22, $23, $24
+				$1, $2, $3, $4, $5,
+				$6, $7, $8, $9, $10, $11,
+				$12, $13,
+				$14, $15, $16, $17, $18, $19,
+				$20, $21, $22, $23, $24, $25
 			)`,
-			user.ID, user.Username, user.Email, passwordHash,
+			user.ID, user.Username, user.Email, passwordHash, user.AvatarURL,
 			user.City, user.Country, user.Bio, user.Gender, user.BirthDate, user.SoberSince,
 			user.SubscriptionTier, user.SubscriptionStatus,
 			user.Lat, user.Lng, user.CurrentLat, user.CurrentLng, user.CurrentCity, user.LocationUpdatedAt,
-			user.DiscoverLat, user.DiscoverLng, sobrietyBand, 7, user.LastActiveAt, user.CreatedAt,
+			user.DiscoverLat, user.DiscoverLng, sobrietyBand, 8, user.LastActiveAt, user.CreatedAt,
 		); err != nil {
 			return fmt.Errorf("insert user %s: %w", user.Username, err)
 		}
@@ -1136,6 +1147,162 @@ func insertGroups(ctx context.Context, tx pgx.Tx, users []seededUser) ([]seededG
 			OwnerIndex:       11,
 			MemberStart:      40,
 			MemberCount:      26,
+		},
+		{
+			Name:             "New York Sober Weekends",
+			Description:      "Weekend planning, late-night check-ins, and alcohol-free ideas around NYC.",
+			Rules:            "Share practical plans. No venue shaming. Keep meetups public and safe.",
+			Visibility:       "public",
+			City:             "New York",
+			Country:          "United States",
+			Tags:             []string{"alcohol-free", "local", "weekends"},
+			RecoveryPathways: []string{"alcohol-free", "aa"},
+			OwnerIndex:       18,
+			MemberStart:      50,
+			MemberCount:      38,
+		},
+		{
+			Name:             "London SMART Lunch Break",
+			Description:      "Short weekday check-ins for people using SMART tools between work and life.",
+			Rules:            "Keep posts concise. Share tools and worksheets. Respect different pathways.",
+			Visibility:       "public",
+			City:             "London",
+			Country:          "United Kingdom",
+			Tags:             []string{"smart", "tools", "work"},
+			RecoveryPathways: []string{"smart"},
+			OwnerIndex:       21,
+			MemberStart:      65,
+			MemberCount:      32,
+		},
+		{
+			Name:             "Toronto First 90 Days",
+			Description:      "Support for the fragile early stretch: sleep, cravings, routines, and repair.",
+			Rules:            "No pressure to count days publicly. Ask before advising. Protect anonymity.",
+			Visibility:       "approval_required",
+			City:             "Toronto",
+			Country:          "Canada",
+			Tags:             []string{"early-recovery", "cravings", "daily-support"},
+			RecoveryPathways: []string{"early-recovery", "smart"},
+			OwnerIndex:       26,
+			MemberStart:      72,
+			MemberCount:      30,
+		},
+		{
+			Name:             "Sydney Alcohol-Free Socials",
+			Description:      "Planning low-pressure sober social time: walks, cafes, sport, and events.",
+			Rules:            "Public plans only. Be clear about accessibility, timing, and transport.",
+			Visibility:       "public",
+			City:             "Sydney",
+			Country:          "Australia",
+			Tags:             []string{"alcohol-free", "local", "social"},
+			RecoveryPathways: []string{"alcohol-free"},
+			OwnerIndex:       31,
+			MemberStart:      82,
+			MemberCount:      27,
+		},
+		{
+			Name:             "LGBTQ+ Recovery Lounge",
+			Description:      "An affirming recovery space for identity, safety, connection, and support.",
+			Rules:            "Use correct names and pronouns. No outing people. Report unsafe behavior.",
+			Visibility:       "approval_required",
+			City:             "Manchester",
+			Country:          "United Kingdom",
+			Tags:             []string{"lgbtq", "safety", "peer-support"},
+			RecoveryPathways: []string{"aa", "smart", "alcohol-free"},
+			OwnerIndex:       36,
+			MemberStart:      90,
+			MemberCount:      34,
+		},
+		{
+			Name:             "Parents Staying Sober",
+			Description:      "For parents balancing recovery, family routines, guilt, repair, and rest.",
+			Rules:            "Protect children's privacy. No judgement about family structure or custody.",
+			Visibility:       "public",
+			City:             "Cork",
+			Country:          "Ireland",
+			Tags:             []string{"parents", "daily-support", "routine"},
+			RecoveryPathways: []string{"early-recovery", "alcohol-free"},
+			OwnerIndex:       43,
+			MemberStart:      10,
+			MemberCount:      36,
+		},
+		{
+			Name:             "AA Beginners Room",
+			Description:      "A simple group for newcomers asking first questions about meetings and steps.",
+			Rules:            "No gatekeeping. Share experience rather than instructions. Keep it welcoming.",
+			Visibility:       "public",
+			City:             "Chicago",
+			Country:          "United States",
+			Tags:             []string{"aa", "newcomers", "early-recovery"},
+			RecoveryPathways: []string{"aa", "early-recovery"},
+			OwnerIndex:       49,
+			MemberStart:      24,
+			MemberCount:      44,
+		},
+		{
+			Name:             "Women Rebuilding Evenings",
+			Description:      "Evening support for women creating safer routines after work and caregiving.",
+			Rules:            "Respect privacy and boundaries. Do not pressure anyone to disclose details.",
+			Visibility:       "approval_required",
+			City:             "Boston",
+			Country:          "United States",
+			Tags:             []string{"women", "evening", "safety"},
+			RecoveryPathways: []string{"aa", "alcohol-free"},
+			OwnerIndex:       54,
+			MemberStart:      36,
+			MemberCount:      31,
+		},
+		{
+			Name:             "Sober Fitness and Walks",
+			Description:      "Gentle movement, walking plans, and check-ins for people rebuilding energy.",
+			Rules:            "No body shaming. Keep advice non-medical. Make plans accessible.",
+			Visibility:       "public",
+			City:             "Vancouver",
+			Country:          "Canada",
+			Tags:             []string{"fitness", "local", "wellbeing"},
+			RecoveryPathways: []string{"alcohol-free", "smart"},
+			OwnerIndex:       62,
+			MemberStart:      48,
+			MemberCount:      29,
+		},
+		{
+			Name:             "Night Shift Recovery",
+			Description:      "Support for people working nights, odd hours, hospitality, and healthcare.",
+			Rules:            "Post across time zones. Respect fatigue. No unsafe workplace details.",
+			Visibility:       "public",
+			City:             "Melbourne",
+			Country:          "Australia",
+			Tags:             []string{"work", "night-shift", "check-in"},
+			RecoveryPathways: []string{"smart", "alcohol-free"},
+			OwnerIndex:       68,
+			MemberStart:      58,
+			MemberCount:      25,
+		},
+		{
+			Name:             "Trauma-Informed Recovery",
+			Description:      "A slower moderated group for grounding, safety plans, and steady recovery.",
+			Rules:            "Use content warnings. No graphic detail. Support without diagnosing.",
+			Visibility:       "approval_required",
+			City:             "Edinburgh",
+			Country:          "United Kingdom",
+			Tags:             []string{"safety", "grounding", "peer-support"},
+			RecoveryPathways: []string{"early-recovery", "smart"},
+			OwnerIndex:       74,
+			MemberStart:      70,
+			MemberCount:      22,
+		},
+		{
+			Name:             "Medication-Assisted Recovery",
+			Description:      "Peer support for people navigating recovery with prescribed medication.",
+			Rules:            "No dosing advice. No stigma. Encourage professional medical support.",
+			Visibility:       "approval_required",
+			City:             "Seattle",
+			Country:          "United States",
+			Tags:             []string{"peer-support", "stigma-free", "health"},
+			RecoveryPathways: []string{"early-recovery"},
+			OwnerIndex:       80,
+			MemberStart:      84,
+			MemberCount:      24,
 		},
 		{
 			Name:             "Private Sponsor Pod",
@@ -1822,11 +1989,11 @@ func insertSupportRequests(ctx context.Context, tx pgx.Tx, users []seededUser, a
 
 	makeRequest := func(requesterID uuid.UUID, requestType string, city *string, channel string, status string, acceptedResponderID *uuid.UUID) supportRequestRow {
 		createdAt := now.Add(-time.Duration(rng.Intn(10*24)+2) * time.Hour)
-		urgency := "soon"
+		urgency := "medium"
 		if channel == "immediate" {
-			urgency = "right_now"
+			urgency = "high"
 		} else if rng.Intn(3) == 0 {
-			urgency = "when_you_can"
+			urgency = "low"
 		}
 
 		var acceptedAt *time.Time
@@ -1924,7 +2091,7 @@ func insertSupportRequests(ctx context.Context, tx pgx.Tx, users []seededUser, a
 		City:         &portlaoise,
 		Channel:      "immediate",
 		Status:       "open",
-		Urgency:      "right_now",
+		Urgency:      "high",
 		PrivacyLevel: "standard",
 		CreatedAt:    now.Add(-6 * time.Hour),
 	}
@@ -1960,7 +2127,7 @@ func availableSupportUserID(users []seededUser, exclude uuid.UUID) uuid.UUID {
 }
 
 func insertSupportResponses(ctx context.Context, tx pgx.Tx, requests []supportRequestRow, users []seededUser) ([]supportRequestRow, error) {
-	responseTypes := []string{"can_chat", "check_in_later", "can_meet"}
+	responseTypes := []string{"chat", "call", "meetup"}
 	responseBodies := []string{
 		"I have time now if you want to chat.",
 		"I can check back in with you later this evening.",
@@ -2012,7 +2179,7 @@ func insertSupportResponses(ctx context.Context, tx pgx.Tx, requests []supportRe
 			}
 			if _, err := tx.Exec(ctx, `
 				INSERT INTO support_responses (id, support_request_id, responder_id, response_type, message, status, created_at)
-				VALUES ($1, $2, $3, 'can_chat', $4, 'accepted', $5)`,
+				VALUES ($1, $2, $3, 'chat', $4, 'accepted', $5)`,
 				acceptedResponseID, request.ID, *request.AcceptedResponderID, pick(responseBodies), acceptedCreatedAt,
 			); err != nil {
 				return nil, fmt.Errorf("insert accepted support response for %s: %w", request.ID, err)
