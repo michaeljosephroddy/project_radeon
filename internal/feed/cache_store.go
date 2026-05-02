@@ -99,8 +99,8 @@ func (s *cachedStore) ListUserPosts(ctx context.Context, userID uuid.UUID, befor
 	return posts, nil
 }
 
-func (s *cachedStore) CreatePost(ctx context.Context, userID uuid.UUID, body string, images []PostImage) (uuid.UUID, error) {
-	postID, err := s.inner.CreatePost(ctx, userID, body, images)
+func (s *cachedStore) CreatePost(ctx context.Context, userID uuid.UUID, input CreatePostInput) (uuid.UUID, error) {
+	postID, err := s.inner.CreatePost(ctx, userID, input)
 	if err != nil {
 		return uuid.Nil, err
 	}

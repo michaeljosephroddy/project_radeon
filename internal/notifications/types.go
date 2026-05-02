@@ -8,11 +8,23 @@ import (
 )
 
 const (
-	NotificationTypeChatMessage    = "chat.message"
-	NotificationTypeCommentMention = "comment.mention"
+	NotificationTypeChatMessage       = "chat.message"
+	NotificationTypeCommentMention    = "comment.mention"
+	NotificationTypeGroupJoinRequest  = "group.join_request"
+	NotificationTypeGroupJoinApproved = "group.join_approved"
+	NotificationTypeGroupPost         = "group.post"
+	NotificationTypeGroupComment      = "group.comment"
+	NotificationTypeGroupAdminContact = "group.admin_contact"
+	NotificationTypeGroupAdminReply   = "group.admin_reply"
+	NotificationTypeGroupReport       = "group.report"
 
-	ResourceTypeChat    = "chat"
-	ResourceTypeComment = "comment"
+	ResourceTypeChat             = "chat"
+	ResourceTypeComment          = "comment"
+	ResourceTypeGroup            = "group"
+	ResourceTypeGroupPost        = "group_post"
+	ResourceTypeGroupComment     = "group_comment"
+	ResourceTypeGroupAdminThread = "group_admin_thread"
+	ResourceTypeGroupReport      = "group_report"
 )
 
 type RegisterDeviceInput struct {
@@ -98,6 +110,13 @@ type Store interface {
 	MarkChatRead(ctx context.Context, chatID, userID uuid.UUID, lastReadMessageID *uuid.UUID, readAt time.Time) error
 	CreateChatMessageNotifications(ctx context.Context, chatID, messageID, senderID uuid.UUID, body string) error
 	CreateCommentMentionNotifications(ctx context.Context, postID, commentID, authorID uuid.UUID, mentionedUserIDs []uuid.UUID, body string) error
+	CreateGroupJoinRequestNotifications(ctx context.Context, groupID, requesterID uuid.UUID) error
+	CreateGroupJoinApprovedNotification(ctx context.Context, groupID, reviewerID, approvedUserID uuid.UUID) error
+	CreateGroupPostNotifications(ctx context.Context, groupID, postID, authorID uuid.UUID, postType, body string) error
+	CreateGroupCommentNotifications(ctx context.Context, groupID, postID, commentID, authorID uuid.UUID, body string) error
+	CreateGroupAdminContactNotifications(ctx context.Context, groupID, threadID, senderID uuid.UUID, body string) error
+	CreateGroupAdminReplyNotification(ctx context.Context, groupID, threadID, messageID, senderID uuid.UUID, body string) error
+	CreateGroupReportNotifications(ctx context.Context, groupID, reportID, reporterID uuid.UUID, targetType, reason string) error
 	ClaimPendingDeliveries(ctx context.Context, limit int, now time.Time) ([]deliveryJob, error)
 	MarkDeliverySent(ctx context.Context, deliveryID uuid.UUID, providerMessageID string, sentAt time.Time) error
 	MarkDeliveryFailed(ctx context.Context, deliveryID uuid.UUID, retryable bool, lastError string, nextAttemptAt time.Time) error

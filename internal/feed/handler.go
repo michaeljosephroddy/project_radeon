@@ -28,7 +28,7 @@ import (
 type Querier interface {
 	ListHomeFeed(ctx context.Context, viewerID uuid.UUID, before *time.Time, limit int) ([]FeedItem, error)
 	ListUserPosts(ctx context.Context, userID uuid.UUID, before *time.Time, limit int) ([]Post, error)
-	CreatePost(ctx context.Context, userID uuid.UUID, body string, images []PostImage) (uuid.UUID, error)
+	CreatePost(ctx context.Context, userID uuid.UUID, input CreatePostInput) (uuid.UUID, error)
 	SharePost(ctx context.Context, userID, postID uuid.UUID, commentary string) (uuid.UUID, error)
 	DeletePost(ctx context.Context, postID, userID uuid.UUID) error
 	HideFeedItem(ctx context.Context, userID, itemID uuid.UUID, itemKind FeedItemKind) error
@@ -83,6 +83,13 @@ type Post struct {
 	CommentCount int         `json:"comment_count"`
 	LikeCount    int         `json:"like_count"`
 	Images       []PostImage `json:"images"`
+	Tags         []string    `json:"tags"`
+}
+
+type CreatePostInput struct {
+	Body   string
+	Images []PostImage
+	Tags   []string
 }
 
 type PostImage struct {
@@ -182,6 +189,7 @@ func (h *Handler) CreatePost(w http.ResponseWriter, r *http.Request) {
 	var input struct {
 		Body   string      `json:"body"`
 		Images []PostImage `json:"images"`
+		Tags   []string    `json:"tags"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 		response.Error(w, http.StatusBadRequest, "body is required")
@@ -209,8 +217,17 @@ func (h *Handler) CreatePost(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	tags, err := normalizePostTags(input.Tags)
+	if err != nil {
+		response.Error(w, http.StatusBadRequest, err.Error())
+		return
+	}
 
-	postID, err := h.db.CreatePost(r.Context(), userID, input.Body, input.Images)
+	postID, err := h.db.CreatePost(r.Context(), userID, CreatePostInput{
+		Body:   input.Body,
+		Images: input.Images,
+		Tags:   tags,
+	})
 	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "could not create post")
 		return
@@ -306,6 +323,55 @@ type uploadedImage struct {
 }
 
 const maxPostImageBytes = 20 << 20
+const maxPostTags = 5
+
+func normalizePostTags(rawTags []string) ([]string, error) {
+	if len(rawTags) == 0 {
+		return []string{}, nil
+	}
+
+	tags := make([]string, 0, len(rawTags))
+	seen := make(map[string]struct{}, len(rawTags))
+	for _, rawTag := range rawTags {
+		tag := strings.TrimSpace(rawTag)
+		tag = strings.TrimPrefix(tag, "#")
+		tag = strings.ToLower(strings.TrimSpace(tag))
+		if tag == "" {
+			continue
+		}
+		if !validPostTag(tag) {
+			return nil, fmt.Errorf("tags may only contain letters, numbers, hyphen, or underscore")
+		}
+		if _, ok := seen[tag]; ok {
+			continue
+		}
+		seen[tag] = struct{}{}
+		tags = append(tags, tag)
+		if len(tags) > maxPostTags {
+			return nil, fmt.Errorf("posts can have at most %d tags", maxPostTags)
+		}
+	}
+	return tags, nil
+}
+
+func validPostTag(tag string) bool {
+	if len(tag) > 32 {
+		return false
+	}
+	for _, ch := range tag {
+		if ch >= 'a' && ch <= 'z' {
+			continue
+		}
+		if ch >= '0' && ch <= '9' {
+			continue
+		}
+		if ch == '-' || ch == '_' {
+			continue
+		}
+		return false
+	}
+	return true
+}
 
 func readUploadedImage(r *http.Request, fieldName string) (*uploadedImage, error) {
 	file, header, err := r.FormFile(fieldName)

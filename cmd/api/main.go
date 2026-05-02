@@ -23,9 +23,9 @@ import (
 	"github.com/project_radeon/api/internal/chats"
 	"github.com/project_radeon/api/internal/feed"
 	"github.com/project_radeon/api/internal/friends"
+	"github.com/project_radeon/api/internal/groups"
 	"github.com/project_radeon/api/internal/meetups"
 	"github.com/project_radeon/api/internal/notifications"
-	"github.com/project_radeon/api/internal/reflections"
 	"github.com/project_radeon/api/internal/support"
 	"github.com/project_radeon/api/internal/user"
 	"github.com/project_radeon/api/pkg/cache"
@@ -92,7 +92,7 @@ func main() {
 	}), cacheStore)
 	supportStore := support.NewCachedStore(support.NewPgStore(db), cacheStore)
 	friendsStore := friends.NewCachedStore(friends.NewPgStore(db), cacheStore)
-	reflectionsStore := reflections.NewPgStore(db)
+	groupsStore := groups.NewPgStore(db)
 
 	userHandler := user.NewHandler(userStore, uploader)
 	notificationsService := notifications.NewService(
@@ -104,10 +104,10 @@ func main() {
 	chatsRealtimeBus := chats.NewRedisRealtimeBus(cacheStore)
 	chatsHandler := chats.NewHandlerWithRealtimeInfra(chats.NewPgStore(db), notificationsService, chatsRealtimeHub, chatsRealtimeBus)
 	friendsHandler := friends.NewHandler(friendsStore)
+	groupsHandler := groups.NewHandlerWithNotifier(groupsStore, notificationsService)
 	feedHandler := feed.NewHandlerWithNotifier(feedStore, notificationsService, uploader)
 	meetupsHandler := meetups.NewHandler(meetupsStore, uploader)
 	supportHandler := support.NewHandlerWithChatBroadcaster(supportStore, chatsHandler)
-	reflectionsHandler := reflections.NewHandler(reflectionsStore)
 
 	r := chi.NewRouter()
 
@@ -168,14 +168,32 @@ func main() {
 		r.Post("/feed/impressions", feedHandler.LogFeedImpressions)
 		r.Post("/feed/events", feedHandler.LogFeedEvents)
 
-		// Reflections
-		r.Get("/reflections", reflectionsHandler.ListReflections)
-		r.Get("/reflections/today", reflectionsHandler.GetTodayReflection)
-		r.Put("/reflections/today", reflectionsHandler.UpsertTodayReflection)
-		r.Get("/reflections/{id}", reflectionsHandler.GetReflection)
-		r.Patch("/reflections/{id}", reflectionsHandler.UpdateReflection)
-		r.Delete("/reflections/{id}", reflectionsHandler.DeleteReflection)
-		r.Post("/reflections/{id}/share", reflectionsHandler.ShareReflection)
+		// Groups
+		r.Get("/groups", groupsHandler.ListGroups)
+		r.Post("/groups", groupsHandler.CreateGroup)
+		r.Get("/groups/{id}", groupsHandler.GetGroup)
+		r.Post("/groups/{id}/join", groupsHandler.JoinGroup)
+		r.Post("/groups/{id}/leave", groupsHandler.LeaveGroup)
+		r.Get("/groups/{id}/members", groupsHandler.ListMembers)
+		r.Post("/groups/{id}/invites", groupsHandler.CreateInvite)
+		r.Post("/group-invites/{token}/accept", groupsHandler.AcceptInvite)
+		r.Get("/groups/{id}/join-requests", groupsHandler.ListJoinRequests)
+		r.Post("/groups/{id}/join-requests/{requestId}/approve", groupsHandler.ApproveJoinRequest)
+		r.Post("/groups/{id}/join-requests/{requestId}/reject", groupsHandler.RejectJoinRequest)
+		r.Post("/groups/{id}/contact-admins", groupsHandler.ContactAdmins)
+		r.Get("/groups/{id}/admin-inbox", groupsHandler.ListAdminThreads)
+		r.Post("/groups/{id}/admin-inbox/{threadId}/messages", groupsHandler.ReplyAdminThread)
+		r.Post("/groups/{id}/admin-inbox/{threadId}/resolve", groupsHandler.ResolveAdminThread)
+		r.Post("/groups/{id}/report", groupsHandler.ReportTarget)
+		r.Get("/groups/{id}/posts", groupsHandler.ListPosts)
+		r.Post("/groups/{id}/posts", groupsHandler.CreatePost)
+		r.Get("/groups/{id}/media", groupsHandler.ListMedia)
+		r.Get("/groups/{id}/posts/{postId}/comments", groupsHandler.ListComments)
+		r.Post("/groups/{id}/posts/{postId}/comments", groupsHandler.CreateComment)
+		r.Post("/groups/{id}/posts/{postId}/reactions", groupsHandler.ToggleReaction)
+		r.Post("/groups/{id}/posts/{postId}/pin", groupsHandler.PinPost)
+		r.Delete("/groups/{id}/posts/{postId}/pin", groupsHandler.UnpinPost)
+		r.Delete("/groups/{id}/posts/{postId}", groupsHandler.DeletePost)
 
 		// Posts
 		r.Post("/posts", feedHandler.CreatePost)

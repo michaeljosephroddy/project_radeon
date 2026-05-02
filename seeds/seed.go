@@ -98,6 +98,15 @@ type seededMeetup struct {
 	WaitlistTarget  int
 }
 
+type seededGroup struct {
+	ID         uuid.UUID
+	OwnerID    uuid.UUID
+	Name       string
+	Visibility string
+	MemberIDs  []uuid.UUID
+	PostIDs    []uuid.UUID
+}
+
 type supportRequestRow struct {
 	ID                  uuid.UUID
 	RequesterID         uuid.UUID
@@ -166,6 +175,10 @@ func seed(ctx context.Context, pool *pgxpool.Pool) error {
 		TRUNCATE chat_reads,
 			messages, chat_members, chats,
 			support_responses, support_requests,
+			group_admin_messages, group_admin_threads, group_reports,
+			group_reactions, group_comments, group_post_images, group_posts,
+			group_invites, group_join_requests, group_notification_preferences,
+			group_audit_events, group_memberships, groups,
 			share_comment_mentions, share_comments, share_reactions, share_quality_features,
 			post_shares, feed_hidden_posts, feed_muted_authors, feed_impressions, feed_events,
 			post_quality_features, author_feed_stats,
@@ -212,6 +225,11 @@ func seed(ctx context.Context, pool *pgxpool.Pool) error {
 		return err
 	}
 	if err := insertReactions(ctx, tx, posts, users); err != nil {
+		return err
+	}
+
+	fmt.Println("→ inserting groups, group posts, and group admin workflow data…")
+	if _, err := insertGroups(ctx, tx, users); err != nil {
 		return err
 	}
 
@@ -1037,6 +1055,426 @@ func insertReactions(ctx context.Context, tx pgx.Tx, posts []seededPost, users [
 		count++
 	}
 	return nil
+}
+
+func insertGroups(ctx context.Context, tx pgx.Tx, users []seededUser) ([]seededGroup, error) {
+	now := time.Now().UTC()
+	defs := []struct {
+		Name             string
+		Description      string
+		Rules            string
+		Visibility       string
+		City             string
+		Country          string
+		Tags             []string
+		RecoveryPathways []string
+		OwnerIndex       int
+		MemberStart      int
+		MemberCount      int
+	}{
+		{
+			Name:             "Alcohol-Free Ireland",
+			Description:      "A broad sober community for daily wins, hard days, and practical support.",
+			Rules:            "Be kind. No medical advice. No shaming slips. Share your own experience.",
+			Visibility:       "public",
+			City:             "Dublin",
+			Country:          "Ireland",
+			Tags:             []string{"alcohol-free", "local", "daily-support"},
+			RecoveryPathways: []string{"alcohol-free"},
+			OwnerIndex:       0,
+			MemberStart:      1,
+			MemberCount:      42,
+		},
+		{
+			Name:             "Dublin Evening Check-ins",
+			Description:      "A moderated group for people in and around Dublin who want evening accountability.",
+			Rules:            "Keep names and stories private. Ask before giving advice. Use content warnings where needed.",
+			Visibility:       "approval_required",
+			City:             "Dublin",
+			Country:          "Ireland",
+			Tags:             []string{"local", "check-in", "evening"},
+			RecoveryPathways: []string{"aa", "smart", "alcohol-free"},
+			OwnerIndex:       2,
+			MemberStart:      5,
+			MemberCount:      28,
+		},
+		{
+			Name:             "Early Recovery Circle",
+			Description:      "Invite-only space for people building their first sober routines.",
+			Rules:            "No screenshots. Respect anonymity. Reach out early when cravings spike.",
+			Visibility:       "invite_only",
+			City:             "Portlaoise",
+			Country:          "Ireland",
+			Tags:             []string{"early-recovery", "cravings", "routine"},
+			RecoveryPathways: []string{"early-recovery"},
+			OwnerIndex:       3,
+			MemberStart:      15,
+			MemberCount:      18,
+		},
+		{
+			Name:             "Women in Recovery",
+			Description:      "A safer space for women to share recovery experiences and support.",
+			Rules:            "Respect identity, privacy, and boundaries. Report unsafe behavior.",
+			Visibility:       "approval_required",
+			City:             "Carlow",
+			Country:          "Ireland",
+			Tags:             []string{"women", "safety", "peer-support"},
+			RecoveryPathways: []string{"aa", "smart"},
+			OwnerIndex:       7,
+			MemberStart:      25,
+			MemberCount:      24,
+		},
+		{
+			Name:             "SMART Tools Practice",
+			Description:      "A focused group for practicing SMART Recovery tools during the week.",
+			Rules:            "Discuss tools, not personalities. Keep posts specific and useful.",
+			Visibility:       "public",
+			City:             "Galway",
+			Country:          "Ireland",
+			Tags:             []string{"smart", "tools", "weekly"},
+			RecoveryPathways: []string{"smart"},
+			OwnerIndex:       11,
+			MemberStart:      40,
+			MemberCount:      26,
+		},
+		{
+			Name:             "Private Sponsor Pod",
+			Description:      "Private hidden seeded group for admin and visibility testing.",
+			Rules:            "Private group content stays private.",
+			Visibility:       "private_hidden",
+			City:             "Portlaoise",
+			Country:          "Ireland",
+			Tags:             []string{"private", "sponsor"},
+			RecoveryPathways: []string{"aa"},
+			OwnerIndex:       0,
+			MemberStart:      60,
+			MemberCount:      8,
+		},
+	}
+
+	groups := make([]seededGroup, 0, len(defs))
+	for index, def := range defs {
+		owner := users[def.OwnerIndex%len(users)]
+		groupID := uuid.New()
+		slug := fmt.Sprintf("%s-%s", slugifySeed(def.Name), groupID.String()[:8])
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO groups (
+				id, owner_id, name, slug, description, rules, visibility, posting_permission,
+				allow_anonymous_posts, city, country, tags, recovery_pathways, created_at, updated_at
+			)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, 'members', $8, $9, $10, $11, $12, $13, $13)`,
+			groupID,
+			owner.ID,
+			def.Name,
+			slug,
+			def.Description,
+			def.Rules,
+			def.Visibility,
+			index%2 == 0,
+			def.City,
+			def.Country,
+			def.Tags,
+			def.RecoveryPathways,
+			now.Add(-time.Duration(index+12)*24*time.Hour),
+		); err != nil {
+			return nil, fmt.Errorf("insert group %s: %w", def.Name, err)
+		}
+
+		memberIDs := []uuid.UUID{owner.ID}
+		if err := insertGroupMembership(ctx, tx, groupID, owner.ID, "owner", now.Add(-time.Duration(index+12)*24*time.Hour)); err != nil {
+			return nil, err
+		}
+		for roleIndex := 0; roleIndex < 2; roleIndex++ {
+			user := users[(def.MemberStart+roleIndex)%len(users)]
+			if user.ID == owner.ID {
+				continue
+			}
+			role := "admin"
+			if roleIndex == 1 {
+				role = "moderator"
+			}
+			if err := insertGroupMembership(ctx, tx, groupID, user.ID, role, now.Add(-time.Duration(index+11)*24*time.Hour)); err != nil {
+				return nil, err
+			}
+			memberIDs = append(memberIDs, user.ID)
+		}
+		for memberIndex := 0; memberIndex < def.MemberCount; memberIndex++ {
+			user := users[(def.MemberStart+memberIndex+3)%len(users)]
+			if containsUUID(memberIDs, user.ID) {
+				continue
+			}
+			if err := insertGroupMembership(ctx, tx, groupID, user.ID, "member", now.Add(-time.Duration(rng.Intn(10*24))*time.Hour)); err != nil {
+				return nil, err
+			}
+			memberIDs = append(memberIDs, user.ID)
+		}
+
+		group := seededGroup{
+			ID:         groupID,
+			OwnerID:    owner.ID,
+			Name:       def.Name,
+			Visibility: def.Visibility,
+			MemberIDs:  memberIDs,
+		}
+		if err := insertGroupContent(ctx, tx, &group, users, now, index); err != nil {
+			return nil, err
+		}
+		if err := insertGroupWorkflowData(ctx, tx, group, users, now, index); err != nil {
+			return nil, err
+		}
+		if err := refreshGroupCounters(ctx, tx, groupID); err != nil {
+			return nil, err
+		}
+		groups = append(groups, group)
+	}
+	return groups, nil
+}
+
+func insertGroupMembership(ctx context.Context, tx pgx.Tx, groupID, userID uuid.UUID, role string, joinedAt time.Time) error {
+	_, err := tx.Exec(ctx, `
+		INSERT INTO group_memberships (group_id, user_id, role, status, joined_at, created_at, updated_at)
+		VALUES ($1, $2, $3, 'active', $4, $4, $4)
+		ON CONFLICT (group_id, user_id) DO NOTHING`,
+		groupID, userID, role, joinedAt,
+	)
+	if err != nil {
+		return fmt.Errorf("insert group membership: %w", err)
+	}
+	return nil
+}
+
+func insertGroupContent(ctx context.Context, tx pgx.Tx, group *seededGroup, users []seededUser, now time.Time, groupIndex int) error {
+	postBodies := []string{
+		"Checking in sober today. I had a craving around lunchtime, named it early, and went for a walk instead of sitting with it alone.",
+		"Small win: made it through a family dinner without pretending everything was easy. Told one safe person I needed a minute.",
+		"Morning routine is doing the heavy lifting for me this week: shower, coffee, meeting list, then phone off for an hour.",
+		"Need support today. My head is noisy and I am trying to stay connected instead of isolating.",
+		"Thirty days for me today. I know it is just one day at a time, but this one feels worth marking.",
+		"Question for the group: what do you do in the first ten minutes when a craving hits hard?",
+	}
+	commentBodies := []string{
+		"That first ten minutes plan is huge.",
+		"Well done for posting before it got bigger.",
+		"I use a shower and a call. Simple but it works.",
+		"Needed this reminder today.",
+		"Congratulations. Keep it close and keep going.",
+	}
+
+	for postIndex, body := range postBodies {
+		authorID := group.MemberIDs[(postIndex+groupIndex)%len(group.MemberIDs)]
+		postID := uuid.New()
+		postType := "standard"
+		switch postIndex {
+		case 3:
+			postType = "need_support"
+		case 4:
+			postType = "milestone"
+		}
+		pinnedAt := (*time.Time)(nil)
+		pinnedBy := (*uuid.UUID)(nil)
+		if postIndex == 0 {
+			value := now.Add(-time.Duration(groupIndex+6) * time.Hour)
+			pinnedAt = &value
+			pinnedBy = &group.OwnerID
+		}
+		createdAt := now.Add(-time.Duration((postIndex+1)*(groupIndex+4)) * time.Hour)
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO group_posts (
+				id, group_id, user_id, post_type, body, anonymous, pinned_at, pinned_by, created_at, updated_at
+			)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9)`,
+			postID,
+			group.ID,
+			authorID,
+			postType,
+			body,
+			postIndex == 3 && groupIndex%2 == 0,
+			pinnedAt,
+			pinnedBy,
+			createdAt,
+		); err != nil {
+			return fmt.Errorf("insert group post: %w", err)
+		}
+		group.PostIDs = append(group.PostIDs, postID)
+
+		if postIndex == 1 || postIndex == 4 {
+			imageURL := fmt.Sprintf("https://images.unsplash.com/photo-%d?auto=format&fit=crop&w=1200&q=80", 1500000000000+groupIndex*1000+postIndex)
+			if _, err := tx.Exec(ctx, `
+				INSERT INTO group_post_images (group_id, post_id, image_url, thumb_url, width, height, position, created_at)
+				VALUES ($1, $2, $3, $3, 1200, 800, 0, $4)`,
+				group.ID,
+				postID,
+				imageURL,
+				createdAt,
+			); err != nil {
+				return fmt.Errorf("insert group image: %w", err)
+			}
+		}
+
+		for commentIndex := 0; commentIndex < 3; commentIndex++ {
+			commenterID := group.MemberIDs[(postIndex+commentIndex+2)%len(group.MemberIDs)]
+			if _, err := tx.Exec(ctx, `
+				INSERT INTO group_comments (group_id, post_id, user_id, body, created_at, updated_at)
+				VALUES ($1, $2, $3, $4, $5, $5)`,
+				group.ID,
+				postID,
+				commenterID,
+				commentBodies[(postIndex+commentIndex)%len(commentBodies)],
+				createdAt.Add(time.Duration(commentIndex+1)*35*time.Minute),
+			); err != nil {
+				return fmt.Errorf("insert group comment: %w", err)
+			}
+		}
+		for reactionIndex := 0; reactionIndex < minInt(12, len(group.MemberIDs)); reactionIndex++ {
+			reactorID := group.MemberIDs[(postIndex+reactionIndex)%len(group.MemberIDs)]
+			if _, err := tx.Exec(ctx, `
+				INSERT INTO group_reactions (group_id, post_id, user_id, type, created_at)
+				VALUES ($1, $2, $3, 'like', $4)
+				ON CONFLICT DO NOTHING`,
+				group.ID,
+				postID,
+				reactorID,
+				createdAt.Add(time.Duration(reactionIndex+1)*20*time.Minute),
+			); err != nil {
+				return fmt.Errorf("insert group reaction: %w", err)
+			}
+		}
+		if _, err := tx.Exec(ctx, `
+			UPDATE group_posts
+			SET comment_count = (SELECT COUNT(*) FROM group_comments WHERE post_id = $1 AND deleted_at IS NULL),
+				reaction_count = (SELECT COUNT(*) FROM group_reactions WHERE post_id = $1),
+				image_count = (SELECT COUNT(*) FROM group_post_images WHERE post_id = $1)
+			WHERE id = $1`,
+			postID,
+		); err != nil {
+			return fmt.Errorf("refresh group post counters: %w", err)
+		}
+	}
+	return nil
+}
+
+func insertGroupWorkflowData(ctx context.Context, tx pgx.Tx, group seededGroup, users []seededUser, now time.Time, groupIndex int) error {
+	if group.Visibility == "approval_required" {
+		requester := users[(groupIndex*13+17)%len(users)]
+		if !containsUUID(group.MemberIDs, requester.ID) {
+			if _, err := tx.Exec(ctx, `
+				INSERT INTO group_join_requests (group_id, user_id, message, status, created_at, updated_at)
+				VALUES ($1, $2, 'I live nearby and would like to join the check-ins.', 'pending', $3, $3)
+				ON CONFLICT DO NOTHING`,
+				group.ID,
+				requester.ID,
+				now.Add(-2*time.Hour),
+			); err != nil {
+				return fmt.Errorf("insert group join request: %w", err)
+			}
+		}
+	}
+
+	tokenHash := fmt.Sprintf("seed-%s", group.ID.String())
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO group_invites (group_id, token_hash, created_by, expires_at, max_uses, requires_approval, created_at)
+		VALUES ($1, $2, $3, $4, 25, $5, $6)
+		ON CONFLICT (token_hash) DO NOTHING`,
+		group.ID,
+		tokenHash,
+		group.OwnerID,
+		now.Add(30*24*time.Hour),
+		group.Visibility == "approval_required",
+		now.Add(-24*time.Hour),
+	); err != nil {
+		return fmt.Errorf("insert group invite: %w", err)
+	}
+
+	threadID := uuid.New()
+	contactUser := group.MemberIDs[minInt(2, len(group.MemberIDs)-1)]
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO group_admin_threads (id, group_id, user_id, status, subject, created_at, updated_at)
+		VALUES ($1, $2, $3, 'open', 'Question about group rules', $4, $4)`,
+		threadID,
+		group.ID,
+		contactUser,
+		now.Add(-6*time.Hour),
+	); err != nil {
+		return fmt.Errorf("insert group admin thread: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO group_admin_messages (thread_id, sender_id, body, created_at)
+		VALUES ($1, $2, 'Can I post about cravings here or should I use the support tab?', $3)`,
+		threadID,
+		contactUser,
+		now.Add(-6*time.Hour),
+	); err != nil {
+		return fmt.Errorf("insert group admin message: %w", err)
+	}
+
+	if len(group.PostIDs) > 0 {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO group_reports (group_id, reporter_id, target_type, target_id, reason, details, status, created_at)
+			VALUES ($1, $2, 'post', $3, 'safety_review', 'Seeded moderation queue item for admin testing.', 'open', $4)`,
+			group.ID,
+			group.MemberIDs[minInt(3, len(group.MemberIDs)-1)],
+			group.PostIDs[0],
+			now.Add(-3*time.Hour),
+		); err != nil {
+			return fmt.Errorf("insert group report: %w", err)
+		}
+	}
+	return nil
+}
+
+func refreshGroupCounters(ctx context.Context, tx pgx.Tx, groupID uuid.UUID) error {
+	_, err := tx.Exec(ctx, `
+		UPDATE groups
+		SET member_count = (SELECT COUNT(*) FROM group_memberships WHERE group_id = $1 AND status = 'active'),
+			post_count = (SELECT COUNT(*) FROM group_posts WHERE group_id = $1 AND deleted_at IS NULL),
+			media_count = (
+				SELECT COUNT(*)
+				FROM group_post_images gpi
+				JOIN group_posts gp ON gp.id = gpi.post_id
+				WHERE gpi.group_id = $1 AND gp.deleted_at IS NULL
+			),
+			pending_request_count = (SELECT COUNT(*) FROM group_join_requests WHERE group_id = $1 AND status = 'pending'),
+			updated_at = NOW()
+		WHERE id = $1`,
+		groupID,
+	)
+	if err != nil {
+		return fmt.Errorf("refresh group counters: %w", err)
+	}
+	return nil
+}
+
+func containsUUID(values []uuid.UUID, target uuid.UUID) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
+}
+
+func slugifySeed(value string) string {
+	slug := strings.ToLower(strings.TrimSpace(value))
+	slug = strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z':
+			return r
+		case r >= '0' && r <= '9':
+			return r
+		case r == ' ' || r == '-' || r == '_':
+			return '-'
+		default:
+			return -1
+		}
+	}, slug)
+	for strings.Contains(slug, "--") {
+		slug = strings.ReplaceAll(slug, "--", "-")
+	}
+	slug = strings.Trim(slug, "-")
+	if slug == "" {
+		return "group"
+	}
+	return slug
 }
 
 func insertMeetups(ctx context.Context, tx pgx.Tx, users []seededUser) ([]seededMeetup, error) {

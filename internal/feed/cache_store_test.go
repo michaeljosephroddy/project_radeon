@@ -43,7 +43,7 @@ func (s *stubQuerier) ListUserPosts(_ context.Context, userID uuid.UUID, before 
 	}}, nil
 }
 
-func (s *stubQuerier) CreatePost(context.Context, uuid.UUID, string, []PostImage) (uuid.UUID, error) {
+func (s *stubQuerier) CreatePost(context.Context, uuid.UUID, CreatePostInput) (uuid.UUID, error) {
 	return uuid.New(), nil
 }
 

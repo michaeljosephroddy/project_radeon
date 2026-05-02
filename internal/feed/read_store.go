@@ -385,7 +385,12 @@ func (s *pgStore) listFeedReshareRows(ctx context.Context, viewerID uuid.UUID, b
 }
 
 func (s *pgStore) hydrateFeedItems(ctx context.Context, viewerID uuid.UUID, posts []feedPostRow, reshares []feedReshareRow, friendIDs map[uuid.UUID]struct{}) ([]FeedItem, error) {
-	postImages, err := s.loadPostImagesByID(ctx, collectPostIDs(posts, reshares))
+	postIDs := collectPostIDs(posts, reshares)
+	postImages, err := s.loadPostImagesByID(ctx, postIDs)
+	if err != nil {
+		return nil, err
+	}
+	postTags, err := s.loadPostTagsByID(ctx, postIDs)
 	if err != nil {
 		return nil, err
 	}
@@ -407,6 +412,7 @@ func (s *pgStore) hydrateFeedItems(ctx context.Context, viewerID uuid.UUID, post
 			SourceID:     post.SourceID,
 			SourceLabel:  post.SourceLabel,
 			Images:       postImages[post.ID],
+			Tags:         tagsForPost(postTags, post.ID),
 			CreatedAt:    post.CreatedAt,
 			LikeCount:    post.LikeCount,
 			CommentCount: post.CommentCount,
@@ -458,6 +464,7 @@ func (s *pgStore) hydrateFeedItems(ctx context.Context, viewerID uuid.UUID, post
 				},
 				Body:         reshare.OriginalBody,
 				Images:       postImages[reshare.OriginalPostID],
+				Tags:         tagsForPost(postTags, reshare.OriginalPostID),
 				CreatedAt:    reshare.OriginalCreatedAt,
 				LikeCount:    reshare.OriginalLikeCnt,
 				CommentCount: reshare.OriginalCommentCnt,
@@ -531,6 +538,14 @@ func (s *pgStore) loadPostImagesByID(ctx context.Context, postIDs []uuid.UUID) (
 		imagesByID[postID] = append(imagesByID[postID], image)
 	}
 	return imagesByID, rows.Err()
+}
+
+func tagsForPost(tagsByID map[uuid.UUID][]string, postID uuid.UUID) []string {
+	tags := tagsByID[postID]
+	if tags == nil {
+		return []string{}
+	}
+	return tags
 }
 
 func (s *pgStore) attachFeedPostImages(ctx context.Context, posts []feedPostRow) error {
@@ -889,7 +904,13 @@ func (s *pgStore) ListHiddenFeedItems(ctx context.Context, userID uuid.UUID, bef
 		hidden.Item = item
 		hiddenItems = append(hiddenItems, hidden)
 	}
-	return hiddenItems, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := s.attachHiddenFeedPostMedia(ctx, hiddenItems); err != nil {
+		return nil, err
+	}
+	return hiddenItems, nil
 }
 
 func valueOrZero(value *int) int {
@@ -897,4 +918,47 @@ func valueOrZero(value *int) int {
 		return 0
 	}
 	return *value
+}
+
+func (s *pgStore) attachHiddenFeedPostMedia(ctx context.Context, hiddenItems []HiddenFeedItem) error {
+	postIDs := make([]uuid.UUID, 0, len(hiddenItems))
+	seen := make(map[uuid.UUID]struct{}, len(hiddenItems))
+	for _, hidden := range hiddenItems {
+		if hidden.Item.Kind == FeedItemKindPost {
+			if _, ok := seen[hidden.Item.ID]; !ok {
+				seen[hidden.Item.ID] = struct{}{}
+				postIDs = append(postIDs, hidden.Item.ID)
+			}
+		}
+		if hidden.Item.OriginalPost != nil {
+			postID := hidden.Item.OriginalPost.PostID
+			if _, ok := seen[postID]; !ok {
+				seen[postID] = struct{}{}
+				postIDs = append(postIDs, postID)
+			}
+		}
+	}
+	imagesByID, err := s.loadPostImagesByID(ctx, postIDs)
+	if err != nil {
+		return err
+	}
+	tagsByID, err := s.loadPostTagsByID(ctx, postIDs)
+	if err != nil {
+		return err
+	}
+	for index := range hiddenItems {
+		if hiddenItems[index].Item.Kind == FeedItemKindPost {
+			postID := hiddenItems[index].Item.ID
+			hiddenItems[index].Item.Images = imagesByID[postID]
+			hiddenItems[index].Item.Tags = tagsForPost(tagsByID, postID)
+		} else {
+			hiddenItems[index].Item.Tags = []string{}
+		}
+		if hiddenItems[index].Item.OriginalPost != nil {
+			postID := hiddenItems[index].Item.OriginalPost.PostID
+			hiddenItems[index].Item.OriginalPost.Images = imagesByID[postID]
+			hiddenItems[index].Item.OriginalPost.Tags = tagsForPost(tagsByID, postID)
+		}
+	}
+	return nil
 }
