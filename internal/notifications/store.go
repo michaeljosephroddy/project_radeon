@@ -546,6 +546,18 @@ func (s *pgStore) CreateGroupPostNotifications(ctx context.Context, groupID, pos
 	if err != nil {
 		return err
 	}
+	var supportRequestID *uuid.UUID
+	if err := tx.QueryRow(ctx,
+		`SELECT support_request_id
+		FROM group_posts
+		WHERE id = $1
+			AND group_id = $2
+			AND deleted_at IS NULL`,
+		postID,
+		groupID,
+	).Scan(&supportRequestID); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return err
+	}
 	recipients, err := groupMemberNotificationRecipients(ctx, tx, groupID, authorID, "post")
 	if err != nil {
 		return err
@@ -558,6 +570,9 @@ func (s *pgStore) CreateGroupPostNotifications(ctx context.Context, groupID, pos
 		payload := groupPayload(NotificationTypeGroupPost, groupID, authorID)
 		payload["post_id"] = postID.String()
 		payload["post_type"] = postType
+		if supportRequestID != nil {
+			payload["support_request_id"] = supportRequestID.String()
+		}
 		if err := s.createNotification(ctx, tx, recipientID, NotificationTypeGroupPost, authorID, ResourceTypeGroupPost, postID, groupName, notificationBody, payload); err != nil {
 			return err
 		}
@@ -574,6 +589,18 @@ func (s *pgStore) CreateGroupCommentNotifications(ctx context.Context, groupID, 
 
 	groupName, actorUsername, err := groupNotificationContext(ctx, tx, groupID, authorID)
 	if err != nil {
+		return err
+	}
+	var supportRequestID *uuid.UUID
+	if err := tx.QueryRow(ctx,
+		`SELECT support_request_id
+		FROM group_posts
+		WHERE id = $1
+			AND group_id = $2
+			AND deleted_at IS NULL`,
+		postID,
+		groupID,
+	).Scan(&supportRequestID); err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return err
 	}
 	rows, err := tx.Query(ctx,
@@ -612,6 +639,9 @@ func (s *pgStore) CreateGroupCommentNotifications(ctx context.Context, groupID, 
 		payload := groupPayload(NotificationTypeGroupComment, groupID, authorID)
 		payload["post_id"] = postID.String()
 		payload["comment_id"] = commentID.String()
+		if supportRequestID != nil {
+			payload["support_request_id"] = supportRequestID.String()
+		}
 		if err := s.createNotification(ctx, tx, recipientID, NotificationTypeGroupComment, authorID, ResourceTypeGroupComment, commentID, groupName, actorUsername+" commented: "+truncateNotificationBody(body, 110), payload); err != nil {
 			return err
 		}
@@ -694,7 +724,11 @@ func (s *pgStore) CreateGroupReportNotifications(ctx context.Context, groupID, r
 	if err != nil {
 		return err
 	}
-	recipients, err := groupAdminNotificationRecipients(ctx, tx, groupID, reporterID)
+	reporterRole, err := groupMembershipRole(ctx, tx, groupID, reporterID)
+	if err != nil {
+		return err
+	}
+	recipients, err := groupReportNotificationRecipients(ctx, tx, groupID, reporterID, reporterRole)
 	if err != nil {
 		return err
 	}
@@ -706,6 +740,50 @@ func (s *pgStore) CreateGroupReportNotifications(ctx context.Context, groupID, r
 			return err
 		}
 	}
+	return tx.Commit(ctx)
+}
+
+func (s *pgStore) CreateGroupReportStatusNotification(ctx context.Context, groupID, reportID, reviewerID, reporterID uuid.UUID, status string) error {
+	if reviewerID == reporterID {
+		return nil
+	}
+
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	groupName, _, err := groupNotificationContext(ctx, tx, groupID, reviewerID)
+	if err != nil {
+		return err
+	}
+
+	enabled, err := groupNotificationEnabled(ctx, tx, groupID, reporterID, "admin")
+	if err != nil {
+		return err
+	}
+	if !enabled {
+		return tx.Commit(ctx)
+	}
+
+	body := "Your report was updated."
+	switch status {
+	case "reviewing":
+		body = "Your report is now being reviewed."
+	case "resolved":
+		body = "Your report was resolved."
+	case "dismissed":
+		body = "Your report was dismissed."
+	}
+
+	payload := groupPayload(NotificationTypeGroupReportStatus, groupID, reviewerID)
+	payload["report_id"] = reportID.String()
+	payload["status"] = status
+	if err := s.createNotification(ctx, tx, reporterID, NotificationTypeGroupReportStatus, reviewerID, ResourceTypeGroupReport, reportID, groupName, body, payload); err != nil {
+		return err
+	}
+
 	return tx.Commit(ctx)
 }
 
@@ -896,6 +974,52 @@ func groupAdminNotificationRecipients(ctx context.Context, tx pgx.Tx, groupID, e
 		return nil, err
 	}
 	return scanRecipientIDs(rows)
+}
+
+func groupReportNotificationRecipients(ctx context.Context, tx pgx.Tx, groupID, excludeUserID uuid.UUID, reporterRole string) ([]uuid.UUID, error) {
+	roles := []string{"owner", "admin", "moderator"}
+	if reporterRole == "moderator" {
+		roles = []string{"owner", "admin"}
+	}
+	rows, err := tx.Query(ctx,
+		`SELECT gm.user_id
+		FROM group_memberships gm
+		LEFT JOIN group_notification_preferences gnp
+			ON gnp.group_id = gm.group_id
+			AND gnp.user_id = gm.user_id
+		WHERE gm.group_id = $1
+			AND gm.user_id <> $2
+			AND gm.status = 'active'
+			AND gm.role = ANY($3::text[])
+			AND COALESCE(gnp.admin_notifications, TRUE)
+			AND (gnp.muted_until IS NULL OR gnp.muted_until < NOW())`,
+		groupID,
+		excludeUserID,
+		roles,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return scanRecipientIDs(rows)
+}
+
+func groupMembershipRole(ctx context.Context, tx pgx.Tx, groupID, userID uuid.UUID) (string, error) {
+	var role string
+	if err := tx.QueryRow(ctx, `
+		SELECT role
+		FROM group_memberships
+		WHERE group_id = $1
+			AND user_id = $2
+			AND status = 'active'`,
+		groupID,
+		userID,
+	).Scan(&role); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", nil
+		}
+		return "", err
+	}
+	return role, nil
 }
 
 func groupMemberNotificationRecipients(ctx context.Context, tx pgx.Tx, groupID, excludeUserID uuid.UUID, preference string) ([]uuid.UUID, error) {

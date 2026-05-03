@@ -146,6 +146,13 @@ func (s *Service) NotifyGroupReport(ctx context.Context, groupID, reportID, repo
 	return nil
 }
 
+func (s *Service) NotifyGroupReportStatus(ctx context.Context, groupID, reportID, reviewerID, reporterID uuid.UUID, status string) error {
+	go s.runGroupNotification("create group report status notification", func(ctx context.Context) error {
+		return s.store.CreateGroupReportStatusNotification(ctx, groupID, reportID, reviewerID, reporterID, status)
+	})
+	return nil
+}
+
 func (s *Service) NotifySupportOffer(ctx context.Context, requestID, offerID, responderID, requesterID uuid.UUID) error {
 	go s.runGroupNotification("create support offer notification", func(ctx context.Context) error {
 		return s.store.CreateSupportOfferNotification(ctx, requestID, offerID, responderID, requesterID)

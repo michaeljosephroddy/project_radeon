@@ -1,11 +1,16 @@
 package groups
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"image"
+	"io"
 	"log"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -14,19 +19,34 @@ import (
 	"github.com/project_radeon/api/pkg/middleware"
 	"github.com/project_radeon/api/pkg/pagination"
 	"github.com/project_radeon/api/pkg/response"
+	_ "image/jpeg"
+	_ "image/png"
 )
 
 type Handler struct {
 	store    Store
 	notifier Notifier
+	uploader Uploader
 }
 
-func NewHandler(store Store) *Handler {
-	return &Handler{store: store}
+type Uploader interface {
+	Upload(ctx context.Context, key, contentType string, body io.Reader) (string, error)
 }
 
-func NewHandlerWithNotifier(store Store, notifier Notifier) *Handler {
-	return &Handler{store: store, notifier: notifier}
+func NewHandler(store Store, uploaders ...Uploader) *Handler {
+	var uploader Uploader
+	if len(uploaders) > 0 {
+		uploader = uploaders[0]
+	}
+	return &Handler{store: store, uploader: uploader}
+}
+
+func NewHandlerWithNotifier(store Store, notifier Notifier, uploaders ...Uploader) *Handler {
+	var uploader Uploader
+	if len(uploaders) > 0 {
+		uploader = uploaders[0]
+	}
+	return &Handler{store: store, notifier: notifier, uploader: uploader}
 }
 
 type Notifier interface {
@@ -37,6 +57,7 @@ type Notifier interface {
 	NotifyGroupAdminContact(ctx context.Context, groupID, threadID, senderID uuid.UUID, body string) error
 	NotifyGroupAdminReply(ctx context.Context, groupID, threadID, messageID, senderID uuid.UUID, body string) error
 	NotifyGroupReport(ctx context.Context, groupID, reportID, reporterID uuid.UUID, targetType, reason string) error
+	NotifyGroupReportStatus(ctx context.Context, groupID, reportID, reviewerID, reporterID uuid.UUID, status string) error
 }
 
 type groupRequest struct {
@@ -86,6 +107,18 @@ type reportRequest struct {
 	Details    *string `json:"details"`
 }
 
+type reportReviewRequest struct {
+	Status string `json:"status"`
+}
+
+type uploadedGroupImage struct {
+	body        []byte
+	contentType string
+	extension   string
+}
+
+const maxGroupImageBytes = 20 << 20
+
 func (h *Handler) ListGroups(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.CurrentUserID(r)
 	params := pagination.ParseCursor(r, 20, 50)
@@ -95,6 +128,8 @@ func (h *Handler) ListGroups(w http.ResponseWriter, r *http.Request) {
 		Country:         strings.TrimSpace(r.URL.Query().Get("country")),
 		Tag:             strings.TrimSpace(r.URL.Query().Get("tag")),
 		RecoveryPathway: strings.TrimSpace(r.URL.Query().Get("recovery_pathway")),
+		Visibility:      strings.TrimSpace(r.URL.Query().Get("visibility")),
+		GroupType:       strings.TrimSpace(r.URL.Query().Get("group_type")),
 		MemberScope:     strings.TrimSpace(r.URL.Query().Get("member_scope")),
 		Before:          params.Before,
 		Limit:           params.Limit + 1,
@@ -277,6 +312,49 @@ func (h *Handler) CreatePost(w http.ResponseWriter, r *http.Request) {
 		_ = h.notifier.NotifyGroupPost(r.Context(), groupID, post.ID, userID, string(post.PostType), post.Body)
 	}
 	response.Success(w, http.StatusCreated, post)
+}
+
+func (h *Handler) UploadGroupImage(w http.ResponseWriter, r *http.Request) {
+	if h.uploader == nil {
+		response.Error(w, http.StatusInternalServerError, "image uploads are not configured")
+		return
+	}
+
+	userID := middleware.CurrentUserID(r)
+	r.Body = http.MaxBytesReader(w, r.Body, maxGroupImageBytes+(4<<20))
+	if err := r.ParseMultipartForm(24 << 20); err != nil {
+		response.Error(w, http.StatusBadRequest, "file too large or invalid form data")
+		return
+	}
+
+	imageFile, err := readUploadedGroupImage(r, "image")
+	if err != nil {
+		response.Error(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	imageConfig, _, err := image.DecodeConfig(bytes.NewReader(imageFile.body))
+	if err != nil {
+		response.Error(w, http.StatusBadRequest, "could not decode image")
+		return
+	}
+	if imageConfig.Width <= 0 || imageConfig.Height <= 0 {
+		response.Error(w, http.StatusBadRequest, "image dimensions are required")
+		return
+	}
+
+	key := fmt.Sprintf("groups/%s/%s%s", userID, uuid.New(), imageFile.extension)
+	imageURL, err := h.uploader.Upload(r.Context(), key, imageFile.contentType, bytes.NewReader(imageFile.body))
+	if err != nil {
+		response.Error(w, http.StatusInternalServerError, "could not upload image")
+		return
+	}
+
+	response.Success(w, http.StatusOK, map[string]any{
+		"avatar_url": imageURL,
+		"width":      imageConfig.Width,
+		"height":     imageConfig.Height,
+	})
 }
 
 func (h *Handler) ListMedia(w http.ResponseWriter, r *http.Request) {
@@ -474,6 +552,26 @@ func (h *Handler) CreateInvite(w http.ResponseWriter, r *http.Request) {
 	response.Success(w, http.StatusCreated, invite)
 }
 
+func (h *Handler) GetInvitePreview(w http.ResponseWriter, r *http.Request) {
+	userID := middleware.CurrentUserID(r)
+	token := strings.TrimSpace(chi.URLParam(r, "token"))
+	if token == "" {
+		response.Error(w, http.StatusBadRequest, "invalid invite token")
+		return
+	}
+	preview, err := h.store.GetInvitePreview(r.Context(), userID, token)
+	if errors.Is(err, ErrNotFound) {
+		response.Error(w, http.StatusNotFound, "invite not found")
+		return
+	}
+	if err != nil {
+		log.Printf("get group invite preview failed for %s: %v", userID, err)
+		response.Error(w, http.StatusInternalServerError, "could not fetch invite")
+		return
+	}
+	response.Success(w, http.StatusOK, preview)
+}
+
 func (h *Handler) AcceptInvite(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.CurrentUserID(r)
 	token := strings.TrimSpace(chi.URLParam(r, "token"))
@@ -613,6 +711,29 @@ func (h *Handler) ListAdminThreads(w http.ResponseWriter, r *http.Request) {
 	}))
 }
 
+func (h *Handler) GetAdminThread(w http.ResponseWriter, r *http.Request) {
+	userID := middleware.CurrentUserID(r)
+	groupID, threadID, ok := parseGroupAndThreadID(w, r)
+	if !ok {
+		return
+	}
+	thread, err := h.store.GetAdminThread(r.Context(), userID, groupID, threadID)
+	if errors.Is(err, ErrNotFound) {
+		response.Error(w, http.StatusNotFound, "thread not found")
+		return
+	}
+	if errors.Is(err, ErrForbidden) {
+		response.Error(w, http.StatusForbidden, "you cannot view admin inbox")
+		return
+	}
+	if err != nil {
+		log.Printf("get admin thread failed for %s: %v", threadID, err)
+		response.Error(w, http.StatusInternalServerError, "could not fetch thread")
+		return
+	}
+	response.Success(w, http.StatusOK, thread)
+}
+
 func (h *Handler) ReplyAdminThread(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.CurrentUserID(r)
 	groupID, threadID, ok := parseGroupAndThreadID(w, r)
@@ -636,6 +757,10 @@ func (h *Handler) ReplyAdminThread(w http.ResponseWriter, r *http.Request) {
 	}
 	if errors.Is(err, ErrForbidden) {
 		response.Error(w, http.StatusForbidden, "you cannot reply to admin inbox")
+		return
+	}
+	if errors.Is(err, ErrConflict) {
+		response.Error(w, http.StatusConflict, "thread is not open")
 		return
 	}
 	if err != nil {
@@ -716,6 +841,68 @@ func (h *Handler) ReportTarget(w http.ResponseWriter, r *http.Request) {
 		_ = h.notifier.NotifyGroupReport(r.Context(), groupID, report.ID, userID, report.TargetType, report.Reason)
 	}
 	response.Success(w, http.StatusCreated, report)
+}
+
+func (h *Handler) ListReports(w http.ResponseWriter, r *http.Request) {
+	userID := middleware.CurrentUserID(r)
+	groupID, ok := parseGroupID(w, r)
+	if !ok {
+		return
+	}
+	params := pagination.ParseCursor(r, 20, 50)
+	reports, err := h.store.ListReports(r.Context(), userID, groupID, params.Before, params.Limit+1)
+	if errors.Is(err, ErrNotFound) {
+		response.Error(w, http.StatusNotFound, "group not found")
+		return
+	}
+	if errors.Is(err, ErrForbidden) {
+		response.Error(w, http.StatusForbidden, "you cannot view group reports")
+		return
+	}
+	if err != nil {
+		log.Printf("list group reports failed for %s: %v", groupID, err)
+		response.Error(w, http.StatusInternalServerError, "could not fetch reports")
+		return
+	}
+	response.Success(w, http.StatusOK, pagination.CursorSlice(reports, params.Limit, func(report GroupReport) time.Time {
+		return report.CreatedAt
+	}))
+}
+
+func (h *Handler) ReviewReport(w http.ResponseWriter, r *http.Request) {
+	userID := middleware.CurrentUserID(r)
+	groupID, reportID, ok := parseGroupAndReportID(w, r)
+	if !ok {
+		return
+	}
+	var req reportReviewRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		response.Error(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	status := strings.TrimSpace(req.Status)
+	if status != "reviewing" && status != "resolved" && status != "dismissed" {
+		response.ValidationError(w, map[string]string{"status": "invalid report status"})
+		return
+	}
+	report, err := h.store.ReviewReport(r.Context(), userID, groupID, reportID, status)
+	if errors.Is(err, ErrNotFound) {
+		response.Error(w, http.StatusNotFound, "report not found")
+		return
+	}
+	if errors.Is(err, ErrForbidden) {
+		response.Error(w, http.StatusForbidden, "you cannot review group reports")
+		return
+	}
+	if err != nil {
+		log.Printf("review group report failed for %s: %v", reportID, err)
+		response.Error(w, http.StatusInternalServerError, "could not review report")
+		return
+	}
+	if h.notifier != nil {
+		_ = h.notifier.NotifyGroupReportStatus(r.Context(), groupID, reportID, userID, report.ReporterID, report.Status)
+	}
+	response.Success(w, http.StatusOK, report)
 }
 
 func decodeCreateGroupInput(w http.ResponseWriter, r *http.Request) (CreateGroupInput, bool) {
@@ -854,6 +1041,19 @@ func parseGroupAndThreadID(w http.ResponseWriter, r *http.Request) (uuid.UUID, u
 	return groupID, threadID, true
 }
 
+func parseGroupAndReportID(w http.ResponseWriter, r *http.Request) (uuid.UUID, uuid.UUID, bool) {
+	groupID, ok := parseGroupID(w, r)
+	if !ok {
+		return uuid.Nil, uuid.Nil, false
+	}
+	reportID, err := uuid.Parse(chi.URLParam(r, "reportId"))
+	if err != nil {
+		response.Error(w, http.StatusBadRequest, "invalid report id")
+		return uuid.Nil, uuid.Nil, false
+	}
+	return groupID, reportID, true
+}
+
 func trimOptional(value *string) *string {
 	if value == nil {
 		return nil
@@ -883,4 +1083,57 @@ func normalizeLabels(values []string, limit int) []string {
 		}
 	}
 	return out
+}
+
+func readUploadedGroupImage(r *http.Request, fieldName string) (*uploadedGroupImage, error) {
+	file, header, err := r.FormFile(fieldName)
+	if err != nil {
+		if errors.Is(err, http.ErrMissingFile) {
+			return nil, fmt.Errorf("%s field is required", fieldName)
+		}
+		return nil, fmt.Errorf("%s field is invalid", fieldName)
+	}
+	defer file.Close()
+
+	fileBytes, err := io.ReadAll(io.LimitReader(file, maxGroupImageBytes+1))
+	if err != nil {
+		return nil, errors.New("could not read image")
+	}
+	if len(fileBytes) > maxGroupImageBytes {
+		return nil, errors.New("image must be 20MB or smaller")
+	}
+
+	contentType := header.Header.Get("Content-Type")
+	if contentType == "" || contentType == "application/octet-stream" {
+		contentType = http.DetectContentType(fileBytes)
+	}
+	extension, ok := groupImageExtension(contentType, header.Filename)
+	if !ok {
+		return nil, errors.New("image must be a JPEG or PNG image")
+	}
+
+	return &uploadedGroupImage{
+		body:        fileBytes,
+		contentType: contentType,
+		extension:   extension,
+	}, nil
+}
+
+func groupImageExtension(contentType, filename string) (string, bool) {
+	switch contentType {
+	case "image/jpeg":
+		return ".jpg", true
+	case "image/png":
+		return ".png", true
+	default:
+		extension := strings.ToLower(filepath.Ext(filename))
+		switch extension {
+		case ".jpg", ".jpeg":
+			return ".jpg", true
+		case ".png":
+			return ".png", true
+		default:
+			return "", false
+		}
+	}
 }

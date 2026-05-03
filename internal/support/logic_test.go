@@ -1,6 +1,7 @@
 package support
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -33,9 +34,15 @@ func TestValidateCreateSupportRequestInput(t *testing.T) {
 	if errs["support_type"] == "" {
 		t.Fatalf("expected type error, errs: %+v", errs)
 	}
+	if errs["message"] != "required" {
+		t.Fatalf("expected required message error, errs: %+v", errs)
+	}
+
+	message := "need someone to talk to"
 
 	errs = validateCreateSupportRequestInput(CreateSupportRequestInput{
 		SupportType:  "bad",
+		Message:      &message,
 		Urgency:      "low",
 		PrivacyLevel: "standard",
 	})
@@ -45,6 +52,7 @@ func TestValidateCreateSupportRequestInput(t *testing.T) {
 
 	errs = validateCreateSupportRequestInput(CreateSupportRequestInput{
 		SupportType:  "chat",
+		Message:      &message,
 		Urgency:      "bad_urgency",
 		PrivacyLevel: "standard",
 	})
@@ -54,11 +62,33 @@ func TestValidateCreateSupportRequestInput(t *testing.T) {
 
 	errs = validateCreateSupportRequestInput(CreateSupportRequestInput{
 		SupportType:  "chat",
+		Message:      &message,
 		Urgency:      "medium",
 		PrivacyLevel: "bad_privacy",
 	})
 	if errs["privacy_level"] != "invalid" {
 		t.Fatalf("unexpected privacy error, errs: %+v", errs)
+	}
+
+	tooLong := strings.Repeat("a", 2001)
+	errs = validateCreateSupportRequestInput(CreateSupportRequestInput{
+		SupportType:  "chat",
+		Message:      &tooLong,
+		Urgency:      "medium",
+		PrivacyLevel: "standard",
+	})
+	if errs["message"] != "too_long" {
+		t.Fatalf("unexpected message length error, errs: %+v", errs)
+	}
+
+	errs = validateCreateSupportRequestInput(CreateSupportRequestInput{
+		SupportType:  "chat",
+		Message:      &message,
+		Urgency:      "medium",
+		PrivacyLevel: "standard",
+	})
+	if len(errs) != 0 {
+		t.Fatalf("expected valid payload, errs: %+v", errs)
 	}
 }
 
