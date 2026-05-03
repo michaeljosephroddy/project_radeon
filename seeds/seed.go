@@ -85,12 +85,23 @@ type seededUser struct {
 }
 
 type unsplashPhoto struct {
-	ID   string `json:"id"`
-	URLs unsplashPhotoURLs
+	ID     string `json:"id"`
+	Width  int    `json:"width"`
+	Height int    `json:"height"`
+	URLs   unsplashPhotoURLs
 }
 
 type unsplashPhotoURLs struct {
-	Small string `json:"small"`
+	Regular string `json:"regular"`
+	Small   string `json:"small"`
+	Thumb   string `json:"thumb"`
+}
+
+type seedImageLibrary struct {
+	postPhotos       []unsplashPhoto
+	postCursor       int
+	groupAvatar      []unsplashPhoto
+	groupAvatarIndex int
 }
 
 type seededPost struct {
@@ -217,6 +228,7 @@ func seed(ctx context.Context, pool *pgxpool.Pool) error {
 	fmt.Printf("→ inserting %d realistic users…\n", totalUsers)
 	users := buildUsers(interestNames)
 	applyUnsplashAvatarURLs(ctx, users)
+	contentImages := loadUnsplashContentImages(ctx)
 	if err := insertUsers(ctx, tx, users, passwordHash); err != nil {
 		return err
 	}
@@ -231,7 +243,7 @@ func seed(ctx context.Context, pool *pgxpool.Pool) error {
 	}
 
 	fmt.Println("→ inserting posts, comments, and reactions…")
-	posts, err := insertPosts(ctx, tx, users, acceptedFriendIDs)
+	posts, err := insertPosts(ctx, tx, users, acceptedFriendIDs, contentImages)
 	if err != nil {
 		return err
 	}
@@ -243,12 +255,12 @@ func seed(ctx context.Context, pool *pgxpool.Pool) error {
 	}
 
 	fmt.Println("→ inserting groups, group posts, and group admin workflow data…")
-	if _, err := insertGroups(ctx, tx, users); err != nil {
+	if _, err := insertGroups(ctx, tx, users, contentImages); err != nil {
 		return err
 	}
 
 	fmt.Println("→ inserting meetups…")
-	meetups, err := insertMeetups(ctx, tx, users)
+	meetups, err := insertMeetups(ctx, tx, users, contentImages)
 	if err != nil {
 		return err
 	}
@@ -544,7 +556,8 @@ func applyUnsplashAvatarURLs(ctx context.Context, users []seededUser) {
 
 	photoPools := make(map[string][]unsplashPhoto)
 	for pool, count := range poolCounts {
-		photos, err := fetchUnsplashSeedPhotos(ctx, client, accessKey, unsplashAvatarQuery(pool), count)
+		requestCount := minInt(30, count)
+		photos, err := fetchUnsplashSeedPhotos(ctx, client, accessKey, unsplashAvatarQuery(pool), "squarish", requestCount)
 		if err != nil {
 			fmt.Printf("→ Unsplash %s avatar fetch failed: %v; leaving those users without profile photos\n", pool, err)
 			continue
@@ -576,6 +589,92 @@ func applyUnsplashAvatarURLs(ctx context.Context, users []seededUser) {
 	fmt.Printf("→ assigned %d gender-matched Unsplash profile photos to seed users\n", assigned)
 }
 
+func loadUnsplashContentImages(ctx context.Context) *seedImageLibrary {
+	accessKey := strings.TrimSpace(os.Getenv("UNSPLASH_ACCESS_KEY"))
+	if accessKey == "" {
+		fmt.Println("→ UNSPLASH_ACCESS_KEY not set; seed content will be created without uploaded images")
+		return nil
+	}
+
+	client := &http.Client{Timeout: 20 * time.Second}
+	library := &seedImageLibrary{
+		postPhotos:  fetchOptionalUnsplashPhotos(ctx, client, accessKey, "coffee", "landscape", 120, "shared content"),
+		groupAvatar: fetchOptionalUnsplashPhotos(ctx, client, accessKey, "abstract", "squarish", 24, "group avatar"),
+	}
+
+	total := len(library.postPhotos) + len(library.groupAvatar)
+	if total == 0 {
+		fmt.Println("→ no Unsplash content photos assigned; seed content will be created without uploaded images")
+		return nil
+	}
+	fmt.Printf("→ loaded %d non-person Unsplash photos for seeded content images using shared pools\n", total)
+	return library
+}
+
+func fetchOptionalUnsplashPhotos(ctx context.Context, client *http.Client, accessKey string, photoQuery string, orientation string, count int, label string) []unsplashPhoto {
+	photos, err := fetchUnsplashSeedPhotos(ctx, client, accessKey, photoQuery, orientation, count)
+	if err != nil {
+		fmt.Printf("→ Unsplash %s image fetch failed: %v; leaving that surface without images\n", label, err)
+		return nil
+	}
+	if len(photos) == 0 {
+		fmt.Printf("→ Unsplash returned no %s images; leaving that surface without images\n", label)
+		return nil
+	}
+	return photos
+}
+
+func (library *seedImageLibrary) nextPostPhoto() (unsplashPhoto, bool) {
+	if library == nil || library.postCursor >= len(library.postPhotos) {
+		return unsplashPhoto{}, false
+	}
+	photo := library.postPhotos[library.postCursor]
+	library.postCursor++
+	return photo, true
+}
+
+func (library *seedImageLibrary) nextGroupAvatar() (unsplashPhoto, bool) {
+	if library == nil || library.groupAvatarIndex >= len(library.groupAvatar) {
+		return unsplashPhoto{}, false
+	}
+	photo := library.groupAvatar[library.groupAvatarIndex]
+	library.groupAvatarIndex++
+	return photo, true
+}
+
+func (library *seedImageLibrary) nextGroupCover() (unsplashPhoto, bool) {
+	return library.nextPostPhoto()
+}
+
+func (library *seedImageLibrary) nextGroupPostPhoto() (unsplashPhoto, bool) {
+	return library.nextPostPhoto()
+}
+
+func (library *seedImageLibrary) nextMeetupCover() (unsplashPhoto, bool) {
+	return library.nextPostPhoto()
+}
+
+func unsplashDisplayURL(photo unsplashPhoto) string {
+	if photo.URLs.Regular != "" {
+		return photo.URLs.Regular
+	}
+	return photo.URLs.Small
+}
+
+func unsplashThumbURL(photo unsplashPhoto) string {
+	if photo.URLs.Thumb != "" {
+		return photo.URLs.Thumb
+	}
+	return photo.URLs.Small
+}
+
+func unsplashImageDimensions(photo unsplashPhoto, fallbackWidth, fallbackHeight int) (int, int) {
+	if photo.Width > 0 && photo.Height > 0 {
+		return photo.Width, photo.Height
+	}
+	return fallbackWidth, fallbackHeight
+}
+
 func unsplashAvatarPool(gender string) string {
 	switch gender {
 	case "man":
@@ -598,7 +697,7 @@ func unsplashAvatarQuery(pool string) string {
 	}
 }
 
-func fetchUnsplashSeedPhotos(ctx context.Context, client *http.Client, accessKey string, photoQuery string, count int) ([]unsplashPhoto, error) {
+func fetchUnsplashSeedPhotos(ctx context.Context, client *http.Client, accessKey string, photoQuery string, orientation string, count int) ([]unsplashPhoto, error) {
 	const maxUnsplashRandomCount = 30
 
 	photos := make([]unsplashPhoto, 0, count)
@@ -606,7 +705,7 @@ func fetchUnsplashSeedPhotos(ctx context.Context, client *http.Client, accessKey
 	maxAttempts := (count/maxUnsplashRandomCount + 1) * 3
 	for attempt := 0; len(photos) < count && attempt < maxAttempts; attempt++ {
 		batchSize := minInt(maxUnsplashRandomCount, count-len(photos))
-		batch, err := fetchUnsplashPhotoBatch(ctx, client, accessKey, photoQuery, batchSize)
+		batch, err := fetchUnsplashPhotoBatch(ctx, client, accessKey, photoQuery, orientation, batchSize)
 		if err != nil {
 			return nil, err
 		}
@@ -628,14 +727,14 @@ func fetchUnsplashSeedPhotos(ctx context.Context, client *http.Client, accessKey
 	return photos, nil
 }
 
-func fetchUnsplashPhotoBatch(ctx context.Context, client *http.Client, accessKey string, photoQuery string, count int) ([]unsplashPhoto, error) {
+func fetchUnsplashPhotoBatch(ctx context.Context, client *http.Client, accessKey string, photoQuery string, orientation string, count int) ([]unsplashPhoto, error) {
 	endpoint, err := url.Parse("https://api.unsplash.com/photos/random")
 	if err != nil {
 		return nil, fmt.Errorf("parse unsplash endpoint: %w", err)
 	}
 	query := endpoint.Query()
 	query.Set("query", photoQuery)
-	query.Set("orientation", "squarish")
+	query.Set("orientation", orientation)
 	query.Set("content_filter", "high")
 	query.Set("count", strconv.Itoa(count))
 	endpoint.RawQuery = query.Encode()
@@ -1073,7 +1172,7 @@ func orderedPair(left, right uuid.UUID) [2]uuid.UUID {
 	return [2]uuid.UUID{right, left}
 }
 
-func insertPosts(ctx context.Context, tx pgx.Tx, users []seededUser, acceptedFriendIDs map[uuid.UUID]struct{}) ([]seededPost, error) {
+func insertPosts(ctx context.Context, tx pgx.Tx, users []seededUser, acceptedFriendIDs map[uuid.UUID]struct{}, images *seedImageLibrary) ([]seededPost, error) {
 	postCount := 125
 	posts := make([]seededPost, 0, postCount)
 	authors := weightedPostAuthors(users, acceptedFriendIDs)
@@ -1097,10 +1196,25 @@ func insertPosts(ctx context.Context, tx pgx.Tx, users []seededUser, acceptedFri
 		); err != nil {
 			return nil, fmt.Errorf("insert post %d: %w", index, err)
 		}
+		if shouldSeedPostImage(index) {
+			if photo, ok := images.nextPostPhoto(); ok {
+				width, height := unsplashImageDimensions(photo, 1200, 800)
+				if _, err := tx.Exec(ctx,
+					`INSERT INTO post_images (post_id, image_url, width, height, sort_order, created_at) VALUES ($1, $2, $3, $4, 0, $5)`,
+					post.ID, unsplashDisplayURL(photo), width, height, post.CreatedAt,
+				); err != nil {
+					return nil, fmt.Errorf("insert post image %d: %w", index, err)
+				}
+			}
+		}
 		posts = append(posts, post)
 	}
 
 	return posts, nil
+}
+
+func shouldSeedPostImage(index int) bool {
+	return index%4 == 0 || (index < 24 && index%5 == 2)
 }
 
 func weightedPostAuthors(users []seededUser, acceptedFriendIDs map[uuid.UUID]struct{}) []seededUser {
@@ -1212,7 +1326,7 @@ func insertReactions(ctx context.Context, tx pgx.Tx, posts []seededPost, users [
 	return nil
 }
 
-func insertGroups(ctx context.Context, tx pgx.Tx, users []seededUser) ([]seededGroup, error) {
+func insertGroups(ctx context.Context, tx pgx.Tx, users []seededUser, images *seedImageLibrary) ([]seededGroup, error) {
 	now := time.Now().UTC()
 	defs := []struct {
 		Name             string
@@ -1468,18 +1582,28 @@ func insertGroups(ctx context.Context, tx pgx.Tx, users []seededUser) ([]seededG
 		owner := users[def.OwnerIndex%len(users)]
 		groupID := uuid.New()
 		slug := fmt.Sprintf("%s-%s", slugifySeed(def.Name), groupID.String()[:8])
+		var avatarURL *string
+		var coverURL *string
+		if photo, ok := images.nextGroupAvatar(); ok {
+			avatarURL = stringPtr(unsplashDisplayURL(photo))
+		}
+		if photo, ok := images.nextGroupCover(); ok {
+			coverURL = stringPtr(unsplashDisplayURL(photo))
+		}
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO groups (
-				id, owner_id, name, slug, description, rules, visibility, posting_permission,
+				id, owner_id, name, slug, description, rules, avatar_url, cover_url, visibility, posting_permission,
 				allow_anonymous_posts, city, country, tags, recovery_pathways, created_at, updated_at
 			)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, 'members', $8, $9, $10, $11, $12, $13, $13)`,
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'members', $10, $11, $12, $13, $14, $15, $15)`,
 			groupID,
 			owner.ID,
 			def.Name,
 			slug,
 			def.Description,
 			def.Rules,
+			avatarURL,
+			coverURL,
 			def.Visibility,
 			index%2 == 0,
 			def.City,
@@ -1527,7 +1651,7 @@ func insertGroups(ctx context.Context, tx pgx.Tx, users []seededUser) ([]seededG
 			Visibility: def.Visibility,
 			MemberIDs:  memberIDs,
 		}
-		if err := insertGroupContent(ctx, tx, &group, users, now, index); err != nil {
+		if err := insertGroupContent(ctx, tx, &group, users, now, index, images); err != nil {
 			return nil, err
 		}
 		if err := insertGroupWorkflowData(ctx, tx, group, users, now, index); err != nil {
@@ -1554,7 +1678,7 @@ func insertGroupMembership(ctx context.Context, tx pgx.Tx, groupID, userID uuid.
 	return nil
 }
 
-func insertGroupContent(ctx context.Context, tx pgx.Tx, group *seededGroup, users []seededUser, now time.Time, groupIndex int) error {
+func insertGroupContent(ctx context.Context, tx pgx.Tx, group *seededGroup, users []seededUser, now time.Time, groupIndex int, images *seedImageLibrary) error {
 	postBodies := []string{
 		"Checking in sober today. I had a craving around lunchtime, named it early, and went for a walk instead of sitting with it alone.",
 		"Small win: made it through a family dinner without pretending everything was easy. Told one safe person I needed a minute.",
@@ -1609,16 +1733,21 @@ func insertGroupContent(ctx context.Context, tx pgx.Tx, group *seededGroup, user
 		group.PostIDs = append(group.PostIDs, postID)
 
 		if postIndex == 1 || postIndex == 4 {
-			imageURL := fmt.Sprintf("https://images.unsplash.com/photo-%d?auto=format&fit=crop&w=1200&q=80", 1500000000000+groupIndex*1000+postIndex)
-			if _, err := tx.Exec(ctx, `
-				INSERT INTO group_post_images (group_id, post_id, image_url, thumb_url, width, height, position, created_at)
-				VALUES ($1, $2, $3, $3, 1200, 800, 0, $4)`,
-				group.ID,
-				postID,
-				imageURL,
-				createdAt,
-			); err != nil {
-				return fmt.Errorf("insert group image: %w", err)
+			if photo, ok := images.nextGroupPostPhoto(); ok {
+				width, height := unsplashImageDimensions(photo, 1200, 800)
+				if _, err := tx.Exec(ctx, `
+					INSERT INTO group_post_images (group_id, post_id, image_url, thumb_url, width, height, position, created_at)
+					VALUES ($1, $2, $3, $4, $5, $6, 0, $7)`,
+					group.ID,
+					postID,
+					unsplashDisplayURL(photo),
+					unsplashThumbURL(photo),
+					width,
+					height,
+					createdAt,
+				); err != nil {
+					return fmt.Errorf("insert group image: %w", err)
+				}
 			}
 		}
 
@@ -1788,7 +1917,7 @@ func slugifySeed(value string) string {
 	return slug
 }
 
-func insertMeetups(ctx context.Context, tx pgx.Tx, users []seededUser) ([]seededMeetup, error) {
+func insertMeetups(ctx context.Context, tx pgx.Tx, users []seededUser, images *seedImageLibrary) ([]seededMeetup, error) {
 	type meetupSeedDef struct {
 		title           string
 		description     string
@@ -1999,6 +2128,10 @@ func insertMeetups(ctx context.Context, tx pgx.Tx, users []seededUser) ([]seeded
 		if def.howToFindUs != "" {
 			howToFindUs = stringPtr(def.howToFindUs)
 		}
+		var coverImageURL *string
+		if photo, ok := images.nextMeetupCover(); ok {
+			coverImageURL = stringPtr(unsplashDisplayURL(photo))
+		}
 		var publishedAt *time.Time
 		if def.status == "published" || def.status == "completed" || def.status == "cancelled" {
 			publishedAt = timePtr(def.startsAt.Add(-10 * 24 * time.Hour))
@@ -2007,17 +2140,17 @@ func insertMeetups(ctx context.Context, tx pgx.Tx, users []seededUser) ([]seeded
 			`INSERT INTO meetups (
 				id, organiser_id, title, description, category_slug, event_type, status, visibility,
 				city, country, venue_name, address_line_1, address_line_2, how_to_find_us,
-				online_url, starts_at, ends_at, timezone, lat, lng, capacity, waitlist_enabled,
+				online_url, cover_image_url, starts_at, ends_at, timezone, lat, lng, capacity, waitlist_enabled,
 				saved_count, published_at, created_at, updated_at
 			) VALUES (
 				$1, $2, $3, $4, $5, $6, $7, $8,
 				$9, $10, $11, $12, $13, $14,
-				$15, $16, $17, $18, $19, $20, $21, $22,
-				$23, $24, $25, $26
+				$15, $16, $17, $18, $19, $20, $21, $22, $23,
+				$24, $25, $26, $27
 			)`,
 			meetupID, organizer.ID, def.title, def.description, def.categorySlug, def.eventType, def.status, def.visibility,
 			def.city, organizer.Country, venueName, addressLine1, addressLine2, howToFindUs,
-			def.onlineURL, def.startsAt, def.endsAt, timezoneForCity(def.city), lat, lng, def.capacity, def.waitlistEnabled,
+			def.onlineURL, coverImageURL, def.startsAt, def.endsAt, timezoneForCity(def.city), lat, lng, def.capacity, def.waitlistEnabled,
 			rng.Intn(18), publishedAt, def.startsAt.Add(-14*24*time.Hour), def.startsAt.Add(-48*time.Hour),
 		); err != nil {
 			return nil, fmt.Errorf("insert meetup %s: %w", def.title, err)
