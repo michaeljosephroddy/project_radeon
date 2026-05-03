@@ -1540,29 +1540,6 @@
           }
         },
         {
-          "name": "Publish Meetup",
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "url": {
-              "raw": "{{base_url}}/meetups/{{meetup_id}}/publish",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "meetups",
-                "{{meetup_id}}",
-                "publish"
-              ]
-            }
-          }
-        },
-        {
           "name": "Cancel Meetup",
           "request": {
             "method": "POST",

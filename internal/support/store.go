@@ -123,10 +123,11 @@ func (s *pgStore) GetSupportRequest(ctx context.Context, viewerID, requestID uui
 			sr.message,
 			sr.urgency,
 			sr.status,
-			COALESCE(sr.reply_count, 0),
+			COALESCE(gp.comment_count, sr.reply_count, 0),
 			sr.response_count,
 			COALESCE(sr.view_count, 0),
 			(COALESCE(sr.is_priority, false) AND (sr.priority_expires_at IS NULL OR sr.priority_expires_at > NOW())) AS is_priority,
+			sr.group_post_id,
 			sr.created_at,
 			sr.privacy_level,
 			sr.accepted_response_id,
@@ -146,11 +147,17 @@ func (s *pgStore) GetSupportRequest(ctx context.Context, viewerID, requestID uui
 				SELECT 1 FROM support_replies own_reply
 				WHERE own_reply.support_request_id = sr.id
 					AND own_reply.author_id = $2
+				UNION ALL
+				SELECT 1 FROM group_comments own_comment
+				WHERE own_comment.post_id = sr.group_post_id
+					AND own_comment.user_id = $2
+					AND own_comment.deleted_at IS NULL
 			) AS has_replied,
 			sr.requester_id = $2 AS is_own_request
 		FROM support_requests sr
 		JOIN users requester ON requester.id = sr.requester_id
 		LEFT JOIN users responder ON responder.id = sr.accepted_responder_id
+		LEFT JOIN group_posts gp ON gp.id = sr.group_post_id
 		WHERE sr.id = $1`,
 		requestID, viewerID,
 	).Scan(
@@ -158,7 +165,7 @@ func (s *pgStore) GetSupportRequest(ctx context.Context, viewerID, requestID uui
 		&req.SupportType, &req.Topics, &req.PreferredGender,
 		&locationVisibility, &locationCity, &locationRegion, &locationCountry, &locationApproxLat, &locationApproxLng,
 		&req.Message, &req.Urgency, &req.Status, &req.ReplyCount, &req.ResponseCount, &req.ViewCount, &req.IsPriority,
-		&req.CreatedAt, &req.PrivacyLevel,
+		&req.GroupPostID, &req.CreatedAt, &req.PrivacyLevel,
 		&req.AcceptedResponseID, &req.AcceptedResponderID, &req.AcceptedAt, &req.ClosedAt,
 		&req.ResponderID, &req.ResponderUsername, &req.ResponderAvatarURL, &req.ChatID,
 		&req.HasResponded, &req.HasReplied, &req.IsOwnRequest,
@@ -296,8 +303,9 @@ func (s *pgStore) ListMySupportRequests(ctx context.Context, userID uuid.UUID, b
 			sr.support_type, COALESCE(sr.topics, '{}'::text[]), sr.preferred_gender,
 			sr.location_visibility, sr.location_city, sr.location_region, sr.location_country, sr.location_approx_lat, sr.location_approx_lng,
 			sr.message, sr.urgency, sr.status,
-			COALESCE(sr.reply_count, 0), sr.response_count, COALESCE(sr.view_count, 0),
+			COALESCE(gp.comment_count, sr.reply_count, 0), sr.response_count, COALESCE(sr.view_count, 0),
 			(COALESCE(sr.is_priority, false) AND (sr.priority_expires_at IS NULL OR sr.priority_expires_at > NOW())) AS is_priority,
+			sr.group_post_id,
 			sr.created_at,
 			sr.privacy_level,
 			sr.accepted_response_id,
@@ -314,6 +322,7 @@ func (s *pgStore) ListMySupportRequests(ctx context.Context, userID uuid.UUID, b
 		FROM support_requests sr
 		JOIN users requester ON requester.id = sr.requester_id
 		LEFT JOIN users responder ON responder.id = sr.accepted_responder_id
+		LEFT JOIN group_posts gp ON gp.id = sr.group_post_id
 		WHERE sr.requester_id = $1
 			AND ($2::timestamptz IS NULL OR sr.created_at < $2)
 		ORDER BY sr.created_at DESC
@@ -339,7 +348,7 @@ func (s *pgStore) ListMySupportRequests(ctx context.Context, userID uuid.UUID, b
 			&req.SupportType, &req.Topics, &req.PreferredGender,
 			&locationVisibility, &locationCity, &locationRegion, &locationCountry, &locationApproxLat, &locationApproxLng,
 			&req.Message, &req.Urgency, &req.Status, &req.ReplyCount, &req.ResponseCount, &req.ViewCount, &req.IsPriority,
-			&req.CreatedAt, &req.PrivacyLevel,
+			&req.GroupPostID, &req.CreatedAt, &req.PrivacyLevel,
 			&req.AcceptedResponseID, &req.AcceptedResponderID, &req.AcceptedAt, &req.ClosedAt,
 			&req.ResponderID, &req.ResponderUsername, &req.ResponderAvatarURL, &req.ChatID,
 			&req.HasResponded, &req.IsOwnRequest, &req.SortAt,
@@ -402,10 +411,11 @@ func (s *pgStore) ListVisibleSupportRequests(ctx context.Context, userID uuid.UU
 				sr.message,
 				sr.urgency,
 				sr.status,
-				COALESCE(sr.reply_count, 0) AS reply_count,
+				COALESCE(gp.comment_count, sr.reply_count, 0) AS reply_count,
 				sr.response_count,
 				COALESCE(sr.view_count, 0) AS view_count,
 				(COALESCE(sr.is_priority, false) AND (sr.priority_expires_at IS NULL OR sr.priority_expires_at > $3)) AS is_priority,
+				sr.group_post_id,
 				sr.created_at,
 				EXISTS(
 					SELECT 1
@@ -418,9 +428,16 @@ func (s *pgStore) ListVisibleSupportRequests(ctx context.Context, userID uuid.UU
 					FROM support_replies own_reply
 					WHERE own_reply.support_request_id = sr.id
 					  AND own_reply.author_id = $1
+					UNION ALL
+					SELECT 1
+					FROM group_comments own_comment
+					WHERE own_comment.post_id = sr.group_post_id
+					  AND own_comment.user_id = $1
+					  AND own_comment.deleted_at IS NULL
 				) AS has_replied
 			FROM support_requests sr
 			JOIN users requester ON requester.id = sr.requester_id
+			LEFT JOIN group_posts gp ON gp.id = sr.group_post_id
 			WHERE sr.status = 'open'
 			  AND sr.requester_id <> $1
 			  AND (
@@ -471,6 +488,7 @@ func (s *pgStore) ListVisibleSupportRequests(ctx context.Context, userID uuid.UU
 			response_count,
 			view_count,
 			is_priority,
+			group_post_id,
 			created_at,
 			has_offered,
 			has_replied,
@@ -507,7 +525,7 @@ func (s *pgStore) ListVisibleSupportRequests(ctx context.Context, userID uuid.UU
 			&req.SupportType, &req.Topics, &req.PreferredGender,
 			&locationVisibility, &locationCity, &locationRegion, &locationCountry, &locationApproxLat, &locationApproxLng,
 			&req.Message, &req.Urgency, &req.Status, &req.ReplyCount, &req.ResponseCount, &req.ViewCount, &req.IsPriority,
-			&req.CreatedAt, &req.HasResponded, &req.HasReplied, &req.IsOwnRequest, &req.SortAt,
+			&req.GroupPostID, &req.CreatedAt, &req.HasResponded, &req.HasReplied, &req.IsOwnRequest, &req.SortAt,
 			&req.FeedScore,
 		); err != nil {
 			return nil, err
@@ -818,7 +836,62 @@ func (s *pgStore) CreateSupportReply(ctx context.Context, requestID, authorID uu
 	}
 	defer tx.Rollback(ctx)
 
+	var groupPostID *uuid.UUID
+	var groupID *uuid.UUID
+	if err := tx.QueryRow(ctx, `
+		SELECT sr.group_post_id, gp.group_id
+		FROM support_requests sr
+		LEFT JOIN group_posts gp ON gp.id = sr.group_post_id
+		WHERE sr.id = $1`,
+		requestID,
+	).Scan(&groupPostID, &groupID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+
 	var reply SupportReply
+	if groupPostID != nil && groupID != nil {
+		err = tx.QueryRow(ctx,
+			`WITH inserted AS (
+				INSERT INTO group_comments (group_id, post_id, user_id, body)
+				VALUES ($1, $2, $3, $4)
+				RETURNING id, user_id, body, created_at
+			),
+			post_counter AS (
+				UPDATE group_posts
+				SET comment_count = comment_count + 1, updated_at = NOW()
+				WHERE id = $2
+				RETURNING comment_count
+			),
+			request_counter AS (
+				UPDATE support_requests
+				SET reply_count = (SELECT comment_count FROM post_counter)
+				WHERE id = $5
+				RETURNING id
+			)
+			SELECT
+				i.id,
+				$5::uuid AS support_request_id,
+				i.user_id,
+				u.username,
+				u.avatar_url,
+				i.body,
+				i.created_at
+			FROM inserted i
+			JOIN users u ON u.id = i.user_id`,
+			*groupID, *groupPostID, authorID, body, requestID,
+		).Scan(&reply.ID, &reply.SupportRequestID, &reply.AuthorID, &reply.Username, &reply.AvatarURL, &reply.Body, &reply.CreatedAt)
+		if err != nil {
+			return nil, err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return nil, err
+		}
+		return &reply, nil
+	}
+
 	err = tx.QueryRow(ctx,
 		`WITH inserted AS (
 			INSERT INTO support_replies (support_request_id, author_id, body)
@@ -858,6 +931,58 @@ func (s *pgStore) ListSupportReplies(ctx context.Context, requestID uuid.UUID, c
 	if cursor != nil {
 		cursorCreatedAt = &cursor.CreatedAt
 		cursorID = &cursor.ID
+	}
+
+	var groupPostID *uuid.UUID
+	if err := s.pool.QueryRow(ctx, `
+		SELECT group_post_id
+		FROM support_requests
+		WHERE id = $1`,
+		requestID,
+	).Scan(&groupPostID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+
+	if groupPostID != nil {
+		rows, err := s.pool.Query(ctx,
+			`SELECT
+				gc.id,
+				$1::uuid AS support_request_id,
+				gc.user_id,
+				u.username,
+				u.avatar_url,
+				gc.body,
+				gc.created_at
+			FROM group_comments gc
+			JOIN users u ON u.id = gc.user_id
+			WHERE gc.post_id = $2
+			  AND gc.deleted_at IS NULL
+			  AND (
+				$3::timestamptz IS NULL
+				OR gc.created_at > $3
+				OR (gc.created_at = $3 AND gc.id > $4)
+			  )
+			ORDER BY gc.created_at ASC, gc.id ASC
+			LIMIT $5`,
+			requestID, *groupPostID, cursorCreatedAt, cursorID, limit,
+		)
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+
+		var replies []SupportReply
+		for rows.Next() {
+			var reply SupportReply
+			if err := rows.Scan(&reply.ID, &reply.SupportRequestID, &reply.AuthorID, &reply.Username, &reply.AvatarURL, &reply.Body, &reply.CreatedAt); err != nil {
+				return nil, err
+			}
+			replies = append(replies, reply)
+		}
+		return replies, rows.Err()
 	}
 
 	rows, err := s.pool.Query(ctx,

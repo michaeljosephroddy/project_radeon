@@ -146,6 +146,7 @@ type supportRequestRow struct {
 	AcceptedAt          *time.Time
 	ClosedAt            *time.Time
 	ChatID              *uuid.UUID
+	GroupPostID         *uuid.UUID
 }
 
 func pick[T any](items []T) T {
@@ -274,6 +275,10 @@ func seed(ctx context.Context, pool *pgxpool.Pool) error {
 		return err
 	}
 	supportRequests, err = insertSupportResponses(ctx, tx, supportRequests, users)
+	if err != nil {
+		return err
+	}
+	supportRequests, err = insertCommunitySupportGroup(ctx, tx, users, supportRequests)
 	if err != nil {
 		return err
 	}
@@ -1950,10 +1955,10 @@ func insertMeetups(ctx context.Context, tx pgx.Tx, users []seededUser, images *s
 		},
 		{
 			title: "Portlaoise New Members Welcome Night", description: "Short introductions, tea, and a gentle way into the community for anyone new here.",
-			categorySlug: "community", eventType: "in_person", status: "draft", visibility: "public", city: "Portlaoise",
+			categorySlug: "community", eventType: "in_person", status: "published", visibility: "public", city: "Portlaoise",
 			venueName: "The Parish Centre", addressLine1: "Church Avenue", addressLine2: "",
-			howToFindUs: "Draft event for next month once the room booking is confirmed.", startsAt: time.Now().UTC().Add(24 * 24 * time.Hour).Add(19 * time.Hour),
-			endsAt: time.Now().UTC().Add(24 * 24 * time.Hour).Add(21 * time.Hour), capacity: intPtr(30), waitlistEnabled: false, attendeeTarget: 0, waitlistTarget: 0, coHostCount: 1,
+			howToFindUs: "Meet beside the noticeboard five minutes before the start.", startsAt: time.Now().UTC().Add(24 * 24 * time.Hour).Add(19 * time.Hour),
+			endsAt: time.Now().UTC().Add(24 * 24 * time.Hour).Add(21 * time.Hour), capacity: intPtr(30), waitlistEnabled: false, attendeeTarget: 10, waitlistTarget: 0, coHostCount: 1,
 		},
 		{
 			title: "Dublin Coastal Walk and Check-In", description: "Easy paced walk followed by coffee and a check-in by the sea.",
@@ -2103,9 +2108,6 @@ func insertMeetups(ctx context.Context, tx pgx.Tx, users []seededUser, images *s
 	meetups := make([]seededMeetup, 0, len(defs))
 	for _, def := range defs {
 		organizer := nextCityUser(def.city)
-		if def.city == "Portlaoise" && def.status == "draft" && len(byCity[def.city]) > 0 {
-			organizer = byCity[def.city][0]
-		}
 		meetupID := uuid.New()
 		var lat, lng *float64
 		if def.eventType != "online" {
@@ -2189,9 +2191,6 @@ func insertMeetupAttendees(ctx context.Context, tx pgx.Tx, meetups []seededMeetu
 	}
 
 	for _, meetup := range meetups {
-		if meetup.Status == "draft" {
-			continue
-		}
 		candidates := byCity[meetup.City]
 		attendeeTarget := meetup.AttendeeTarget
 		if attendeeTarget <= 0 {
@@ -2401,6 +2400,162 @@ func availableSupportUserID(users []seededUser, exclude uuid.UUID) uuid.UUID {
 		candidates = append(candidates, user.ID)
 	}
 	return candidates[rng.Intn(len(candidates))]
+}
+
+func insertCommunitySupportGroup(ctx context.Context, tx pgx.Tx, users []seededUser, requests []supportRequestRow) ([]supportRequestRow, error) {
+	if len(users) == 0 {
+		return requests, nil
+	}
+
+	groupID := uuid.New()
+	ownerID := users[0].ID
+	now := time.Now().UTC()
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO groups (
+			id, owner_id, name, slug, description, rules, visibility, posting_permission,
+			allow_anonymous_posts, tags, recovery_pathways, is_system, system_key,
+			locked_settings, created_at, updated_at
+		)
+		VALUES (
+			$1, $2, 'Community Support', 'system-community-support',
+			'A community-wide support space for help requests and peer replies.',
+			'Be kind, stay recovery-focused, and use private offers only when you can genuinely help.',
+			'public', 'members', false, ARRAY['support', 'community'], ARRAY[]::TEXT[],
+			true, 'community_support', true, $3, $3
+		)
+		ON CONFLICT (system_key) WHERE system_key IS NOT NULL
+		DO UPDATE SET
+			name = EXCLUDED.name,
+			description = EXCLUDED.description,
+			rules = EXCLUDED.rules,
+			visibility = 'public',
+			posting_permission = 'members',
+			is_system = true,
+			locked_settings = true,
+			deleted_at = NULL,
+			updated_at = EXCLUDED.updated_at
+		`,
+		groupID, ownerID, now.Add(-12*24*time.Hour),
+	); err != nil {
+		return nil, fmt.Errorf("insert community support group: %w", err)
+	}
+
+	if err := tx.QueryRow(ctx, `SELECT id FROM groups WHERE system_key = 'community_support'`).Scan(&groupID); err != nil {
+		return nil, fmt.Errorf("load community support group: %w", err)
+	}
+
+	for _, user := range users {
+		role := "member"
+		if user.ID == ownerID {
+			role = "owner"
+		}
+		if err := insertGroupMembership(ctx, tx, groupID, user.ID, role, user.CreatedAt.Add(2*time.Hour)); err != nil {
+			return nil, fmt.Errorf("insert community support membership: %w", err)
+		}
+	}
+
+	postBodies := []string{
+		"Having a rough evening and trying not to isolate. Could use a check-in.",
+		"Feeling very in my head today and need a distraction before I spiral.",
+		"Milestone day and weirdly emotional about it. Anyone around?",
+		"Really tempted to bail on my routine tonight. Need encouragement.",
+		"Would love to hear from someone who gets what this kind of day feels like.",
+		"First sober family event tomorrow and the nerves are loud.",
+		"Been flat all afternoon. Looking for some company or a quick chat.",
+		"Doing okay on the outside but not great on the inside. Reaching out early.",
+	}
+	commentBodies := []string{
+		"I'm here and reading. One next right thing is enough.",
+		"Can you get a glass of water and stay with us for ten minutes?",
+		"I know that feeling. You did the right thing posting before isolating.",
+		"No pressure to reply quickly. You're not alone in this.",
+		"That kind of day can pass. Keep it small and simple.",
+	}
+
+	for index := range requests {
+		request := &requests[index]
+		postID := uuid.New()
+		body := postBodies[index%len(postBodies)]
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO group_posts (
+				id, group_id, user_id, post_type, body, anonymous, support_request_id, created_at, updated_at
+			)
+			VALUES ($1, $2, $3, 'need_support', $4, false, $5, $6, $6)
+			ON CONFLICT (support_request_id) WHERE support_request_id IS NOT NULL
+			DO UPDATE SET
+				group_id = EXCLUDED.group_id,
+				body = EXCLUDED.body,
+				updated_at = EXCLUDED.updated_at
+			`,
+			postID, groupID, request.RequesterID, body, request.ID, request.CreatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("insert community support post: %w", err)
+		}
+		if err := tx.QueryRow(ctx, `SELECT id FROM group_posts WHERE support_request_id = $1`, request.ID).Scan(&postID); err != nil {
+			return nil, fmt.Errorf("load community support post: %w", err)
+		}
+		request.GroupPostID = &postID
+		if _, err := tx.Exec(ctx, `UPDATE support_requests SET group_post_id = $2 WHERE id = $1`, request.ID, postID); err != nil {
+			return nil, fmt.Errorf("attach support request to group post: %w", err)
+		}
+
+		commentTarget := 0
+		switch {
+		case index == 0:
+			commentTarget = 0
+		case request.Status == "active":
+			commentTarget = 3
+		case request.Status == "closed":
+			commentTarget = 2
+		case index%4 == 0:
+			commentTarget = 4
+		default:
+			commentTarget = 1 + rng.Intn(2)
+		}
+		for commentIndex := 0; commentIndex < commentTarget; commentIndex++ {
+			commenter := users[(index+commentIndex+3)%len(users)]
+			if commenter.ID == request.RequesterID {
+				commenter = users[(index+commentIndex+4)%len(users)]
+			}
+			createdAt := request.CreatedAt.Add(time.Duration(commentIndex+1) * 20 * time.Minute)
+			if _, err := tx.Exec(ctx, `
+				INSERT INTO group_comments (group_id, post_id, user_id, body, created_at, updated_at)
+				VALUES ($1, $2, $3, $4, $5, $5)
+			`,
+				groupID, postID, commenter.ID, commentBodies[(index+commentIndex)%len(commentBodies)], createdAt,
+			); err != nil {
+				return nil, fmt.Errorf("insert community support comment: %w", err)
+			}
+		}
+
+		for reactionIndex := 0; reactionIndex < minInt(8, len(users)); reactionIndex++ {
+			reactor := users[(index+reactionIndex+5)%len(users)]
+			if _, err := tx.Exec(ctx, `
+				INSERT INTO group_reactions (group_id, post_id, user_id, type, created_at)
+				VALUES ($1, $2, $3, 'like', $4)
+				ON CONFLICT DO NOTHING
+			`,
+				groupID, postID, reactor.ID, request.CreatedAt.Add(time.Duration(reactionIndex+1)*7*time.Minute),
+			); err != nil {
+				return nil, fmt.Errorf("insert community support reaction: %w", err)
+			}
+		}
+
+		if _, err := tx.Exec(ctx, `
+			UPDATE group_posts
+			SET comment_count = (SELECT COUNT(*) FROM group_comments WHERE post_id = $1 AND deleted_at IS NULL),
+				reaction_count = (SELECT COUNT(*) FROM group_reactions WHERE post_id = $1),
+				updated_at = NOW()
+			WHERE id = $1
+		`, postID); err != nil {
+			return nil, fmt.Errorf("refresh community support post counters: %w", err)
+		}
+	}
+
+	if err := refreshGroupCounters(ctx, tx, groupID); err != nil {
+		return nil, fmt.Errorf("refresh community support counters: %w", err)
+	}
+	return requests, nil
 }
 
 func insertSupportResponses(ctx context.Context, tx pgx.Tx, requests []supportRequestRow, users []seededUser) ([]supportRequestRow, error) {

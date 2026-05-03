@@ -31,7 +31,6 @@ type Querier interface {
 	GetMeetup(ctx context.Context, meetupID, userID uuid.UUID) (*Meetup, error)
 	CreateMeetup(ctx context.Context, userID uuid.UUID, input CreateMeetupInput) (*Meetup, error)
 	UpdateMeetup(ctx context.Context, meetupID, userID uuid.UUID, input UpdateMeetupInput) (*Meetup, error)
-	PublishMeetup(ctx context.Context, meetupID, userID uuid.UUID) (*Meetup, error)
 	CancelMeetup(ctx context.Context, meetupID, userID uuid.UUID) (*Meetup, error)
 	DeleteMeetup(ctx context.Context, meetupID, userID uuid.UUID) error
 	GetAttendees(ctx context.Context, meetupID uuid.UUID, limit, offset int) ([]Attendee, error)
@@ -379,15 +378,7 @@ func (h *Handler) categoryExists(ctx context.Context, slug string) (bool, error)
 	return false, nil
 }
 
-func (h *Handler) PublishMeetup(w http.ResponseWriter, r *http.Request) {
-	h.transitionMeetupStatus(w, r, "publish")
-}
-
 func (h *Handler) CancelMeetup(w http.ResponseWriter, r *http.Request) {
-	h.transitionMeetupStatus(w, r, "cancel")
-}
-
-func (h *Handler) transitionMeetupStatus(w http.ResponseWriter, r *http.Request, action string) {
 	userID := middleware.CurrentUserID(r)
 	meetupID, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
@@ -395,12 +386,7 @@ func (h *Handler) transitionMeetupStatus(w http.ResponseWriter, r *http.Request,
 		return
 	}
 
-	var meetup *Meetup
-	if action == "publish" {
-		meetup, err = h.db.PublishMeetup(r.Context(), meetupID, userID)
-	} else {
-		meetup, err = h.db.CancelMeetup(r.Context(), meetupID, userID)
-	}
+	meetup, err := h.db.CancelMeetup(r.Context(), meetupID, userID)
 	if err != nil {
 		status := http.StatusInternalServerError
 		message := "could not update meetup"

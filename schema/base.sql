@@ -127,6 +127,9 @@ CREATE TABLE IF NOT EXISTS groups (
     post_count INT NOT NULL DEFAULT 0,
     media_count INT NOT NULL DEFAULT 0,
     pending_request_count INT NOT NULL DEFAULT 0,
+    is_system BOOLEAN NOT NULL DEFAULT FALSE,
+    system_key TEXT,
+    locked_settings BOOLEAN NOT NULL DEFAULT FALSE,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     deleted_at TIMESTAMPTZ,
@@ -155,6 +158,10 @@ CREATE INDEX IF NOT EXISTS idx_groups_recovery_pathways_gin
 
 CREATE INDEX IF NOT EXISTS idx_groups_name_trgm
     ON groups USING GIN(name gin_trgm_ops);
+
+CREATE UNIQUE INDEX IF NOT EXISTS groups_system_key_unique_idx
+    ON groups(system_key)
+    WHERE system_key IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS group_memberships (
     group_id UUID NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
@@ -299,6 +306,7 @@ CREATE TABLE IF NOT EXISTS group_posts (
     comment_count INT NOT NULL DEFAULT 0,
     reaction_count INT NOT NULL DEFAULT 0,
     image_count INT NOT NULL DEFAULT 0,
+    support_request_id UUID,
     CONSTRAINT group_posts_post_type_chk CHECK (post_type IN ('standard', 'milestone', 'need_support', 'admin_announcement', 'check_in')),
     CONSTRAINT group_posts_body_len_chk CHECK (char_length(body) BETWEEN 1 AND 4000)
 );
@@ -310,6 +318,10 @@ CREATE INDEX IF NOT EXISTS idx_group_posts_group_pinned_created
 CREATE INDEX IF NOT EXISTS idx_group_posts_user_created
     ON group_posts(user_id, created_at DESC)
     WHERE deleted_at IS NULL;
+
+CREATE UNIQUE INDEX IF NOT EXISTS group_posts_support_request_id_unique_idx
+    ON group_posts(support_request_id)
+    WHERE support_request_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS group_post_images (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -793,7 +805,8 @@ CREATE TABLE IF NOT EXISTS meetups (
     saved_count INT NOT NULL DEFAULT 0,
     published_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT meetups_status_chk CHECK (status IN ('published', 'cancelled', 'completed'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_meetups_city
@@ -871,6 +884,7 @@ CREATE TABLE IF NOT EXISTS support_requests (
     chat_id UUID,
     response_count INT NOT NULL DEFAULT 0,
     last_response_at TIMESTAMPTZ,
+    group_post_id UUID REFERENCES group_posts(id) ON DELETE SET NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     closed_at TIMESTAMPTZ
 );
@@ -890,6 +904,17 @@ CREATE INDEX IF NOT EXISTS idx_support_requests_requester_status_created_at
 
 CREATE INDEX IF NOT EXISTS idx_support_requests_accepted_responder_status_created_at
     ON support_requests(accepted_responder_id, status, created_at DESC);
+
+CREATE UNIQUE INDEX IF NOT EXISTS support_requests_group_post_id_unique_idx
+    ON support_requests(group_post_id)
+    WHERE group_post_id IS NOT NULL;
+
+ALTER TABLE group_posts
+    DROP CONSTRAINT IF EXISTS group_posts_support_request_id_fkey;
+
+ALTER TABLE group_posts
+    ADD CONSTRAINT group_posts_support_request_id_fkey
+        FOREIGN KEY (support_request_id) REFERENCES support_requests(id) ON DELETE SET NULL;
 
 CREATE TABLE IF NOT EXISTS chats (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

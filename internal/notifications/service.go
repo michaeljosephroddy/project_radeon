@@ -146,6 +146,13 @@ func (s *Service) NotifyGroupReport(ctx context.Context, groupID, reportID, repo
 	return nil
 }
 
+func (s *Service) NotifySupportOffer(ctx context.Context, requestID, offerID, responderID, requesterID uuid.UUID) error {
+	go s.runGroupNotification("create support offer notification", func(ctx context.Context) error {
+		return s.store.CreateSupportOfferNotification(ctx, requestID, offerID, responderID, requesterID)
+	})
+	return nil
+}
+
 func (s *Service) runGroupNotification(label string, create func(context.Context) error) {
 	notifyCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

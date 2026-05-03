@@ -115,7 +115,7 @@ func (s *pgStore) ListGroups(ctx context.Context, viewerID uuid.UUID, params Lis
 			g.id, g.owner_id, g.name, g.slug, g.description, g.rules, g.avatar_url, g.cover_url,
 			g.visibility, g.posting_permission, g.allow_anonymous_posts, g.city, g.country,
 			g.tags, g.recovery_pathways, g.member_count, g.post_count, g.media_count,
-			g.pending_request_count, g.created_at, g.updated_at,
+			g.pending_request_count, g.is_system, g.system_key, g.locked_settings, g.created_at, g.updated_at,
 			gm.role, gm.status,
 			EXISTS (
 				SELECT 1
@@ -173,7 +173,7 @@ func (s *pgStore) GetGroup(ctx context.Context, viewerID, groupID uuid.UUID) (*G
 			g.id, g.owner_id, g.name, g.slug, g.description, g.rules, g.avatar_url, g.cover_url,
 			g.visibility, g.posting_permission, g.allow_anonymous_posts, g.city, g.country,
 			g.tags, g.recovery_pathways, g.member_count, g.post_count, g.media_count,
-			g.pending_request_count, g.created_at, g.updated_at,
+			g.pending_request_count, g.is_system, g.system_key, g.locked_settings, g.created_at, g.updated_at,
 			gm.role, gm.status,
 			EXISTS (
 				SELECT 1
@@ -203,10 +203,11 @@ func (s *pgStore) JoinGroup(ctx context.Context, viewerID, groupID uuid.UUID, me
 	defer tx.Rollback(ctx)
 
 	var visibility GroupVisibility
+	var isSystem bool
 	var role *GroupRole
 	var status *MembershipStatus
 	err = tx.QueryRow(ctx, `
-		SELECT g.visibility, gm.role, gm.status
+		SELECT g.visibility, g.is_system, gm.role, gm.status
 		FROM groups g
 		LEFT JOIN group_memberships gm
 			ON gm.group_id = g.id
@@ -216,7 +217,7 @@ func (s *pgStore) JoinGroup(ctx context.Context, viewerID, groupID uuid.UUID, me
 		FOR UPDATE OF g`,
 		viewerID,
 		groupID,
-	).Scan(&visibility, &role, &status)
+	).Scan(&visibility, &isSystem, &role, &status)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return nil, ErrNotFound
@@ -228,6 +229,39 @@ func (s *pgStore) JoinGroup(ctx context.Context, viewerID, groupID uuid.UUID, me
 	}
 	if status != nil && *status == MembershipStatusActive {
 		_ = tx.Rollback(ctx)
+		group, err := s.GetGroup(ctx, viewerID, groupID)
+		if err != nil {
+			return nil, err
+		}
+		return &JoinGroupResult{State: "member", Group: group}, nil
+	}
+	if isSystem {
+		tag, err := tx.Exec(ctx, `
+			INSERT INTO group_memberships (group_id, user_id, role, status, joined_at)
+			VALUES ($1, $2, 'member', 'active', NOW())
+			ON CONFLICT (group_id, user_id) DO UPDATE
+			SET status = 'active', role = 'member', joined_at = COALESCE(group_memberships.joined_at, NOW()), updated_at = NOW()`,
+			groupID,
+			viewerID,
+		)
+		if err != nil {
+			return nil, err
+		}
+		if tag.RowsAffected() > 0 {
+			if _, err := tx.Exec(ctx, `
+				UPDATE groups
+				SET member_count = (
+					SELECT COUNT(*) FROM group_memberships WHERE group_id = $1 AND status = 'active'
+				), updated_at = NOW()
+				WHERE id = $1`,
+				groupID,
+			); err != nil {
+				return nil, err
+			}
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return nil, err
+		}
 		group, err := s.GetGroup(ctx, viewerID, groupID)
 		if err != nil {
 			return nil, err
@@ -310,14 +344,16 @@ func (s *pgStore) LeaveGroup(ctx context.Context, viewerID, groupID uuid.UUID) e
 
 	var role GroupRole
 	var status MembershipStatus
+	var isSystem bool
 	err = tx.QueryRow(ctx, `
-		SELECT role, status
-		FROM group_memberships
-		WHERE group_id = $1 AND user_id = $2
-		FOR UPDATE`,
+		SELECT gm.role, gm.status, g.is_system
+		FROM group_memberships gm
+		JOIN groups g ON g.id = gm.group_id
+		WHERE gm.group_id = $1 AND gm.user_id = $2
+		FOR UPDATE OF gm`,
 		groupID,
 		viewerID,
-	).Scan(&role, &status)
+	).Scan(&role, &status, &isSystem)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return ErrNotFound
@@ -326,6 +362,9 @@ func (s *pgStore) LeaveGroup(ctx context.Context, viewerID, groupID uuid.UUID) e
 	}
 	if status != MembershipStatusActive {
 		return ErrNotFound
+	}
+	if isSystem {
+		return ErrForbidden
 	}
 	if role == GroupRoleOwner {
 		return ErrOwnerCannotLeave
@@ -471,7 +510,7 @@ func (s *pgStore) ListPosts(ctx context.Context, viewerID, groupID uuid.UUID, be
 		SELECT
 			gp.id, gp.group_id, gp.user_id, u.username, u.avatar_url, gp.post_type, gp.body,
 			gp.anonymous, gp.pinned_at, gp.pinned_by, gp.comment_count, gp.reaction_count,
-			gp.image_count,
+			gp.image_count, gp.support_request_id,
 			EXISTS (
 				SELECT 1 FROM group_reactions gr
 				WHERE gr.post_id = gp.id AND gr.user_id = $1 AND gr.type = 'like'
@@ -508,6 +547,9 @@ func (s *pgStore) ListPosts(ctx context.Context, viewerID, groupID uuid.UUID, be
 		return nil, err
 	}
 	if err := s.attachImages(ctx, posts, postIDs); err != nil {
+		return nil, err
+	}
+	if err := s.attachSupportRequests(ctx, viewerID, posts); err != nil {
 		return nil, err
 	}
 	return posts, nil
@@ -1247,6 +1289,9 @@ func scanGroup(row groupScanner) (*Group, error) {
 		&group.PostCount,
 		&group.MediaCount,
 		&group.PendingRequestCount,
+		&group.IsSystem,
+		&group.SystemKey,
+		&group.LockedSettings,
 		&group.CreatedAt,
 		&group.UpdatedAt,
 		&role,
@@ -1314,6 +1359,7 @@ func scanPost(row postScanner) (*GroupPost, error) {
 		&post.CommentCount,
 		&post.ReactionCount,
 		&post.ImageCount,
+		&post.SupportRequestID,
 		&post.ViewerHasReacted,
 		&post.CreatedAt,
 		&post.UpdatedAt,
@@ -1331,7 +1377,7 @@ func (s *pgStore) getPost(ctx context.Context, viewerID, groupID, postID uuid.UU
 		SELECT
 			gp.id, gp.group_id, gp.user_id, u.username, u.avatar_url, gp.post_type, gp.body,
 			gp.anonymous, gp.pinned_at, gp.pinned_by, gp.comment_count, gp.reaction_count,
-			gp.image_count,
+			gp.image_count, gp.support_request_id,
 			EXISTS (
 				SELECT 1 FROM group_reactions gr
 				WHERE gr.post_id = gp.id AND gr.user_id = $1 AND gr.type = 'like'
@@ -1352,6 +1398,9 @@ func (s *pgStore) getPost(ctx context.Context, viewerID, groupID, postID uuid.UU
 	}
 	posts := []GroupPost{*post}
 	if err := s.attachImages(ctx, posts, []uuid.UUID{post.ID}); err != nil {
+		return nil, err
+	}
+	if err := s.attachSupportRequests(ctx, viewerID, posts); err != nil {
 		return nil, err
 	}
 	return &posts[0], nil
@@ -1389,6 +1438,154 @@ func (s *pgStore) attachImages(ctx context.Context, posts []GroupPost, postIDs [
 		}
 	}
 	return rows.Err()
+}
+
+func (s *pgStore) attachSupportRequests(ctx context.Context, viewerID uuid.UUID, posts []GroupPost) error {
+	supportRequestIDs := make([]uuid.UUID, 0)
+	bySupportID := map[uuid.UUID]int{}
+	for index := range posts {
+		if posts[index].SupportRequestID == nil {
+			continue
+		}
+		supportRequestID := *posts[index].SupportRequestID
+		supportRequestIDs = append(supportRequestIDs, supportRequestID)
+		bySupportID[supportRequestID] = index
+	}
+	if len(supportRequestIDs) == 0 {
+		return nil
+	}
+
+	rows, err := s.pool.Query(ctx, `
+		SELECT
+			sr.id,
+			sr.requester_id,
+			requester.username,
+			requester.avatar_url,
+			requester.city,
+			sr.support_type,
+			COALESCE(sr.topics, '{}'::text[]),
+			sr.preferred_gender,
+			sr.location_visibility,
+			sr.location_city,
+			sr.location_region,
+			sr.location_country,
+			sr.location_approx_lat,
+			sr.location_approx_lng,
+			sr.message,
+			sr.urgency,
+			sr.status,
+			COALESCE(gp.comment_count, sr.reply_count, 0) AS reply_count,
+			sr.response_count,
+			COALESCE(sr.view_count, 0),
+			(COALESCE(sr.is_priority, false) AND (sr.priority_expires_at IS NULL OR sr.priority_expires_at > NOW())) AS is_priority,
+			sr.group_post_id,
+			sr.created_at,
+			sr.accepted_responder_id,
+			sr.accepted_at,
+			sr.closed_at,
+			sr.accepted_responder_id,
+			responder.username,
+			responder.avatar_url,
+			sr.chat_id,
+			EXISTS (
+				SELECT 1
+				FROM support_responses own_res
+				WHERE own_res.support_request_id = sr.id
+					AND own_res.responder_id = $1
+			) AS has_offered,
+			EXISTS (
+				SELECT 1
+				FROM group_comments own_comment
+				WHERE own_comment.post_id = sr.group_post_id
+					AND own_comment.user_id = $1
+					AND own_comment.deleted_at IS NULL
+			) AS has_replied,
+			sr.requester_id = $1 AS is_own_request
+		FROM support_requests sr
+		JOIN users requester ON requester.id = sr.requester_id
+		LEFT JOIN users responder ON responder.id = sr.accepted_responder_id
+		LEFT JOIN group_posts gp ON gp.id = sr.group_post_id
+		WHERE sr.id = ANY($2)`,
+		viewerID,
+		supportRequestIDs,
+	)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var request GroupSupportRequest
+		var locationVisibility string
+		var locationCity *string
+		var locationRegion *string
+		var locationCountry *string
+		var locationApproxLat *float64
+		var locationApproxLng *float64
+		if err := rows.Scan(
+			&request.ID,
+			&request.RequesterID,
+			&request.Username,
+			&request.AvatarURL,
+			&request.City,
+			&request.SupportType,
+			&request.Topics,
+			&request.PreferredGender,
+			&locationVisibility,
+			&locationCity,
+			&locationRegion,
+			&locationCountry,
+			&locationApproxLat,
+			&locationApproxLng,
+			&request.Message,
+			&request.Urgency,
+			&request.Status,
+			&request.ReplyCount,
+			&request.OfferCount,
+			&request.ViewCount,
+			&request.IsPriority,
+			&request.GroupPostID,
+			&request.CreatedAt,
+			&request.AcceptedResponderID,
+			&request.AcceptedAt,
+			&request.ClosedAt,
+			&request.ResponderID,
+			&request.ResponderUsername,
+			&request.ResponderAvatarURL,
+			&request.ChatID,
+			&request.HasOffered,
+			&request.HasReplied,
+			&request.IsOwnRequest,
+		); err != nil {
+			return err
+		}
+		setGroupSupportLocation(&request, locationVisibility, locationCity, locationRegion, locationCountry, locationApproxLat, locationApproxLng)
+		if index, ok := bySupportID[request.ID]; ok {
+			posts[index].SupportRequest = &request
+		}
+	}
+	return rows.Err()
+}
+
+func setGroupSupportLocation(request *GroupSupportRequest, visibility string, city, region, country *string, lat, lng *float64) {
+	if request.Topics == nil {
+		request.Topics = []string{}
+	}
+	if visibility == "" {
+		visibility = "hidden"
+	}
+	if visibility == "hidden" {
+		request.Location = nil
+		return
+	}
+	request.Location = &GroupSupportLocation{
+		City:           city,
+		Region:         region,
+		Country:        country,
+		ApproximateLat: lat,
+		ApproximateLng: lng,
+		Visibility:     visibility,
+	}
 }
 
 type commentScanner interface {

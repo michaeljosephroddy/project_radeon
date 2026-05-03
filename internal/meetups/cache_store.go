@@ -227,15 +227,6 @@ func (s *cachedStore) UpdateMeetup(ctx context.Context, meetupID, userID uuid.UU
 	return meetup, nil
 }
 
-func (s *cachedStore) PublishMeetup(ctx context.Context, meetupID, userID uuid.UUID) (*Meetup, error) {
-	meetup, err := s.inner.PublishMeetup(ctx, meetupID, userID)
-	if err != nil {
-		return nil, err
-	}
-	s.bumpMeetupVersions(ctx, meetup.ID, userID)
-	return meetup, nil
-}
-
 func (s *cachedStore) CancelMeetup(ctx context.Context, meetupID, userID uuid.UUID) (*Meetup, error) {
 	meetup, err := s.inner.CancelMeetup(ctx, meetupID, userID)
 	if err != nil {

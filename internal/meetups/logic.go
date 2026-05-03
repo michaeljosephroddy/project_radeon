@@ -12,14 +12,12 @@ var validEventTypes = map[string]bool{
 }
 
 var validEventStatuses = map[string]bool{
-	"draft":     true,
 	"published": true,
 	"cancelled": true,
 	"completed": true,
 }
 
 var validEventCreationStatuses = map[string]bool{
-	"draft":     true,
 	"published": true,
 }
 
@@ -54,7 +52,6 @@ var validTimeOfDay = map[string]bool{
 var validMyMeetupScopes = map[string]bool{
 	"upcoming":  true,
 	"going":     true,
-	"drafts":    true,
 	"cancelled": true,
 	"past":      true,
 }

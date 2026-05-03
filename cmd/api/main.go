@@ -107,7 +107,7 @@ func main() {
 	groupsHandler := groups.NewHandlerWithNotifier(groupsStore, notificationsService)
 	feedHandler := feed.NewHandlerWithNotifier(feedStore, notificationsService, uploader)
 	meetupsHandler := meetups.NewHandler(meetupsStore, uploader)
-	supportHandler := support.NewHandlerWithChatBroadcaster(supportStore, chatsHandler)
+	supportHandler := support.NewHandlerWithChatBroadcaster(supportStore, chatsHandler, notificationsService)
 
 	r := chi.NewRouter()
 
@@ -232,7 +232,6 @@ func main() {
 		r.Get("/meetups/{id}", meetupsHandler.GetMeetup)
 		r.Patch("/meetups/{id}", meetupsHandler.UpdateMeetup)
 		r.Delete("/meetups/{id}", meetupsHandler.DeleteMeetup)
-		r.Post("/meetups/{id}/publish", meetupsHandler.PublishMeetup)
 		r.Post("/meetups/{id}/cancel", meetupsHandler.CancelMeetup)
 		r.Post("/meetups/{id}/rsvp", meetupsHandler.RSVP)
 		r.Get("/meetups/{id}/attendees", meetupsHandler.GetAttendees)

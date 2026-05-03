@@ -52,10 +52,6 @@ func (s *stubQuerier) UpdateMeetup(context.Context, uuid.UUID, uuid.UUID, Update
 	return nil, nil
 }
 
-func (s *stubQuerier) PublishMeetup(context.Context, uuid.UUID, uuid.UUID) (*Meetup, error) {
-	return nil, nil
-}
-
 func (s *stubQuerier) CancelMeetup(context.Context, uuid.UUID, uuid.UUID) (*Meetup, error) {
 	return nil, nil
 }

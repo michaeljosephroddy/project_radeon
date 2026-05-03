@@ -139,11 +139,6 @@ func (s *pgStore) CreateMeetup(ctx context.Context, userID uuid.UUID, input Crea
 
 	now := time.Now().UTC()
 	var meetup Meetup
-	publishedAt := (*time.Time)(nil)
-	if input.Status == "published" {
-		publishedAt = &now
-	}
-
 	if err := tx.QueryRow(ctx, `
 		INSERT INTO meetups (
 			organiser_id, title, description, category_slug, event_type, status, visibility,
@@ -161,7 +156,7 @@ func (s *pgStore) CreateMeetup(ctx context.Context, userID uuid.UUID, input Crea
 		userID, input.Title, input.Description, input.CategorySlug, input.EventType, input.Status, input.Visibility,
 		input.City, input.Country, input.VenueName, input.AddressLine1, input.AddressLine2, input.HowToFindUs,
 		input.OnlineURL, input.CoverImageURL, input.StartsAt, input.EndsAt, input.Timezone, input.Latitude, input.Longitude,
-		input.Capacity, input.WaitlistEnabled, publishedAt, now,
+		input.Capacity, input.WaitlistEnabled, now, now,
 	).Scan(&meetup.ID); err != nil {
 		return nil, err
 	}
@@ -177,17 +172,15 @@ func (s *pgStore) CreateMeetup(ctx context.Context, userID uuid.UUID, input Crea
 		return nil, err
 	}
 
-	if input.Status == "published" {
-		if _, err := tx.Exec(ctx, `
-			INSERT INTO meetup_attendees (meetup_id, user_id, rsvp_at)
-			VALUES ($1, $2, $3)
-			ON CONFLICT (meetup_id, user_id) DO NOTHING
-		`, meetup.ID, userID, now); err != nil {
-			return nil, err
-		}
-		if _, err := tx.Exec(ctx, `UPDATE meetups SET attendee_count = 1 WHERE id = $1`, meetup.ID); err != nil {
-			return nil, err
-		}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO meetup_attendees (meetup_id, user_id, rsvp_at)
+		VALUES ($1, $2, $3)
+		ON CONFLICT (meetup_id, user_id) DO NOTHING
+	`, meetup.ID, userID, now); err != nil {
+		return nil, err
+	}
+	if _, err := tx.Exec(ctx, `UPDATE meetups SET attendee_count = 1 WHERE id = $1`, meetup.ID); err != nil {
+		return nil, err
 	}
 
 	if err := tx.Commit(ctx); err != nil {
@@ -204,10 +197,10 @@ func (s *pgStore) UpdateMeetup(ctx context.Context, meetupID, userID uuid.UUID, 
 	if err != nil {
 		return nil, err
 	}
-	if currentStatus == "published" && input.Status != "published" {
+	if input.Status != "published" {
 		return nil, ErrInvalidTransition
 	}
-	if currentStatus != "draft" && currentStatus != "published" {
+	if currentStatus != "published" {
 		return nil, ErrForbidden
 	}
 
@@ -262,45 +255,6 @@ func (s *pgStore) UpdateMeetup(ctx context.Context, meetupID, userID uuid.UUID, 
 	return s.GetMeetup(ctx, meetupID, userID)
 }
 
-func (s *pgStore) PublishMeetup(ctx context.Context, meetupID, userID uuid.UUID) (*Meetup, error) {
-	if err := s.ensureManagePermission(ctx, meetupID, userID); err != nil {
-		return nil, err
-	}
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback(ctx)
-
-	if _, err := tx.Exec(ctx, `
-		UPDATE meetups
-		SET status = 'published',
-			published_at = COALESCE(published_at, NOW()),
-			updated_at = NOW()
-		WHERE id = $1 AND organiser_id = $2
-	`, meetupID, userID); err != nil {
-		return nil, err
-	}
-	if _, err := tx.Exec(ctx, `
-		INSERT INTO meetup_attendees (meetup_id, user_id, rsvp_at)
-		VALUES ($1, $2, NOW())
-		ON CONFLICT (meetup_id, user_id) DO NOTHING
-	`, meetupID, userID); err != nil {
-		return nil, err
-	}
-	if _, err := tx.Exec(ctx, `
-		UPDATE meetups
-		SET attendee_count = (SELECT COUNT(*) FROM meetup_attendees WHERE meetup_id = $1)
-		WHERE id = $1
-	`, meetupID); err != nil {
-		return nil, err
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return nil, err
-	}
-	return s.GetMeetup(ctx, meetupID, userID)
-}
-
 func (s *pgStore) CancelMeetup(ctx context.Context, meetupID, userID uuid.UUID) (*Meetup, error) {
 	if err := s.ensureManagePermission(ctx, meetupID, userID); err != nil {
 		return nil, err
@@ -338,7 +292,7 @@ func (s *pgStore) DeleteMeetup(ctx context.Context, meetupID, userID uuid.UUID) 
 	if err != nil {
 		return err
 	}
-	if status != "draft" && attendeeCount > 1 {
+	if attendeeCount > 1 {
 		return ErrDeleteNotAllowed
 	}
 
@@ -834,8 +788,6 @@ func (s *pgStore) loadMyMeetups(ctx context.Context, userID uuid.UUID, scope str
 			AND m.status = 'published'
 			AND m.starts_at >= NOW()
 		`
-	case "drafts":
-		query += "m.organiser_id = $1 AND m.status = 'draft'"
 	case "cancelled":
 		query += `
 			m.organiser_id = $1

@@ -14,6 +14,8 @@ var (
 	ErrOwnerCannotLeave = errors.New("owner cannot leave")
 )
 
+const SystemGroupKeyCommunitySupport = "community_support"
+
 type GroupVisibility string
 
 const (
@@ -84,6 +86,9 @@ type Group struct {
 	PostCount           int               `json:"post_count"`
 	MediaCount          int               `json:"media_count"`
 	PendingRequestCount int               `json:"pending_request_count"`
+	IsSystem            bool              `json:"is_system"`
+	SystemKey           *string           `json:"system_key,omitempty"`
+	LockedSettings      bool              `json:"locked_settings"`
 	ViewerRole          *GroupRole        `json:"viewer_role,omitempty"`
 	ViewerStatus        *MembershipStatus `json:"viewer_status,omitempty"`
 	HasPendingRequest   bool              `json:"has_pending_request"`
@@ -126,23 +131,65 @@ type GroupPostImage struct {
 }
 
 type GroupPost struct {
-	ID               uuid.UUID        `json:"id"`
-	GroupID          uuid.UUID        `json:"group_id"`
-	UserID           uuid.UUID        `json:"user_id"`
-	Username         string           `json:"username"`
-	AvatarURL        *string          `json:"avatar_url,omitempty"`
-	PostType         GroupPostType    `json:"post_type"`
-	Body             string           `json:"body"`
-	Anonymous        bool             `json:"anonymous"`
-	PinnedAt         *time.Time       `json:"pinned_at,omitempty"`
-	PinnedBy         *uuid.UUID       `json:"pinned_by,omitempty"`
-	CommentCount     int              `json:"comment_count"`
-	ReactionCount    int              `json:"reaction_count"`
-	ImageCount       int              `json:"image_count"`
-	ViewerHasReacted bool             `json:"viewer_has_reacted"`
-	Images           []GroupPostImage `json:"images"`
-	CreatedAt        time.Time        `json:"created_at"`
-	UpdatedAt        time.Time        `json:"updated_at"`
+	ID               uuid.UUID            `json:"id"`
+	GroupID          uuid.UUID            `json:"group_id"`
+	UserID           uuid.UUID            `json:"user_id"`
+	Username         string               `json:"username"`
+	AvatarURL        *string              `json:"avatar_url,omitempty"`
+	PostType         GroupPostType        `json:"post_type"`
+	Body             string               `json:"body"`
+	Anonymous        bool                 `json:"anonymous"`
+	PinnedAt         *time.Time           `json:"pinned_at,omitempty"`
+	PinnedBy         *uuid.UUID           `json:"pinned_by,omitempty"`
+	CommentCount     int                  `json:"comment_count"`
+	ReactionCount    int                  `json:"reaction_count"`
+	ImageCount       int                  `json:"image_count"`
+	SupportRequestID *uuid.UUID           `json:"support_request_id,omitempty"`
+	SupportRequest   *GroupSupportRequest `json:"support_request,omitempty"`
+	ViewerHasReacted bool                 `json:"viewer_has_reacted"`
+	Images           []GroupPostImage     `json:"images"`
+	CreatedAt        time.Time            `json:"created_at"`
+	UpdatedAt        time.Time            `json:"updated_at"`
+}
+
+type GroupSupportLocation struct {
+	City           *string  `json:"city,omitempty"`
+	Region         *string  `json:"region,omitempty"`
+	Country        *string  `json:"country,omitempty"`
+	ApproximateLat *float64 `json:"approximate_lat,omitempty"`
+	ApproximateLng *float64 `json:"approximate_lng,omitempty"`
+	Visibility     string   `json:"visibility"`
+}
+
+type GroupSupportRequest struct {
+	ID                  uuid.UUID             `json:"id"`
+	RequesterID         uuid.UUID             `json:"requester_id"`
+	Username            string                `json:"username"`
+	AvatarURL           *string               `json:"avatar_url,omitempty"`
+	City                *string               `json:"city,omitempty"`
+	SupportType         string                `json:"support_type"`
+	Topics              []string              `json:"topics"`
+	PreferredGender     *string               `json:"preferred_gender,omitempty"`
+	Location            *GroupSupportLocation `json:"location,omitempty"`
+	Message             *string               `json:"message,omitempty"`
+	Urgency             string                `json:"urgency"`
+	Status              string                `json:"status"`
+	ReplyCount          int                   `json:"reply_count"`
+	OfferCount          int                   `json:"offer_count"`
+	ViewCount           int                   `json:"view_count"`
+	IsPriority          bool                  `json:"is_priority"`
+	GroupPostID         *uuid.UUID            `json:"group_post_id,omitempty"`
+	CreatedAt           time.Time             `json:"created_at"`
+	AcceptedResponderID *uuid.UUID            `json:"accepted_responder_id,omitempty"`
+	AcceptedAt          *time.Time            `json:"accepted_at,omitempty"`
+	ClosedAt            *time.Time            `json:"closed_at,omitempty"`
+	ResponderID         *uuid.UUID            `json:"responder_id,omitempty"`
+	ResponderUsername   *string               `json:"responder_username,omitempty"`
+	ResponderAvatarURL  *string               `json:"responder_avatar_url,omitempty"`
+	ChatID              *uuid.UUID            `json:"chat_id,omitempty"`
+	HasOffered          bool                  `json:"has_offered"`
+	HasReplied          bool                  `json:"has_replied"`
+	IsOwnRequest        bool                  `json:"is_own_request"`
 }
 
 type GroupComment struct {

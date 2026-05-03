@@ -439,7 +439,6 @@ const collection = {
         },
       }),
       requestItem('Delete Meetup', 'DELETE', '/meetups/{{meetup_id}}'),
-      requestItem('Publish Meetup', 'POST', '/meetups/{{meetup_id}}/publish'),
       requestItem('Cancel Meetup', 'POST', '/meetups/{{meetup_id}}/cancel'),
       requestItem('RSVP Meetup', 'POST', '/meetups/{{meetup_id}}/rsvp'),
       requestItem('Get Meetup Attendees', 'GET', '/meetups/{{meetup_id}}/attendees', {

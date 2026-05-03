@@ -709,6 +709,62 @@ func (s *pgStore) CreateGroupReportNotifications(ctx context.Context, groupID, r
 	return tx.Commit(ctx)
 }
 
+func (s *pgStore) CreateSupportOfferNotification(ctx context.Context, requestID, offerID, responderID, requesterID uuid.UUID) error {
+	if responderID == requesterID {
+		return nil
+	}
+
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	var groupID *uuid.UUID
+	var postID *uuid.UUID
+	var groupName string
+	var responderUsername string
+	if err := tx.QueryRow(ctx, `
+		SELECT gp.group_id,
+			sr.group_post_id,
+			COALESCE(g.name, 'Community Support'),
+			u.username
+		FROM support_requests sr
+		JOIN users u ON u.id = $3
+		LEFT JOIN group_posts gp ON gp.id = sr.group_post_id
+		LEFT JOIN groups g ON g.id = gp.group_id
+		WHERE sr.id = $1
+			AND sr.requester_id = $2`,
+		requestID,
+		requesterID,
+		responderID,
+	).Scan(&groupID, &postID, &groupName, &responderUsername); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return tx.Commit(ctx)
+		}
+		return err
+	}
+
+	payload := map[string]any{
+		"type":               NotificationTypeSupportOffer,
+		"support_request_id": requestID.String(),
+		"offer_id":           offerID.String(),
+		"actor_user_id":      responderID.String(),
+		"notification_id":    "",
+	}
+	if groupID != nil {
+		payload["group_id"] = groupID.String()
+	}
+	if postID != nil {
+		payload["post_id"] = postID.String()
+	}
+
+	if err := s.createNotification(ctx, tx, requesterID, NotificationTypeSupportOffer, responderID, ResourceTypeSupportOffer, offerID, groupName, responderUsername+" offered private support", payload); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
 func markNotificationIDsRead(ctx context.Context, tx pgx.Tx, userID uuid.UUID, notificationIDs []uuid.UUID, readAt time.Time) (int, error) {
 	var updated int
 	if err := tx.QueryRow(ctx,

@@ -38,7 +38,6 @@ type mockQuerier struct {
 	getMeetup       func(ctx context.Context, meetupID, userID uuid.UUID) (*Meetup, error)
 	createMeetup    func(ctx context.Context, userID uuid.UUID, input CreateMeetupInput) (*Meetup, error)
 	updateMeetup    func(ctx context.Context, meetupID, userID uuid.UUID, input UpdateMeetupInput) (*Meetup, error)
-	publishMeetup   func(ctx context.Context, meetupID, userID uuid.UUID) (*Meetup, error)
 	cancelMeetup    func(ctx context.Context, meetupID, userID uuid.UUID) (*Meetup, error)
 	deleteMeetup    func(ctx context.Context, meetupID, userID uuid.UUID) error
 	getAttendees    func(ctx context.Context, meetupID uuid.UUID, limit, offset int) ([]Attendee, error)
@@ -86,13 +85,6 @@ func (m *mockQuerier) UpdateMeetup(ctx context.Context, meetupID, userID uuid.UU
 		return m.updateMeetup(ctx, meetupID, userID, input)
 	}
 	return &Meetup{ID: meetupID, OrganizerID: userID, Title: input.Title, CategorySlug: input.CategorySlug, CategoryLabel: "Coffee", City: input.City, StartsAt: input.StartsAt}, nil
-}
-
-func (m *mockQuerier) PublishMeetup(ctx context.Context, meetupID, userID uuid.UUID) (*Meetup, error) {
-	if m.publishMeetup != nil {
-		return m.publishMeetup(ctx, meetupID, userID)
-	}
-	return &Meetup{ID: meetupID, OrganizerID: userID, Status: "published"}, nil
 }
 
 func (m *mockQuerier) CancelMeetup(ctx context.Context, meetupID, userID uuid.UUID) (*Meetup, error) {
@@ -347,16 +339,16 @@ func TestUpdateMeetupRejectsInvalidTransition(t *testing.T) {
 	}
 }
 
-func TestPublishMeetupNotFound(t *testing.T) {
+func TestCancelMeetupNotFound(t *testing.T) {
 	h := NewHandler(&mockQuerier{
-		publishMeetup: func(_ context.Context, _, _ uuid.UUID) (*Meetup, error) {
+		cancelMeetup: func(_ context.Context, _, _ uuid.UUID) (*Meetup, error) {
 			return nil, ErrNotFound
 		},
 	})
 	req := authedRequest(http.MethodPost, "/", "")
 	req = withURLParam(req, "id", fixedMeetup.String())
 	rec := httptest.NewRecorder()
-	h.PublishMeetup(rec, req)
+	h.CancelMeetup(rec, req)
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNotFound)
 	}

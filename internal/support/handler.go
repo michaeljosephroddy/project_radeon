@@ -39,10 +39,15 @@ type Querier interface {
 type Handler struct {
 	db              Querier
 	chatBroadcaster ChatBroadcaster
+	notifier        SupportNotifier
 }
 
 type ChatBroadcaster interface {
 	BroadcastChatUpdate(ctx context.Context, chatID uuid.UUID) error
+}
+
+type SupportNotifier interface {
+	NotifySupportOffer(ctx context.Context, requestID, offerID, responderID, requesterID uuid.UUID) error
 }
 
 var validSupportTypes = map[string]bool{
@@ -106,8 +111,12 @@ func NewHandler(db Querier) *Handler {
 	return &Handler{db: db}
 }
 
-func NewHandlerWithChatBroadcaster(db Querier, chatBroadcaster ChatBroadcaster) *Handler {
-	return &Handler{db: db, chatBroadcaster: chatBroadcaster}
+func NewHandlerWithChatBroadcaster(db Querier, chatBroadcaster ChatBroadcaster, notifiers ...SupportNotifier) *Handler {
+	h := &Handler{db: db, chatBroadcaster: chatBroadcaster}
+	if len(notifiers) > 0 {
+		h.notifier = notifiers[0]
+	}
+	return h
 }
 
 type SupportRequest struct {
@@ -128,6 +137,7 @@ type SupportRequest struct {
 	ResponseCount       int              `json:"-"`
 	ViewCount           int              `json:"view_count"`
 	IsPriority          bool             `json:"is_priority"`
+	GroupPostID         *uuid.UUID       `json:"group_post_id,omitempty"`
 	CreatedAt           time.Time        `json:"created_at"`
 	PrivacyLevel        string           `json:"privacy_level,omitempty"`
 	AcceptedResponseID  *uuid.UUID       `json:"-"`
@@ -537,6 +547,9 @@ func (h *Handler) CreateSupportOffer(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		response.Error(w, http.StatusConflict, "could not create support offer")
 		return
+	}
+	if h.notifier != nil && res != nil && res.Offer != nil {
+		_ = h.notifier.NotifySupportOffer(r.Context(), requestID, res.Offer.ID, userID, requesterID)
 	}
 
 	response.Success(w, http.StatusCreated, res)

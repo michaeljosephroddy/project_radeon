@@ -30,8 +30,14 @@ func (s *pgStore) UsernameExists(ctx context.Context, username string) (bool, er
 }
 
 func (s *pgStore) CreateUser(ctx context.Context, username, email, passwordHash, city, country string, gender *string, birthDate, soberSince *time.Time) (uuid.UUID, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return uuid.Nil, err
+	}
+	defer tx.Rollback(ctx)
+
 	var id uuid.UUID
-	err := s.pool.QueryRow(ctx,
+	err = tx.QueryRow(ctx,
 		`INSERT INTO users (
 			username,
 			email,
@@ -75,7 +81,38 @@ func (s *pgStore) CreateUser(ctx context.Context, username, email, passwordHash,
 		RETURNING id`,
 		username, email, passwordHash, city, country, gender, birthDate, soberSince,
 	).Scan(&id)
-	return id, err
+	if err != nil {
+		return uuid.Nil, err
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO group_memberships (group_id, user_id, role, status, joined_at)
+		SELECT g.id, $1, 'member', 'active', NOW()
+		FROM groups g
+		WHERE g.is_system = TRUE
+			AND g.deleted_at IS NULL
+		ON CONFLICT (group_id, user_id) DO NOTHING`,
+		id,
+	); err != nil {
+		return uuid.Nil, err
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE groups g
+		SET member_count = (
+				SELECT COUNT(*)
+				FROM group_memberships gm
+				WHERE gm.group_id = g.id
+					AND gm.status = 'active'
+			),
+			updated_at = NOW()
+		WHERE g.is_system = TRUE
+			AND g.deleted_at IS NULL`,
+	); err != nil {
+		return uuid.Nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return uuid.Nil, err
+	}
+	return id, nil
 }
 
 func (s *pgStore) GetUserCredentials(ctx context.Context, email string) (uuid.UUID, string, error) {
