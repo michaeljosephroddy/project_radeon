@@ -3,10 +3,13 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"fmt"
 	"log"
 	"math"
 	"math/rand"
+	"net/http"
+	"net/url"
 	"os"
 	"sort"
 	"strconv"
@@ -79,6 +82,15 @@ type seededUser struct {
 	DiscoverLng        float64
 	LocationUpdatedAt  time.Time
 	Interests          []string
+}
+
+type unsplashPhoto struct {
+	ID   string `json:"id"`
+	URLs unsplashPhotoURLs
+}
+
+type unsplashPhotoURLs struct {
+	Small string `json:"small"`
 }
 
 type seededPost struct {
@@ -204,6 +216,7 @@ func seed(ctx context.Context, pool *pgxpool.Pool) error {
 
 	fmt.Printf("→ inserting %d realistic users…\n", totalUsers)
 	users := buildUsers(interestNames)
+	applyUnsplashAvatarURLs(ctx, users)
 	if err := insertUsers(ctx, tx, users, passwordHash); err != nil {
 		return err
 	}
@@ -513,11 +526,142 @@ func weightedGender(index int) string {
 }
 
 func seededAvatarURL(gender string, index int) string {
-	collection := "men"
-	if gender == "woman" {
-		collection = "women"
+	return ""
+}
+
+func applyUnsplashAvatarURLs(ctx context.Context, users []seededUser) {
+	accessKey := strings.TrimSpace(os.Getenv("UNSPLASH_ACCESS_KEY"))
+	if accessKey == "" {
+		fmt.Println("→ UNSPLASH_ACCESS_KEY not set; seed users will be created without profile photos")
+		return
 	}
-	return fmt.Sprintf("https://randomuser.me/api/portraits/%s/%d.jpg", collection, index%96)
+
+	client := &http.Client{Timeout: 20 * time.Second}
+	poolCounts := make(map[string]int)
+	for _, user := range users {
+		poolCounts[unsplashAvatarPool(user.Gender)]++
+	}
+
+	photoPools := make(map[string][]unsplashPhoto)
+	for pool, count := range poolCounts {
+		photos, err := fetchUnsplashSeedPhotos(ctx, client, accessKey, unsplashAvatarQuery(pool), count)
+		if err != nil {
+			fmt.Printf("→ Unsplash %s avatar fetch failed: %v; leaving those users without profile photos\n", pool, err)
+			continue
+		}
+		if len(photos) == 0 {
+			fmt.Printf("→ Unsplash returned no %s avatar photos; leaving those users without profile photos\n", pool)
+			continue
+		}
+		photoPools[pool] = photos
+	}
+
+	assigned := 0
+	poolIndexes := make(map[string]int)
+	for index := range users {
+		pool := unsplashAvatarPool(users[index].Gender)
+		photos := photoPools[pool]
+		if len(photos) == 0 {
+			continue
+		}
+		users[index].AvatarURL = photos[poolIndexes[pool]%len(photos)].URLs.Small
+		poolIndexes[pool]++
+		assigned++
+	}
+	if assigned == 0 {
+		fmt.Println("→ no Unsplash avatar photos assigned; seed users will be created without profile photos")
+		return
+	}
+
+	fmt.Printf("→ assigned %d gender-matched Unsplash profile photos to seed users\n", assigned)
+}
+
+func unsplashAvatarPool(gender string) string {
+	switch gender {
+	case "man":
+		return "male"
+	case "woman":
+		return "female"
+	default:
+		return "neutral"
+	}
+}
+
+func unsplashAvatarQuery(pool string) string {
+	switch pool {
+	case "male":
+		return "male portrait person"
+	case "female":
+		return "female portrait person"
+	default:
+		return "portrait person"
+	}
+}
+
+func fetchUnsplashSeedPhotos(ctx context.Context, client *http.Client, accessKey string, photoQuery string, count int) ([]unsplashPhoto, error) {
+	const maxUnsplashRandomCount = 30
+
+	photos := make([]unsplashPhoto, 0, count)
+	seen := make(map[string]struct{}, count)
+	maxAttempts := (count/maxUnsplashRandomCount + 1) * 3
+	for attempt := 0; len(photos) < count && attempt < maxAttempts; attempt++ {
+		batchSize := minInt(maxUnsplashRandomCount, count-len(photos))
+		batch, err := fetchUnsplashPhotoBatch(ctx, client, accessKey, photoQuery, batchSize)
+		if err != nil {
+			return nil, err
+		}
+		for _, photo := range batch {
+			if photo.ID == "" || photo.URLs.Small == "" {
+				continue
+			}
+			if _, exists := seen[photo.ID]; exists {
+				continue
+			}
+			seen[photo.ID] = struct{}{}
+			photos = append(photos, photo)
+		}
+		if len(batch) == 0 {
+			break
+		}
+	}
+
+	return photos, nil
+}
+
+func fetchUnsplashPhotoBatch(ctx context.Context, client *http.Client, accessKey string, photoQuery string, count int) ([]unsplashPhoto, error) {
+	endpoint, err := url.Parse("https://api.unsplash.com/photos/random")
+	if err != nil {
+		return nil, fmt.Errorf("parse unsplash endpoint: %w", err)
+	}
+	query := endpoint.Query()
+	query.Set("query", photoQuery)
+	query.Set("orientation", "squarish")
+	query.Set("content_filter", "high")
+	query.Set("count", strconv.Itoa(count))
+	endpoint.RawQuery = query.Encode()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("build unsplash request: %w", err)
+	}
+	req.Header.Set("Authorization", "Client-ID "+accessKey)
+	req.Header.Set("Accept-Version", "v1")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("fetch unsplash photos: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return nil, fmt.Errorf("fetch unsplash photos: %s", resp.Status)
+	}
+
+	var photos []unsplashPhoto
+	if err := json.NewDecoder(resp.Body).Decode(&photos); err != nil {
+		return nil, fmt.Errorf("decode unsplash photos: %w", err)
+	}
+	return photos, nil
 }
 
 func chooseFirstName(gender string, womenNames, menNames, neutralNames []string) string {
