@@ -153,11 +153,28 @@ func (s *pgStore) GetSupportRequest(ctx context.Context, viewerID, requestID uui
 					AND own_comment.user_id = $2
 					AND own_comment.deleted_at IS NULL
 			) AS has_replied,
+			(sr.requester_id <> $2 AND direct_chat.id IS NOT NULL) AS already_chatting,
+			direct_chat.id AS existing_chat_id,
 			sr.requester_id = $2 AS is_own_request
 		FROM support_requests sr
 		JOIN users requester ON requester.id = sr.requester_id
 		LEFT JOIN users responder ON responder.id = sr.accepted_responder_id
 		LEFT JOIN group_posts gp ON gp.id = sr.group_post_id
+		LEFT JOIN LATERAL (
+			SELECT ch.id
+			FROM chats ch
+			JOIN chat_members viewer_member
+				ON viewer_member.chat_id = ch.id
+				AND viewer_member.user_id = $2
+			JOIN chat_members requester_member
+				ON requester_member.chat_id = ch.id
+				AND requester_member.user_id = sr.requester_id
+			WHERE ch.is_group = false
+			  AND ch.support_request_id IS NULL
+			  AND ch.status = 'active'
+			ORDER BY ch.created_at DESC
+			LIMIT 1
+		) direct_chat ON true
 		WHERE sr.id = $1`,
 		requestID, viewerID,
 	).Scan(
@@ -168,7 +185,7 @@ func (s *pgStore) GetSupportRequest(ctx context.Context, viewerID, requestID uui
 		&req.GroupPostID, &req.CreatedAt, &req.PrivacyLevel,
 		&req.AcceptedResponseID, &req.AcceptedResponderID, &req.AcceptedAt, &req.ClosedAt,
 		&req.ResponderID, &req.ResponderUsername, &req.ResponderAvatarURL, &req.ChatID,
-		&req.HasResponded, &req.HasReplied, &req.IsOwnRequest,
+		&req.HasResponded, &req.HasReplied, &req.AlreadyChatting, &req.ExistingChatID, &req.IsOwnRequest,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
@@ -317,6 +334,8 @@ func (s *pgStore) ListMySupportRequests(ctx context.Context, userID uuid.UUID, b
 			responder.avatar_url,
 			sr.chat_id,
 			false AS has_responded,
+			false AS already_chatting,
+			NULL::uuid AS existing_chat_id,
 			true AS is_own_request,
 			sr.created_at AS sort_at
 		FROM support_requests sr
@@ -351,7 +370,7 @@ func (s *pgStore) ListMySupportRequests(ctx context.Context, userID uuid.UUID, b
 			&req.GroupPostID, &req.CreatedAt, &req.PrivacyLevel,
 			&req.AcceptedResponseID, &req.AcceptedResponderID, &req.AcceptedAt, &req.ClosedAt,
 			&req.ResponderID, &req.ResponderUsername, &req.ResponderAvatarURL, &req.ChatID,
-			&req.HasResponded, &req.IsOwnRequest, &req.SortAt,
+			&req.HasResponded, &req.AlreadyChatting, &req.ExistingChatID, &req.IsOwnRequest, &req.SortAt,
 		); err != nil {
 			return nil, err
 		}
@@ -434,10 +453,26 @@ func (s *pgStore) ListVisibleSupportRequests(ctx context.Context, userID uuid.UU
 					WHERE own_comment.post_id = sr.group_post_id
 					  AND own_comment.user_id = $1
 					  AND own_comment.deleted_at IS NULL
-				) AS has_replied
+				) AS has_replied,
+				direct_chat.id AS existing_chat_id
 			FROM support_requests sr
 			JOIN users requester ON requester.id = sr.requester_id
 			LEFT JOIN group_posts gp ON gp.id = sr.group_post_id
+			LEFT JOIN LATERAL (
+				SELECT ch.id
+				FROM chats ch
+				JOIN chat_members viewer_member
+					ON viewer_member.chat_id = ch.id
+					AND viewer_member.user_id = $1
+				JOIN chat_members requester_member
+					ON requester_member.chat_id = ch.id
+					AND requester_member.user_id = sr.requester_id
+				WHERE ch.is_group = false
+				  AND ch.support_request_id IS NULL
+				  AND ch.status = 'active'
+				ORDER BY ch.created_at DESC
+				LIMIT 1
+			) direct_chat ON true
 			WHERE sr.status = 'open'
 			  AND sr.requester_id <> $1
 			  AND (
@@ -492,6 +527,8 @@ func (s *pgStore) ListVisibleSupportRequests(ctx context.Context, userID uuid.UU
 			created_at,
 			has_offered,
 			has_replied,
+			(existing_chat_id IS NOT NULL) AS already_chatting,
+			existing_chat_id,
 			false AS is_own_request,
 			created_at AS sort_at,
 			feed_score
@@ -525,7 +562,7 @@ func (s *pgStore) ListVisibleSupportRequests(ctx context.Context, userID uuid.UU
 			&req.SupportType, &req.Topics, &req.PreferredGender,
 			&locationVisibility, &locationCity, &locationRegion, &locationCountry, &locationApproxLat, &locationApproxLng,
 			&req.Message, &req.Urgency, &req.Status, &req.ReplyCount, &req.ResponseCount, &req.ViewCount, &req.IsPriority,
-			&req.GroupPostID, &req.CreatedAt, &req.HasResponded, &req.HasReplied, &req.IsOwnRequest, &req.SortAt,
+			&req.GroupPostID, &req.CreatedAt, &req.HasResponded, &req.HasReplied, &req.AlreadyChatting, &req.ExistingChatID, &req.IsOwnRequest, &req.SortAt,
 			&req.FeedScore,
 		); err != nil {
 			return nil, err

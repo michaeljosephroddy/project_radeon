@@ -158,6 +158,19 @@ func (m *mockStore) CreateInvite(ctx context.Context, viewerID, groupID uuid.UUI
 	return &GroupInvite{ID: uuid.New(), GroupID: groupID, Token: "token", CreatedAt: time.Now().UTC()}, nil
 }
 
+func (m *mockStore) GetInvitePreview(ctx context.Context, viewerID uuid.UUID, token string) (*GroupInvitePreview, error) {
+	return &GroupInvitePreview{
+		Token:            token,
+		GroupID:          uuid.New(),
+		GroupName:        "Dublin Recovery",
+		GroupSlug:        "dublin-recovery",
+		Visibility:       GroupVisibilityPublic,
+		RequiresApproval: false,
+		ViewerStatus:     "none",
+		CreatedAt:        time.Now().UTC(),
+	}, nil
+}
+
 func (m *mockStore) AcceptInvite(ctx context.Context, viewerID uuid.UUID, token string) (*JoinGroupResult, error) {
 	return &JoinGroupResult{State: "member"}, nil
 }
@@ -196,6 +209,22 @@ func (m *mockStore) ListAdminThreads(ctx context.Context, viewerID, groupID uuid
 	return []GroupAdminThread{}, nil
 }
 
+func (m *mockStore) GetAdminThread(ctx context.Context, viewerID, groupID, threadID uuid.UUID) (*GroupAdminThread, error) {
+	now := time.Now().UTC()
+	return &GroupAdminThread{
+		ID:        threadID,
+		GroupID:   groupID,
+		UserID:    viewerID,
+		Username:  "alex",
+		Status:    "open",
+		CreatedAt: now,
+		UpdatedAt: now,
+		Messages: []GroupAdminMessage{
+			{ID: uuid.New(), ThreadID: threadID, SenderID: viewerID, Username: "alex", Body: "hello", CreatedAt: now},
+		},
+	}, nil
+}
+
 func (m *mockStore) ReplyAdminThread(ctx context.Context, viewerID, groupID, threadID uuid.UUID, body string) (*GroupAdminMessage, error) {
 	return &GroupAdminMessage{ID: uuid.New(), ThreadID: threadID, SenderID: viewerID, Username: "alex", Body: body, CreatedAt: time.Now().UTC()}, nil
 }
@@ -207,6 +236,35 @@ func (m *mockStore) ResolveAdminThread(ctx context.Context, viewerID, groupID, t
 
 func (m *mockStore) ReportTarget(ctx context.Context, viewerID, groupID uuid.UUID, targetType string, targetID *uuid.UUID, reason string, details *string) (*GroupReport, error) {
 	return &GroupReport{ID: uuid.New(), GroupID: groupID, ReporterID: viewerID, TargetType: targetType, TargetID: targetID, Reason: reason, Status: "open", CreatedAt: time.Now().UTC()}, nil
+}
+
+func (m *mockStore) ListReports(ctx context.Context, viewerID, groupID uuid.UUID, before *time.Time, limit int) ([]GroupReport, error) {
+	return []GroupReport{{
+		ID:               uuid.New(),
+		GroupID:          groupID,
+		ReporterID:       viewerID,
+		ReporterUsername: "alex",
+		TargetType:       "group",
+		Reason:           "Safety concern",
+		Status:           "open",
+		CreatedAt:        time.Now().UTC(),
+	}}, nil
+}
+
+func (m *mockStore) ReviewReport(ctx context.Context, viewerID, groupID, reportID uuid.UUID, status string) (*GroupReport, error) {
+	now := time.Now().UTC()
+	return &GroupReport{
+		ID:               reportID,
+		GroupID:          groupID,
+		ReporterID:       uuid.New(),
+		ReporterUsername: "alex",
+		TargetType:       "group",
+		Reason:           "Safety concern",
+		Status:           status,
+		ReviewedBy:       &viewerID,
+		ReviewedAt:       &now,
+		CreatedAt:        now,
+	}, nil
 }
 
 func TestCreateGroupDefaultsVisibilityAndPostingPermission(t *testing.T) {

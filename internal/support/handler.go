@@ -151,6 +151,8 @@ type SupportRequest struct {
 	HasResponded        bool             `json:"-"`
 	HasOffered          bool             `json:"has_offered"`
 	HasReplied          bool             `json:"has_replied"`
+	AlreadyChatting     bool             `json:"already_chatting"`
+	ExistingChatID      *uuid.UUID       `json:"existing_chat_id,omitempty"`
 	IsOwnRequest        bool             `json:"is_own_request"`
 	SortAt              time.Time        `json:"-"`
 	AttentionBucket     int              `json:"-"`
@@ -525,7 +527,7 @@ func (h *Handler) CreateSupportOffer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	requesterID, status, err := h.db.GetSupportRequestState(r.Context(), requestID)
+	req, err := h.db.GetSupportRequest(r.Context(), userID, requestID)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
 			response.Error(w, http.StatusNotFound, "support request not found")
@@ -534,12 +536,16 @@ func (h *Handler) CreateSupportOffer(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, http.StatusInternalServerError, "could not fetch support request")
 		return
 	}
-	if requesterID == userID {
+	if req.RequesterID == userID {
 		response.Error(w, http.StatusBadRequest, "cannot respond to your own request")
 		return
 	}
-	if status != "open" {
+	if req.Status != "open" {
 		response.Error(w, http.StatusConflict, "support request is no longer open")
+		return
+	}
+	if req.AlreadyChatting {
+		response.Error(w, http.StatusConflict, "you are already chatting with this user")
 		return
 	}
 
@@ -549,7 +555,7 @@ func (h *Handler) CreateSupportOffer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if h.notifier != nil && res != nil && res.Offer != nil {
-		_ = h.notifier.NotifySupportOffer(r.Context(), requestID, res.Offer.ID, userID, requesterID)
+		_ = h.notifier.NotifySupportOffer(r.Context(), requestID, res.Offer.ID, userID, req.RequesterID)
 	}
 
 	response.Success(w, http.StatusCreated, res)

@@ -17,6 +17,7 @@ const (
 	NotificationTypeGroupAdminContact = "group.admin_contact"
 	NotificationTypeGroupAdminReply   = "group.admin_reply"
 	NotificationTypeGroupReport       = "group.report"
+	NotificationTypeGroupReportStatus = "group.report_status"
 	NotificationTypeSupportOffer      = "support.offer"
 
 	ResourceTypeChat             = "chat"
@@ -119,6 +120,7 @@ type Store interface {
 	CreateGroupAdminContactNotifications(ctx context.Context, groupID, threadID, senderID uuid.UUID, body string) error
 	CreateGroupAdminReplyNotification(ctx context.Context, groupID, threadID, messageID, senderID uuid.UUID, body string) error
 	CreateGroupReportNotifications(ctx context.Context, groupID, reportID, reporterID uuid.UUID, targetType, reason string) error
+	CreateGroupReportStatusNotification(ctx context.Context, groupID, reportID, reviewerID, reporterID uuid.UUID, status string) error
 	CreateSupportOfferNotification(ctx context.Context, requestID, offerID, responderID, requesterID uuid.UUID) error
 	ClaimPendingDeliveries(ctx context.Context, limit int, now time.Time) ([]deliveryJob, error)
 	MarkDeliverySent(ctx context.Context, deliveryID uuid.UUID, providerMessageID string, sentAt time.Time) error

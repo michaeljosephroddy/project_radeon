@@ -59,6 +59,8 @@ func (s *cachedStore) ListGroups(ctx context.Context, viewerID uuid.UUID, params
 		"country", encodeGroupCachePart(params.Country),
 		"tag", encodeGroupCachePart(params.Tag),
 		"pathway", encodeGroupCachePart(params.RecoveryPathway),
+		"visibility", encodeGroupCachePart(params.Visibility),
+		"type", encodeGroupCachePart(params.GroupType),
 		"scope", encodeGroupCachePart(params.MemberScope),
 		"before", encodeGroupOptionalTime(params.Before),
 		"limit", strconv.Itoa(params.Limit),
@@ -157,6 +159,10 @@ func (s *cachedStore) CreatePost(ctx context.Context, viewerID, groupID uuid.UUI
 }
 
 func (s *cachedStore) ListPosts(ctx context.Context, viewerID, groupID uuid.UUID, before *time.Time, limit int) ([]GroupPost, error) {
+	group, err := s.inner.GetGroup(ctx, viewerID, groupID)
+	if err == nil && group.SystemKey != nil && *group.SystemKey == SystemGroupKeyCommunitySupport {
+		return s.inner.ListPosts(ctx, viewerID, groupID, before, limit)
+	}
 	version, err := s.cache.GetVersion(ctx, s.groupVersionKey(groupID))
 	if err != nil {
 		return s.inner.ListPosts(ctx, viewerID, groupID, before, limit)
@@ -282,6 +288,10 @@ func (s *cachedStore) CreateInvite(ctx context.Context, viewerID, groupID uuid.U
 	return invite, nil
 }
 
+func (s *cachedStore) GetInvitePreview(ctx context.Context, viewerID uuid.UUID, token string) (*GroupInvitePreview, error) {
+	return s.inner.GetInvitePreview(ctx, viewerID, token)
+}
+
 func (s *cachedStore) AcceptInvite(ctx context.Context, viewerID uuid.UUID, token string) (*JoinGroupResult, error) {
 	result, err := s.inner.AcceptInvite(ctx, viewerID, token)
 	if err != nil {
@@ -365,6 +375,10 @@ func (s *cachedStore) ListAdminThreads(ctx context.Context, viewerID, groupID uu
 	return threads, nil
 }
 
+func (s *cachedStore) GetAdminThread(ctx context.Context, viewerID, groupID, threadID uuid.UUID) (*GroupAdminThread, error) {
+	return s.inner.GetAdminThread(ctx, viewerID, groupID, threadID)
+}
+
 func (s *cachedStore) ReplyAdminThread(ctx context.Context, viewerID, groupID, threadID uuid.UUID, body string) (*GroupAdminMessage, error) {
 	message, err := s.inner.ReplyAdminThread(ctx, viewerID, groupID, threadID, body)
 	if err != nil {
@@ -385,6 +399,19 @@ func (s *cachedStore) ResolveAdminThread(ctx context.Context, viewerID, groupID,
 
 func (s *cachedStore) ReportTarget(ctx context.Context, viewerID, groupID uuid.UUID, targetType string, targetID *uuid.UUID, reason string, details *string) (*GroupReport, error) {
 	report, err := s.inner.ReportTarget(ctx, viewerID, groupID, targetType, targetID, reason, details)
+	if err != nil {
+		return nil, err
+	}
+	s.bumpGroupVersions(ctx, groupID, viewerID)
+	return report, nil
+}
+
+func (s *cachedStore) ListReports(ctx context.Context, viewerID, groupID uuid.UUID, before *time.Time, limit int) ([]GroupReport, error) {
+	return s.inner.ListReports(ctx, viewerID, groupID, before, limit)
+}
+
+func (s *cachedStore) ReviewReport(ctx context.Context, viewerID, groupID, reportID uuid.UUID, status string) (*GroupReport, error) {
+	report, err := s.inner.ReviewReport(ctx, viewerID, groupID, reportID, status)
 	if err != nil {
 		return nil, err
 	}

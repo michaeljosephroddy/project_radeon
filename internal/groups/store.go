@@ -32,14 +32,18 @@ type Store interface {
 	PinPost(ctx context.Context, viewerID, groupID, postID uuid.UUID, pinned bool) (*GroupPost, error)
 	DeletePost(ctx context.Context, viewerID, groupID, postID uuid.UUID) error
 	CreateInvite(ctx context.Context, viewerID, groupID uuid.UUID, input CreateGroupInviteInput) (*GroupInvite, error)
+	GetInvitePreview(ctx context.Context, viewerID uuid.UUID, token string) (*GroupInvitePreview, error)
 	AcceptInvite(ctx context.Context, viewerID uuid.UUID, token string) (*JoinGroupResult, error)
 	ListJoinRequests(ctx context.Context, viewerID, groupID uuid.UUID) ([]GroupJoinRequest, error)
 	ReviewJoinRequest(ctx context.Context, viewerID, groupID, requestID uuid.UUID, approve bool) (*GroupJoinRequest, error)
 	ContactAdmins(ctx context.Context, viewerID, groupID uuid.UUID, subject, body string) (*GroupAdminThread, error)
 	ListAdminThreads(ctx context.Context, viewerID, groupID uuid.UUID, before *time.Time, limit int) ([]GroupAdminThread, error)
+	GetAdminThread(ctx context.Context, viewerID, groupID, threadID uuid.UUID) (*GroupAdminThread, error)
 	ReplyAdminThread(ctx context.Context, viewerID, groupID, threadID uuid.UUID, body string) (*GroupAdminMessage, error)
 	ResolveAdminThread(ctx context.Context, viewerID, groupID, threadID uuid.UUID) (*GroupAdminThread, error)
 	ReportTarget(ctx context.Context, viewerID, groupID uuid.UUID, targetType string, targetID *uuid.UUID, reason string, details *string) (*GroupReport, error)
+	ListReports(ctx context.Context, viewerID, groupID uuid.UUID, before *time.Time, limit int) ([]GroupReport, error)
+	ReviewReport(ctx context.Context, viewerID, groupID, reportID uuid.UUID, status string) (*GroupReport, error)
 }
 
 type pgStore struct {
@@ -134,13 +138,19 @@ func (s *pgStore) ListGroups(ctx context.Context, viewerID uuid.UUID, params Lis
 				OR ($2 <> 'joined' AND (g.visibility IN ('public', 'approval_required') OR gm.status = 'active'))
 			)
 			AND ($3 = '' OR g.name ILIKE '%' || $3 || '%' OR COALESCE(g.description, '') ILIKE '%' || $3 || '%')
-			AND ($4 = '' OR COALESCE(g.city, '') ILIKE $4)
-			AND ($5 = '' OR COALESCE(g.country, '') ILIKE $5)
+			AND ($4 = '' OR COALESCE(g.city, '') ILIKE '%' || $4 || '%')
+			AND ($5 = '' OR COALESCE(g.country, '') ILIKE '%' || $5 || '%')
 			AND ($6 = '' OR $6 = ANY(g.tags))
 			AND ($7 = '' OR $7 = ANY(g.recovery_pathways))
-			AND ($8::timestamptz IS NULL OR g.created_at < $8)
+			AND ($8 = '' OR g.visibility = $8)
+			AND (
+				$9 = ''
+				OR ($9 = 'support' AND g.system_key = $10)
+				OR ($9 = 'standard' AND g.system_key IS NULL)
+			)
+			AND ($11::timestamptz IS NULL OR g.created_at < $11)
 		ORDER BY g.created_at DESC
-		LIMIT $9`,
+		LIMIT $12`,
 		viewerID,
 		normalizeMemberScope(params.MemberScope),
 		strings.TrimSpace(params.Query),
@@ -148,6 +158,9 @@ func (s *pgStore) ListGroups(ctx context.Context, viewerID uuid.UUID, params Lis
 		strings.TrimSpace(params.Country),
 		strings.TrimSpace(params.Tag),
 		strings.TrimSpace(params.RecoveryPathway),
+		normalizeVisibilityFilter(params.Visibility),
+		normalizeGroupTypeFilter(params.GroupType),
+		SystemGroupKeyCommunitySupport,
 		params.Before,
 		params.Limit,
 	)
@@ -164,7 +177,13 @@ func (s *pgStore) ListGroups(ctx context.Context, viewerID uuid.UUID, params Lis
 		}
 		groups = append(groups, *group)
 	}
-	return groups, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := s.attachAdminPreviews(ctx, groups); err != nil {
+		return nil, err
+	}
+	return groups, nil
 }
 
 func (s *pgStore) GetGroup(ctx context.Context, viewerID, groupID uuid.UUID) (*Group, error) {
@@ -192,7 +211,15 @@ func (s *pgStore) GetGroup(ctx context.Context, viewerID, groupID uuid.UUID) (*G
 		viewerID,
 		groupID,
 	)
-	return scanGroup(row)
+	group, err := scanGroup(row)
+	if err != nil {
+		return nil, err
+	}
+	groups := []Group{*group}
+	if err := s.attachAdminPreviews(ctx, groups); err != nil {
+		return nil, err
+	}
+	return &groups[0], nil
 }
 
 func (s *pgStore) JoinGroup(ctx context.Context, viewerID, groupID uuid.UUID, message string) (*JoinGroupResult, error) {
@@ -520,6 +547,17 @@ func (s *pgStore) ListPosts(ctx context.Context, viewerID, groupID uuid.UUID, be
 		JOIN users u ON u.id = gp.user_id
 		WHERE gp.group_id = $2
 			AND gp.deleted_at IS NULL
+			AND NOT (
+				gp.post_type = 'need_support'
+				AND EXISTS (
+					SELECT 1
+					FROM groups g
+					JOIN support_requests sr ON sr.id = gp.support_request_id
+					WHERE g.id = gp.group_id
+						AND g.system_key = $5
+						AND sr.status = 'closed'
+				)
+			)
 			AND ($3::timestamptz IS NULL OR gp.created_at < $3)
 		ORDER BY gp.pinned_at DESC NULLS LAST, gp.created_at DESC
 		LIMIT $4`,
@@ -527,6 +565,7 @@ func (s *pgStore) ListPosts(ctx context.Context, viewerID, groupID uuid.UUID, be
 		groupID,
 		before,
 		limit,
+		SystemGroupKeyCommunitySupport,
 	)
 	if err != nil {
 		return nil, err
@@ -830,12 +869,8 @@ func (s *pgStore) DeletePost(ctx context.Context, viewerID, groupID, postID uuid
 }
 
 func (s *pgStore) CreateInvite(ctx context.Context, viewerID, groupID uuid.UUID, input CreateGroupInviteInput) (*GroupInvite, error) {
-	role, err := s.requireActiveMembership(ctx, viewerID, groupID)
-	if err != nil {
+	if _, err := s.requireActiveMembership(ctx, viewerID, groupID); err != nil {
 		return nil, err
-	}
-	if role == GroupRoleMember {
-		return nil, ErrForbidden
 	}
 	token, err := generateInviteToken()
 	if err != nil {
@@ -867,6 +902,63 @@ func (s *pgStore) CreateInvite(ctx context.Context, viewerID, groupID uuid.UUID,
 	}
 	invite.Token = token
 	return &invite, nil
+}
+
+func (s *pgStore) GetInvitePreview(ctx context.Context, viewerID uuid.UUID, token string) (*GroupInvitePreview, error) {
+	tokenHash := hashInviteToken(token)
+	var preview GroupInvitePreview
+	var memberStatus *MembershipStatus
+	err := s.pool.QueryRow(ctx, `
+		SELECT
+			g.id,
+			g.name,
+			g.slug,
+			g.avatar_url,
+			g.visibility,
+			gi.requires_approval,
+			gi.expires_at,
+			gi.max_uses,
+			gi.use_count,
+			gi.created_at,
+			gm.status
+		FROM group_invites gi
+		JOIN groups g ON g.id = gi.group_id
+		LEFT JOIN group_memberships gm
+			ON gm.group_id = g.id
+			AND gm.user_id = $2
+		WHERE gi.token_hash = $1
+			AND gi.revoked_at IS NULL
+			AND (gi.expires_at IS NULL OR gi.expires_at > NOW())
+			AND (gi.max_uses IS NULL OR gi.use_count < gi.max_uses)
+			AND g.deleted_at IS NULL`,
+		tokenHash,
+		viewerID,
+	).Scan(
+		&preview.GroupID,
+		&preview.GroupName,
+		&preview.GroupSlug,
+		&preview.GroupAvatarURL,
+		&preview.Visibility,
+		&preview.RequiresApproval,
+		&preview.ExpiresAt,
+		&preview.MaxUses,
+		&preview.UseCount,
+		&preview.CreatedAt,
+		&memberStatus,
+	)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	preview.Token = strings.TrimSpace(token)
+	if memberStatus != nil {
+		preview.ViewerStatus = string(*memberStatus)
+	} else {
+		preview.ViewerStatus = "none"
+	}
+	return &preview, nil
 }
 
 func (s *pgStore) AcceptInvite(ctx context.Context, viewerID uuid.UUID, token string) (*JoinGroupResult, error) {
@@ -1101,7 +1193,7 @@ func (s *pgStore) ReviewJoinRequest(ctx context.Context, viewerID, groupID, requ
 }
 
 func (s *pgStore) ContactAdmins(ctx context.Context, viewerID, groupID uuid.UUID, subject, body string) (*GroupAdminThread, error) {
-	if _, err := s.requireActiveMembership(ctx, viewerID, groupID); err != nil {
+	if _, err := s.GetGroup(ctx, viewerID, groupID); err != nil {
 		return nil, err
 	}
 	tx, err := s.pool.Begin(ctx)
@@ -1150,7 +1242,13 @@ func (s *pgStore) ListAdminThreads(ctx context.Context, viewerID, groupID uuid.U
 		JOIN users u ON u.id = gat.user_id
 		WHERE gat.group_id = $1
 			AND ($2::timestamptz IS NULL OR gat.updated_at < $2)
-		ORDER BY gat.updated_at DESC
+		ORDER BY
+			CASE gat.status
+				WHEN 'open' THEN 0
+				WHEN 'replied' THEN 1
+				ELSE 2
+			END,
+			gat.updated_at DESC
 		LIMIT $3`,
 		groupID,
 		before,
@@ -1172,6 +1270,17 @@ func (s *pgStore) ListAdminThreads(ctx context.Context, viewerID, groupID uuid.U
 	return threads, rows.Err()
 }
 
+func (s *pgStore) GetAdminThread(ctx context.Context, viewerID, groupID, threadID uuid.UUID) (*GroupAdminThread, error) {
+	role, err := s.requireActiveMembership(ctx, viewerID, groupID)
+	if err != nil {
+		return nil, err
+	}
+	if !canModerate(role) {
+		return nil, ErrForbidden
+	}
+	return s.getAdminThread(ctx, groupID, threadID, true)
+}
+
 func (s *pgStore) ReplyAdminThread(ctx context.Context, viewerID, groupID, threadID uuid.UUID, body string) (*GroupAdminMessage, error) {
 	role, err := s.requireActiveMembership(ctx, viewerID, groupID)
 	if err != nil {
@@ -1180,12 +1289,43 @@ func (s *pgStore) ReplyAdminThread(ctx context.Context, viewerID, groupID, threa
 	if !canModerate(role) {
 		return nil, ErrForbidden
 	}
+	messageID, err := s.replyAdminThreadOpen(ctx, threadID, groupID, viewerID, body)
+	if err != nil {
+		if err != pgx.ErrNoRows {
+			return nil, err
+		}
+		var status string
+		if statusErr := s.pool.QueryRow(ctx, `
+			SELECT status
+			FROM group_admin_threads
+			WHERE id = $1 AND group_id = $2`,
+			threadID,
+			groupID,
+		).Scan(&status); statusErr != nil {
+			if statusErr == pgx.ErrNoRows {
+				return nil, ErrNotFound
+			}
+			return nil, statusErr
+		}
+		return nil, ErrConflict
+	}
+
+	return s.getAdminMessage(ctx, messageID)
+}
+
+func (s *pgStore) replyAdminThreadOpen(
+	ctx context.Context,
+	threadID, groupID, viewerID uuid.UUID,
+	body string,
+) (uuid.UUID, error) {
 	var messageID uuid.UUID
-	err = s.pool.QueryRow(ctx, `
+	err := s.pool.QueryRow(ctx, `
 		WITH updated AS (
 			UPDATE group_admin_threads
-			SET status = 'open', updated_at = NOW()
-			WHERE id = $1 AND group_id = $2
+			SET updated_at = NOW()
+			WHERE id = $1
+				AND group_id = $2
+				AND status = 'open'
 			RETURNING id
 		)
 		INSERT INTO group_admin_messages (thread_id, sender_id, body)
@@ -1197,12 +1337,9 @@ func (s *pgStore) ReplyAdminThread(ctx context.Context, viewerID, groupID, threa
 		body,
 	).Scan(&messageID)
 	if err != nil {
-		if err == pgx.ErrNoRows {
-			return nil, ErrNotFound
-		}
-		return nil, err
+		return uuid.Nil, err
 	}
-	return s.getAdminMessage(ctx, messageID)
+	return messageID, nil
 }
 
 func (s *pgStore) ResolveAdminThread(ctx context.Context, viewerID, groupID, threadID uuid.UUID) (*GroupAdminThread, error) {
@@ -1261,6 +1398,107 @@ func (s *pgStore) ReportTarget(ctx context.Context, viewerID, groupID uuid.UUID,
 	return &report, nil
 }
 
+func (s *pgStore) ListReports(ctx context.Context, viewerID, groupID uuid.UUID, before *time.Time, limit int) ([]GroupReport, error) {
+	role, err := s.requireActiveMembership(ctx, viewerID, groupID)
+	if err != nil {
+		return nil, err
+	}
+	if !canModerate(role) {
+		return nil, ErrForbidden
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT
+			gr.id,
+			gr.group_id,
+			gr.reporter_id,
+			reporter.username,
+			reporter.avatar_url,
+			gr.target_type,
+			gr.target_id,
+			gr.reason,
+			gr.details,
+			gr.status,
+			gr.reviewed_by,
+			gr.reviewed_at,
+			gr.created_at
+		FROM group_reports gr
+		JOIN users reporter ON reporter.id = gr.reporter_id
+		WHERE gr.group_id = $1
+			AND ($2::timestamptz IS NULL OR gr.created_at < $2)
+		ORDER BY
+			CASE gr.status
+				WHEN 'open' THEN 0
+				WHEN 'reviewing' THEN 1
+				WHEN 'resolved' THEN 2
+				ELSE 3
+			END,
+			gr.created_at DESC
+		LIMIT $3`,
+		groupID,
+		before,
+		limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	reports := []GroupReport{}
+	for rows.Next() {
+		report, err := scanReport(rows)
+		if err != nil {
+			return nil, err
+		}
+		reports = append(reports, *report)
+	}
+	return reports, rows.Err()
+}
+
+func (s *pgStore) ReviewReport(ctx context.Context, viewerID, groupID, reportID uuid.UUID, status string) (*GroupReport, error) {
+	role, err := s.requireActiveMembership(ctx, viewerID, groupID)
+	if err != nil {
+		return nil, err
+	}
+	if !canModerate(role) {
+		return nil, ErrForbidden
+	}
+	if status != "reviewing" && status != "resolved" && status != "dismissed" {
+		return nil, ErrForbidden
+	}
+	var reporterID uuid.UUID
+	if err := s.pool.QueryRow(ctx, `
+		SELECT reporter_id
+		FROM group_reports
+		WHERE id = $1 AND group_id = $2`,
+		reportID,
+		groupID,
+	).Scan(&reporterID); err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	if reporterID == viewerID {
+		return nil, ErrForbidden
+	}
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE group_reports
+		SET status = $4, reviewed_by = $3, reviewed_at = NOW()
+		WHERE id = $1 AND group_id = $2`,
+		reportID,
+		groupID,
+		viewerID,
+		status,
+	)
+	if err != nil {
+		return nil, err
+	}
+	if tag.RowsAffected() == 0 {
+		return nil, ErrNotFound
+	}
+	return s.getReport(ctx, groupID, reportID)
+}
+
 type groupScanner interface {
 	Scan(dest ...any) error
 }
@@ -1306,8 +1544,58 @@ func scanGroup(row groupScanner) (*Group, error) {
 	}
 	group.ViewerRole = role
 	group.ViewerStatus = status
+	group.Admins = []GroupAdminPreview{}
 	applyViewerPermissions(&group)
 	return &group, nil
+}
+
+func scanReport(row groupScanner) (*GroupReport, error) {
+	var report GroupReport
+	if err := row.Scan(
+		&report.ID,
+		&report.GroupID,
+		&report.ReporterID,
+		&report.ReporterUsername,
+		&report.ReporterAvatarURL,
+		&report.TargetType,
+		&report.TargetID,
+		&report.Reason,
+		&report.Details,
+		&report.Status,
+		&report.ReviewedBy,
+		&report.ReviewedAt,
+		&report.CreatedAt,
+	); err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	return &report, nil
+}
+
+func (s *pgStore) getReport(ctx context.Context, groupID, reportID uuid.UUID) (*GroupReport, error) {
+	return scanReport(s.pool.QueryRow(ctx, `
+		SELECT
+			gr.id,
+			gr.group_id,
+			gr.reporter_id,
+			reporter.username,
+			reporter.avatar_url,
+			gr.target_type,
+			gr.target_id,
+			gr.reason,
+			gr.details,
+			gr.status,
+			gr.reviewed_by,
+			gr.reviewed_at,
+			gr.created_at
+		FROM group_reports gr
+		JOIN users reporter ON reporter.id = gr.reporter_id
+		WHERE gr.group_id = $1 AND gr.id = $2`,
+		groupID,
+		reportID,
+	))
 }
 
 func (s *pgStore) requireActiveMembership(ctx context.Context, viewerID, groupID uuid.UUID) (GroupRole, error) {
@@ -1500,11 +1788,28 @@ func (s *pgStore) attachSupportRequests(ctx context.Context, viewerID uuid.UUID,
 					AND own_comment.user_id = $1
 					AND own_comment.deleted_at IS NULL
 			) AS has_replied,
+			(sr.requester_id <> $1 AND direct_chat.id IS NOT NULL) AS already_chatting,
+			direct_chat.id AS existing_chat_id,
 			sr.requester_id = $1 AS is_own_request
 		FROM support_requests sr
 		JOIN users requester ON requester.id = sr.requester_id
 		LEFT JOIN users responder ON responder.id = sr.accepted_responder_id
 		LEFT JOIN group_posts gp ON gp.id = sr.group_post_id
+		LEFT JOIN LATERAL (
+			SELECT ch.id
+			FROM chats ch
+			JOIN chat_members viewer_member
+				ON viewer_member.chat_id = ch.id
+				AND viewer_member.user_id = $1
+			JOIN chat_members requester_member
+				ON requester_member.chat_id = ch.id
+				AND requester_member.user_id = sr.requester_id
+			WHERE ch.is_group = false
+			  AND ch.support_request_id IS NULL
+			  AND ch.status = 'active'
+			ORDER BY ch.created_at DESC
+			LIMIT 1
+		) direct_chat ON true
 		WHERE sr.id = ANY($2)`,
 		viewerID,
 		supportRequestIDs,
@@ -1555,6 +1860,8 @@ func (s *pgStore) attachSupportRequests(ctx context.Context, viewerID uuid.UUID,
 			&request.ChatID,
 			&request.HasOffered,
 			&request.HasReplied,
+			&request.AlreadyChatting,
+			&request.ExistingChatID,
 			&request.IsOwnRequest,
 		); err != nil {
 			return err
@@ -1563,6 +1870,68 @@ func (s *pgStore) attachSupportRequests(ctx context.Context, viewerID uuid.UUID,
 		if index, ok := bySupportID[request.ID]; ok {
 			posts[index].SupportRequest = &request
 		}
+	}
+	return rows.Err()
+}
+
+func (s *pgStore) attachAdminPreviews(ctx context.Context, groups []Group) error {
+	groupIDs := make([]uuid.UUID, 0, len(groups))
+	byGroupID := make(map[uuid.UUID]int, len(groups))
+	for index := range groups {
+		groupIDs = append(groupIDs, groups[index].ID)
+		byGroupID[groups[index].ID] = index
+		if groups[index].Admins == nil {
+			groups[index].Admins = []GroupAdminPreview{}
+		}
+	}
+	if len(groupIDs) == 0 {
+		return nil
+	}
+
+	rows, err := s.pool.Query(ctx, `
+		SELECT gm.group_id, gm.user_id, u.username, u.avatar_url, gm.role
+		FROM group_memberships gm
+		JOIN users u ON u.id = gm.user_id
+		WHERE gm.group_id = ANY($1)
+			AND gm.status = 'active'
+			AND gm.role IN ('owner', 'admin', 'moderator')
+		ORDER BY
+			CASE gm.role
+				WHEN 'owner' THEN 0
+				WHEN 'admin' THEN 1
+				WHEN 'moderator' THEN 2
+				ELSE 3
+			END,
+			gm.joined_at ASC`,
+		groupIDs,
+	)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var groupID uuid.UUID
+		var preview GroupAdminPreview
+		if err := rows.Scan(
+			&groupID,
+			&preview.UserID,
+			&preview.Username,
+			&preview.AvatarURL,
+			&preview.Role,
+		); err != nil {
+			return err
+		}
+		index, ok := byGroupID[groupID]
+		if !ok {
+			continue
+		}
+		if preview.Role == GroupRoleOwner {
+			copyPreview := preview
+			groups[index].Owner = &copyPreview
+			continue
+		}
+		groups[index].Admins = append(groups[index].Admins, preview)
 	}
 	return rows.Err()
 }
@@ -1785,4 +2154,25 @@ func normalizeMemberScope(scope string) string {
 		return "joined"
 	}
 	return "discover"
+}
+
+func normalizeVisibilityFilter(visibility string) string {
+	normalized := strings.TrimSpace(visibility)
+	switch GroupVisibility(normalized) {
+	case GroupVisibilityPublic, GroupVisibilityApprovalRequired, GroupVisibilityInviteOnly, GroupVisibilityPrivateHidden:
+		return normalized
+	default:
+		return ""
+	}
+}
+
+func normalizeGroupTypeFilter(groupType string) string {
+	switch strings.TrimSpace(groupType) {
+	case "support":
+		return "support"
+	case "standard":
+		return "standard"
+	default:
+		return ""
+	}
 }

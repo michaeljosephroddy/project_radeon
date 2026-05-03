@@ -139,6 +139,10 @@ func (s *countingGroupStore) CreateInvite(_ context.Context, _ uuid.UUID, groupI
 	return &GroupInvite{ID: uuid.New(), GroupID: groupID}, nil
 }
 
+func (s *countingGroupStore) GetInvitePreview(_ context.Context, _ uuid.UUID, token string) (*GroupInvitePreview, error) {
+	return &GroupInvitePreview{Token: token, GroupID: s.groupID, GroupName: "Cached Recovery Group", GroupSlug: "cached-recovery-group", Visibility: GroupVisibilityPublic}, nil
+}
+
 func (s *countingGroupStore) AcceptInvite(_ context.Context, viewerID uuid.UUID, _ string) (*JoinGroupResult, error) {
 	group := s.group(viewerID)
 	return &JoinGroupResult{State: "member", Group: &group}, nil
@@ -160,6 +164,19 @@ func (s *countingGroupStore) ListAdminThreads(_ context.Context, _ uuid.UUID, _ 
 	return []GroupAdminThread{}, nil
 }
 
+func (s *countingGroupStore) GetAdminThread(_ context.Context, viewerID, groupID, threadID uuid.UUID) (*GroupAdminThread, error) {
+	now := time.Now().UTC()
+	return &GroupAdminThread{
+		ID:        threadID,
+		GroupID:   groupID,
+		UserID:    viewerID,
+		Username:  "alex",
+		Status:    "open",
+		CreatedAt: now,
+		UpdatedAt: now,
+	}, nil
+}
+
 func (s *countingGroupStore) ReplyAdminThread(_ context.Context, viewerID, _ uuid.UUID, threadID uuid.UUID, body string) (*GroupAdminMessage, error) {
 	return &GroupAdminMessage{ID: uuid.New(), ThreadID: threadID, SenderID: viewerID, Body: body}, nil
 }
@@ -170,6 +187,15 @@ func (s *countingGroupStore) ResolveAdminThread(_ context.Context, viewerID, gro
 
 func (s *countingGroupStore) ReportTarget(_ context.Context, viewerID, groupID uuid.UUID, targetType string, targetID *uuid.UUID, reason string, details *string) (*GroupReport, error) {
 	return &GroupReport{ID: uuid.New(), GroupID: groupID, ReporterID: viewerID, TargetType: targetType, TargetID: targetID, Reason: reason, Details: details}, nil
+}
+
+func (s *countingGroupStore) ListReports(_ context.Context, viewerID, groupID uuid.UUID, _ *time.Time, _ int) ([]GroupReport, error) {
+	return []GroupReport{{ID: uuid.New(), GroupID: groupID, ReporterID: viewerID, TargetType: "group", Reason: "Safety concern", Status: "open"}}, nil
+}
+
+func (s *countingGroupStore) ReviewReport(_ context.Context, viewerID, groupID, reportID uuid.UUID, status string) (*GroupReport, error) {
+	now := time.Now().UTC()
+	return &GroupReport{ID: reportID, GroupID: groupID, ReporterID: viewerID, TargetType: "group", Reason: "Safety concern", Status: status, ReviewedBy: &viewerID, ReviewedAt: &now}, nil
 }
 
 func TestCachedStoreListGroupsCachesAndKeepsViewersSeparate(t *testing.T) {

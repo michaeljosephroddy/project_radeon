@@ -62,7 +62,7 @@ func (m *mockQuerier) GetSupportRequest(ctx context.Context, viewerID, requestID
 	if m.getSupportRequest != nil {
 		return m.getSupportRequest(ctx, viewerID, requestID)
 	}
-	return &SupportRequest{ID: requestID}, nil
+	return &SupportRequest{ID: requestID, RequesterID: fixedOther, Status: "open"}, nil
 }
 func (m *mockQuerier) CloseSupportRequest(ctx context.Context, requestID, userID uuid.UUID) ([]uuid.UUID, error) {
 	if m.closeSupportRequest != nil {
@@ -332,8 +332,8 @@ func TestCreateSupportOfferValidationFlow(t *testing.T) {
 
 func TestCreateSupportOfferRequestNotFound(t *testing.T) {
 	h := NewHandler(&mockQuerier{
-		getSupportRequestState: func(_ context.Context, _ uuid.UUID) (uuid.UUID, string, error) {
-			return uuid.Nil, "", ErrNotFound
+		getSupportRequest: func(_ context.Context, _, _ uuid.UUID) (*SupportRequest, error) {
+			return nil, ErrNotFound
 		},
 	})
 	rec := httptest.NewRecorder()
@@ -345,8 +345,8 @@ func TestCreateSupportOfferRequestNotFound(t *testing.T) {
 
 func TestCreateSupportOfferCannotRespondToOwnRequest(t *testing.T) {
 	h := NewHandler(&mockQuerier{
-		getSupportRequestState: func(_ context.Context, _ uuid.UUID) (uuid.UUID, string, error) {
-			return fixedUser, "open", nil
+		getSupportRequest: func(_ context.Context, _, requestID uuid.UUID) (*SupportRequest, error) {
+			return &SupportRequest{ID: requestID, RequesterID: fixedUser, Status: "open"}, nil
 		},
 	})
 	rec := httptest.NewRecorder()
@@ -358,8 +358,26 @@ func TestCreateSupportOfferCannotRespondToOwnRequest(t *testing.T) {
 
 func TestCreateSupportOfferRequestNoLongerOpen(t *testing.T) {
 	h := NewHandler(&mockQuerier{
-		getSupportRequestState: func(_ context.Context, _ uuid.UUID) (uuid.UUID, string, error) {
-			return fixedOther, "closed", nil
+		getSupportRequest: func(_ context.Context, _, requestID uuid.UUID) (*SupportRequest, error) {
+			return &SupportRequest{ID: requestID, RequesterID: fixedOther, Status: "closed"}, nil
+		},
+	})
+	rec := httptest.NewRecorder()
+	h.CreateSupportOffer(rec, authedRequestWithID(http.MethodPost, `{"offer_type":"chat"}`, fixedRequest.String()))
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusConflict)
+	}
+}
+
+func TestCreateSupportOfferAlreadyChatting(t *testing.T) {
+	h := NewHandler(&mockQuerier{
+		getSupportRequest: func(_ context.Context, _, requestID uuid.UUID) (*SupportRequest, error) {
+			return &SupportRequest{
+				ID:              requestID,
+				RequesterID:     fixedOther,
+				Status:          "open",
+				AlreadyChatting: true,
+			}, nil
 		},
 	})
 	rec := httptest.NewRecorder()
@@ -371,8 +389,8 @@ func TestCreateSupportOfferRequestNoLongerOpen(t *testing.T) {
 
 func TestCreateSupportOfferSuccessWhenRequesterIsOtherUser(t *testing.T) {
 	h := NewHandler(&mockQuerier{
-		getSupportRequestState: func(_ context.Context, _ uuid.UUID) (uuid.UUID, string, error) {
-			return fixedOther, "open", nil
+		getSupportRequest: func(_ context.Context, _, requestID uuid.UUID) (*SupportRequest, error) {
+			return &SupportRequest{ID: requestID, RequesterID: fixedOther, Status: "open"}, nil
 		},
 	})
 	rec := httptest.NewRecorder()
@@ -384,8 +402,8 @@ func TestCreateSupportOfferSuccessWhenRequesterIsOtherUser(t *testing.T) {
 
 func TestCreateSupportOfferSuccess(t *testing.T) {
 	h := NewHandler(&mockQuerier{
-		getSupportRequestState: func(_ context.Context, _ uuid.UUID) (uuid.UUID, string, error) {
-			return fixedOther, "open", nil
+		getSupportRequest: func(_ context.Context, _, requestID uuid.UUID) (*SupportRequest, error) {
+			return &SupportRequest{ID: requestID, RequesterID: fixedOther, Status: "open"}, nil
 		},
 	})
 	rec := httptest.NewRecorder()

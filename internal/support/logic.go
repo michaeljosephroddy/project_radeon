@@ -56,6 +56,11 @@ func normalizeCreateSupportRequestInput(input CreateSupportRequestInput) CreateS
 
 func validateCreateSupportRequestInput(input CreateSupportRequestInput) map[string]string {
 	errs := map[string]string{}
+	if input.Message == nil || strings.TrimSpace(*input.Message) == "" {
+		errs["message"] = "required"
+	} else if len([]rune(strings.TrimSpace(*input.Message))) > 2000 {
+		errs["message"] = "too_long"
+	}
 	if input.SupportType == "" {
 		errs["support_type"] = "required"
 	} else if !validSupportTypes[input.SupportType] {
