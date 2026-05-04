@@ -18,10 +18,7 @@ type Claims struct {
 // GenerateToken creates a signed JWT for the supplied user ID.
 func GenerateToken(userID uuid.UUID) (string, error) {
 	secret := os.Getenv("JWT_SECRET")
-	hours, _ := strconv.Atoi(os.Getenv("JWT_EXPIRY_HOURS"))
-	if hours == 0 {
-		hours = 8760 // 1 year — tokens are valid until the user signs out
-	}
+	hours := tokenExpiryHours()
 
 	// Tokens only carry the user ID plus standard JWT timestamps so the server
 	// can treat the database as the source of truth for the rest of the profile.
@@ -35,6 +32,14 @@ func GenerateToken(userID uuid.UUID) (string, error) {
 
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	return token.SignedString([]byte(secret))
+}
+
+func tokenExpiryHours() int {
+	hours, err := strconv.Atoi(os.Getenv("JWT_EXPIRY_HOURS"))
+	if err != nil || hours < 1 {
+		return 8760 // 1 year — tokens are valid until the user signs out
+	}
+	return hours
 }
 
 // ParseToken validates a JWT string and returns the decoded claims.

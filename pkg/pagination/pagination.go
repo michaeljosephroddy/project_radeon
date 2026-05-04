@@ -25,8 +25,8 @@ type Response[T any] struct {
 // Parse gives list endpoints one shared pagination policy so page/limit bounds
 // stay consistent across feed, chats, support, meetups, and friendships.
 func Parse(r *http.Request, defaultLimit, maxLimit int) Params {
-	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
-	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	page := parsePositiveInt(r.URL.Query().Get("page"), 1)
+	limit := parsePositiveInt(r.URL.Query().Get("limit"), defaultLimit)
 	if page < 1 {
 		page = 1
 	}
@@ -81,10 +81,7 @@ type CursorResponse[T any] struct {
 // ParseCursor reads ?limit, ?before, and ?after from the request and returns
 // normalized CursorParams. Timestamps must be RFC3339Nano.
 func ParseCursor(r *http.Request, defaultLimit, maxLimit int) CursorParams {
-	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	if limit < 1 {
-		limit = defaultLimit
-	}
+	limit := parsePositiveInt(r.URL.Query().Get("limit"), defaultLimit)
 	if limit > maxLimit {
 		limit = maxLimit
 	}
@@ -103,6 +100,14 @@ func ParseCursor(r *http.Request, defaultLimit, maxLimit int) CursorParams {
 	}
 
 	return params
+}
+
+func parsePositiveInt(raw string, fallback int) int {
+	value, err := strconv.Atoi(raw)
+	if err != nil || value < 1 {
+		return fallback
+	}
+	return value
 }
 
 // CursorSlice trims a limit+1 result to limit items and derives the next
