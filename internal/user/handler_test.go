@@ -427,7 +427,7 @@ func TestUpdateMePersistsConnectionIntents(t *testing.T) {
 			return nil
 		},
 	}, &mockUploader{})
-	req := withUserID(httptest.NewRequest(http.MethodPatch, "/users/me", strings.NewReader(`{"connection_intents":["dating","support"]}`)), fixedUser)
+	req := withUserID(httptest.NewRequest(http.MethodPatch, "/users/me", strings.NewReader(`{"connection_intents":["dating"]}`)), fixedUser)
 	rec := httptest.NewRecorder()
 
 	h.UpdateMe(rec, req)
@@ -438,8 +438,8 @@ func TestUpdateMePersistsConnectionIntents(t *testing.T) {
 	if !gotReplace {
 		t.Fatal("expected connection_intents replacement flag to be true")
 	}
-	if len(gotIntents) != 2 || gotIntents[0] != "dating" || gotIntents[1] != "support" {
-		t.Fatalf("connectionIntents = %v, want [dating support]", gotIntents)
+	if len(gotIntents) != 2 || gotIntents[0] != "friends" || gotIntents[1] != "dating" {
+		t.Fatalf("connectionIntents = %v, want [friends dating]", gotIntents)
 	}
 }
 

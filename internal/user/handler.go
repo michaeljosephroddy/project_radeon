@@ -459,8 +459,6 @@ func normalizeConnectionIntent(raw string) (string, bool) {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
 	case "":
 		return "", true
-	case "support", "support_accountability", "support & accountability":
-		return "support", true
 	case "friends", "friend":
 		return "friends", true
 	case "dating", "open_to_dating", "open to dating":
@@ -471,11 +469,10 @@ func normalizeConnectionIntent(raw string) (string, bool) {
 }
 
 func normalizeConnectionIntents(raw []string) ([]string, bool) {
-	if len(raw) == 0 || len(raw) > 3 {
+	if len(raw) == 0 || len(raw) > 2 {
 		return nil, false
 	}
 	seen := make(map[string]struct{}, len(raw))
-	result := make([]string, 0, len(raw))
 	for _, item := range raw {
 		intent, ok := normalizeConnectionIntent(item)
 		if !ok || intent == "" {
@@ -485,9 +482,12 @@ func normalizeConnectionIntents(raw []string) ([]string, bool) {
 			return nil, false
 		}
 		seen[intent] = struct{}{}
-		result = append(result, intent)
 	}
-	slices.Sort(result)
+
+	result := []string{"friends"}
+	if _, exists := seen["dating"]; exists {
+		result = append(result, "dating")
+	}
 	return result, true
 }
 
@@ -610,7 +610,7 @@ func parseDiscoverRequest(r *http.Request, allowAdvanced bool) (DiscoverUsersPar
 	}
 	request.Intent, ok = normalizeConnectionIntent(r.URL.Query().Get("intent"))
 	if !ok {
-		return DiscoverUsersParams{}, fmt.Errorf("intent must be support, friends, or dating")
+		return DiscoverUsersParams{}, fmt.Errorf("intent must be friends or dating")
 	}
 	request.Sobriety, ok = normalizeSobrietyFilter(r.URL.Query().Get("sobriety"))
 	if !ok {

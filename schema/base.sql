@@ -25,7 +25,7 @@ CREATE TABLE IF NOT EXISTS users (
     location_updated_at TIMESTAMPTZ,
     discover_lat DOUBLE PRECISION,
     discover_lng DOUBLE PRECISION,
-    connection_intents TEXT[] NOT NULL DEFAULT ARRAY['support', 'friends']::TEXT[],
+    connection_intents TEXT[] NOT NULL DEFAULT ARRAY['friends']::TEXT[],
     sobriety_band SMALLINT,
     profile_completeness SMALLINT NOT NULL DEFAULT 0,
     last_active_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -34,8 +34,9 @@ CREATE TABLE IF NOT EXISTS users (
     CONSTRAINT users_subscription_tier_chk CHECK (subscription_tier IN ('free', 'plus')),
     CONSTRAINT users_subscription_status_chk CHECK (subscription_status IN ('inactive', 'active', 'canceled', 'expired')),
     CONSTRAINT users_connection_intents_chk CHECK (
-        cardinality(connection_intents) BETWEEN 1 AND 3
-        AND connection_intents <@ ARRAY['support', 'friends', 'dating']::TEXT[]
+        cardinality(connection_intents) BETWEEN 1 AND 2
+        AND connection_intents <@ ARRAY['friends', 'dating']::TEXT[]
+        AND connection_intents @> ARRAY['friends']::TEXT[]
     )
 );
 

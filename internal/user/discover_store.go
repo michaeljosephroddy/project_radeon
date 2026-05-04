@@ -338,9 +338,11 @@ func (s *pgStore) discoverSobrietyCandidates(ctx context.Context, params Discove
 }
 
 func (s *pgStore) discoverIntentCandidates(ctx context.Context, params DiscoverUsersParams, viewer discoverViewerFeatures, filters discoverFilters, limit int) ([]discoverCandidate, error) {
-	intents := viewer.ConnectionIntents
+	intents := make([]string, 0, 1)
 	if params.Intent != "" {
 		intents = []string{params.Intent}
+	} else if containsDiscoverIntent(viewer.ConnectionIntents, "dating") {
+		intents = []string{"dating"}
 	}
 	if len(intents) == 0 {
 		return nil, nil
@@ -368,6 +370,15 @@ func (s *pgStore) discoverIntentCandidates(ctx context.Context, params DiscoverU
 	defer rows.Close()
 
 	return scanDiscoverCandidates(rows, discoverSourceIntent)
+}
+
+func containsDiscoverIntent(intents []string, target string) bool {
+	for _, intent := range intents {
+		if intent == target {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *pgStore) discoverActiveFallbackCandidates(ctx context.Context, params DiscoverUsersParams, filters discoverFilters, limit int) ([]discoverCandidate, error) {
