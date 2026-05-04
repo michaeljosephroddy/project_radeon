@@ -319,16 +319,19 @@ type GroupJoinRequest struct {
 }
 
 type GroupAdminThread struct {
-	ID        uuid.UUID           `json:"id"`
-	GroupID   uuid.UUID           `json:"group_id"`
-	UserID    uuid.UUID           `json:"user_id"`
-	Username  string              `json:"username"`
-	AvatarURL *string             `json:"avatar_url,omitempty"`
-	Status    string              `json:"status"`
-	Subject   *string             `json:"subject,omitempty"`
-	CreatedAt time.Time           `json:"created_at"`
-	UpdatedAt time.Time           `json:"updated_at"`
-	Messages  []GroupAdminMessage `json:"messages,omitempty"`
+	ID            uuid.UUID           `json:"id"`
+	GroupID       uuid.UUID           `json:"group_id"`
+	UserID        uuid.UUID           `json:"user_id"`
+	Username      string              `json:"username"`
+	AvatarURL     *string             `json:"avatar_url,omitempty"`
+	Status        string              `json:"status"`
+	Subject       *string             `json:"subject,omitempty"`
+	CreatedAt     time.Time           `json:"created_at"`
+	UpdatedAt     time.Time           `json:"updated_at"`
+	LastMessage   *string             `json:"last_message"`
+	LastMessageAt *time.Time          `json:"last_message_at"`
+	UnreadCount   int                 `json:"unread_count"`
+	Messages      []GroupAdminMessage `json:"messages,omitempty"`
 }
 
 type GroupAdminMessage struct {

@@ -181,10 +181,6 @@ func (s *countingGroupStore) ReplyAdminThread(_ context.Context, viewerID, _ uui
 	return &GroupAdminMessage{ID: uuid.New(), ThreadID: threadID, SenderID: viewerID, Body: body}, nil
 }
 
-func (s *countingGroupStore) ResolveAdminThread(_ context.Context, viewerID, groupID, threadID uuid.UUID) (*GroupAdminThread, error) {
-	return &GroupAdminThread{ID: threadID, GroupID: groupID, UserID: viewerID}, nil
-}
-
 func (s *countingGroupStore) ReportTarget(_ context.Context, viewerID, groupID uuid.UUID, targetType string, targetID *uuid.UUID, reason string, details *string) (*GroupReport, error) {
 	return &GroupReport{ID: uuid.New(), GroupID: groupID, ReporterID: viewerID, TargetType: targetType, TargetID: targetID, Reason: reason, Details: details}, nil
 }

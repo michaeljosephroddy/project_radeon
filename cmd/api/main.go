@@ -186,7 +186,6 @@ func main() {
 		r.Get("/groups/{id}/admin-inbox", groupsHandler.ListAdminThreads)
 		r.Get("/groups/{id}/admin-inbox/{threadId}", groupsHandler.GetAdminThread)
 		r.Post("/groups/{id}/admin-inbox/{threadId}/messages", groupsHandler.ReplyAdminThread)
-		r.Post("/groups/{id}/admin-inbox/{threadId}/resolve", groupsHandler.ResolveAdminThread)
 		r.Post("/groups/{id}/report", groupsHandler.ReportTarget)
 		r.Get("/groups/{id}/reports", groupsHandler.ListReports)
 		r.Patch("/groups/{id}/reports/{reportId}", groupsHandler.ReviewReport)
