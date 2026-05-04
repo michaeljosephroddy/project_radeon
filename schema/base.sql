@@ -229,7 +229,7 @@ CREATE TABLE IF NOT EXISTS group_admin_threads (
     subject TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    CONSTRAINT group_admin_threads_status_chk CHECK (status IN ('open', 'resolved'))
+    CONSTRAINT group_admin_threads_status_chk CHECK (status IN ('open', 'replied', 'resolved'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_group_admin_threads_group_status_updated
@@ -246,6 +246,17 @@ CREATE TABLE IF NOT EXISTS group_admin_messages (
 
 CREATE INDEX IF NOT EXISTS idx_group_admin_messages_thread_created
     ON group_admin_messages(thread_id, created_at);
+
+CREATE TABLE IF NOT EXISTS group_admin_thread_reads (
+    thread_id UUID NOT NULL REFERENCES group_admin_threads(id) ON DELETE CASCADE,
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    last_read_message_id UUID REFERENCES group_admin_messages(id) ON DELETE SET NULL,
+    last_read_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (thread_id, user_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_group_admin_thread_reads_user_id
+    ON group_admin_thread_reads(user_id);
 
 CREATE TABLE IF NOT EXISTS group_reports (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

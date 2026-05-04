@@ -40,7 +40,6 @@ type Store interface {
 	ListAdminThreads(ctx context.Context, viewerID, groupID uuid.UUID, before *time.Time, limit int) ([]GroupAdminThread, error)
 	GetAdminThread(ctx context.Context, viewerID, groupID, threadID uuid.UUID) (*GroupAdminThread, error)
 	ReplyAdminThread(ctx context.Context, viewerID, groupID, threadID uuid.UUID, body string) (*GroupAdminMessage, error)
-	ResolveAdminThread(ctx context.Context, viewerID, groupID, threadID uuid.UUID) (*GroupAdminThread, error)
 	ReportTarget(ctx context.Context, viewerID, groupID uuid.UUID, targetType string, targetID *uuid.UUID, reason string, details *string) (*GroupReport, error)
 	ListReports(ctx context.Context, viewerID, groupID uuid.UUID, before *time.Time, limit int) ([]GroupReport, error)
 	ReviewReport(ctx context.Context, viewerID, groupID, reportID uuid.UUID, status string) (*GroupReport, error)
@@ -1225,7 +1224,7 @@ func (s *pgStore) ContactAdmins(ctx context.Context, viewerID, groupID uuid.UUID
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
-	return s.getAdminThread(ctx, groupID, threadID, true)
+	return s.getAdminThread(ctx, viewerID, groupID, threadID, true)
 }
 
 func (s *pgStore) ListAdminThreads(ctx context.Context, viewerID, groupID uuid.UUID, before *time.Time, limit int) ([]GroupAdminThread, error) {
@@ -1237,20 +1236,44 @@ func (s *pgStore) ListAdminThreads(ctx context.Context, viewerID, groupID uuid.U
 		return nil, ErrForbidden
 	}
 	rows, err := s.pool.Query(ctx, `
-		SELECT gat.id, gat.group_id, gat.user_id, u.username, u.avatar_url, gat.status, gat.subject, gat.created_at, gat.updated_at
+		SELECT
+			gat.id,
+			gat.group_id,
+			gat.user_id,
+			u.username,
+			u.avatar_url,
+			gat.status,
+			gat.subject,
+			gat.created_at,
+			gat.updated_at,
+			latest.body AS last_message,
+			latest.created_at AS last_message_at,
+			COALESCE(unread.count, 0)::int AS unread_count
 		FROM group_admin_threads gat
 		JOIN users u ON u.id = gat.user_id
+		LEFT JOIN group_admin_thread_reads gatr
+			ON gatr.thread_id = gat.id
+			AND gatr.user_id = $2
+		LEFT JOIN LATERAL (
+			SELECT gam.body, gam.created_at
+			FROM group_admin_messages gam
+			WHERE gam.thread_id = gat.id
+			ORDER BY gam.created_at DESC
+			LIMIT 1
+		) latest ON TRUE
+		LEFT JOIN LATERAL (
+			SELECT COUNT(*)::int AS count
+			FROM group_admin_messages gam_unread
+			WHERE gam_unread.thread_id = gat.id
+				AND gam_unread.sender_id != $2
+				AND (gatr.last_read_at IS NULL OR gam_unread.created_at > gatr.last_read_at)
+		) unread ON TRUE
 		WHERE gat.group_id = $1
-			AND ($2::timestamptz IS NULL OR gat.updated_at < $2)
-		ORDER BY
-			CASE gat.status
-				WHEN 'open' THEN 0
-				WHEN 'replied' THEN 1
-				ELSE 2
-			END,
-			gat.updated_at DESC
-		LIMIT $3`,
+			AND ($3::timestamptz IS NULL OR gat.updated_at < $3)
+		ORDER BY gat.updated_at DESC
+		LIMIT $4`,
 		groupID,
+		viewerID,
 		before,
 		limit,
 	)
@@ -1278,7 +1301,15 @@ func (s *pgStore) GetAdminThread(ctx context.Context, viewerID, groupID, threadI
 	if !canModerate(role) {
 		return nil, ErrForbidden
 	}
-	return s.getAdminThread(ctx, groupID, threadID, true)
+	thread, err := s.getAdminThread(ctx, viewerID, groupID, threadID, true)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.markAdminThreadRead(ctx, threadID, viewerID); err != nil {
+		return nil, err
+	}
+	thread.UnreadCount = 0
+	return thread, nil
 }
 
 func (s *pgStore) ReplyAdminThread(ctx context.Context, viewerID, groupID, threadID uuid.UUID, body string) (*GroupAdminMessage, error) {
@@ -1289,7 +1320,7 @@ func (s *pgStore) ReplyAdminThread(ctx context.Context, viewerID, groupID, threa
 	if !canModerate(role) {
 		return nil, ErrForbidden
 	}
-	messageID, err := s.replyAdminThreadOpen(ctx, threadID, groupID, viewerID, body)
+	messageID, err := s.replyAdminThread(ctx, threadID, groupID, viewerID, body)
 	if err != nil {
 		if err != pgx.ErrNoRows {
 			return nil, err
@@ -1310,10 +1341,13 @@ func (s *pgStore) ReplyAdminThread(ctx context.Context, viewerID, groupID, threa
 		return nil, ErrConflict
 	}
 
+	if err := s.markAdminThreadRead(ctx, threadID, viewerID); err != nil {
+		return nil, err
+	}
 	return s.getAdminMessage(ctx, messageID)
 }
 
-func (s *pgStore) replyAdminThreadOpen(
+func (s *pgStore) replyAdminThread(
 	ctx context.Context,
 	threadID, groupID, viewerID uuid.UUID,
 	body string,
@@ -1325,7 +1359,7 @@ func (s *pgStore) replyAdminThreadOpen(
 			SET updated_at = NOW()
 			WHERE id = $1
 				AND group_id = $2
-				AND status = 'open'
+				AND status != 'resolved'
 			RETURNING id
 		)
 		INSERT INTO group_admin_messages (thread_id, sender_id, body)
@@ -1340,30 +1374,6 @@ func (s *pgStore) replyAdminThreadOpen(
 		return uuid.Nil, err
 	}
 	return messageID, nil
-}
-
-func (s *pgStore) ResolveAdminThread(ctx context.Context, viewerID, groupID, threadID uuid.UUID) (*GroupAdminThread, error) {
-	role, err := s.requireActiveMembership(ctx, viewerID, groupID)
-	if err != nil {
-		return nil, err
-	}
-	if !canModerate(role) {
-		return nil, ErrForbidden
-	}
-	tag, err := s.pool.Exec(ctx, `
-		UPDATE group_admin_threads
-		SET status = 'resolved', updated_at = NOW()
-		WHERE id = $1 AND group_id = $2`,
-		threadID,
-		groupID,
-	)
-	if err != nil {
-		return nil, err
-	}
-	if tag.RowsAffected() == 0 {
-		return nil, ErrNotFound
-	}
-	return s.getAdminThread(ctx, groupID, threadID, true)
 }
 
 func (s *pgStore) ReportTarget(ctx context.Context, viewerID, groupID uuid.UUID, targetType string, targetID *uuid.UUID, reason string, details *string) (*GroupReport, error) {
@@ -2031,6 +2041,9 @@ func scanAdminThread(row groupScanner) (*GroupAdminThread, error) {
 		&thread.Subject,
 		&thread.CreatedAt,
 		&thread.UpdatedAt,
+		&thread.LastMessage,
+		&thread.LastMessageAt,
+		&thread.UnreadCount,
 	); err != nil {
 		if err == pgx.ErrNoRows {
 			return nil, ErrNotFound
@@ -2040,14 +2053,44 @@ func scanAdminThread(row groupScanner) (*GroupAdminThread, error) {
 	return &thread, nil
 }
 
-func (s *pgStore) getAdminThread(ctx context.Context, groupID, threadID uuid.UUID, includeMessages bool) (*GroupAdminThread, error) {
+func (s *pgStore) getAdminThread(ctx context.Context, viewerID, groupID, threadID uuid.UUID, includeMessages bool) (*GroupAdminThread, error) {
 	thread, err := scanAdminThread(s.pool.QueryRow(ctx, `
-		SELECT gat.id, gat.group_id, gat.user_id, u.username, u.avatar_url, gat.status, gat.subject, gat.created_at, gat.updated_at
+		SELECT
+			gat.id,
+			gat.group_id,
+			gat.user_id,
+			u.username,
+			u.avatar_url,
+			gat.status,
+			gat.subject,
+			gat.created_at,
+			gat.updated_at,
+			latest.body AS last_message,
+			latest.created_at AS last_message_at,
+			COALESCE(unread.count, 0)::int AS unread_count
 		FROM group_admin_threads gat
 		JOIN users u ON u.id = gat.user_id
+		LEFT JOIN group_admin_thread_reads gatr
+			ON gatr.thread_id = gat.id
+			AND gatr.user_id = $3
+		LEFT JOIN LATERAL (
+			SELECT gam.body, gam.created_at
+			FROM group_admin_messages gam
+			WHERE gam.thread_id = gat.id
+			ORDER BY gam.created_at DESC
+			LIMIT 1
+		) latest ON TRUE
+		LEFT JOIN LATERAL (
+			SELECT COUNT(*)::int AS count
+			FROM group_admin_messages gam_unread
+			WHERE gam_unread.thread_id = gat.id
+				AND gam_unread.sender_id != $3
+				AND (gatr.last_read_at IS NULL OR gam_unread.created_at > gatr.last_read_at)
+		) unread ON TRUE
 		WHERE gat.group_id = $1 AND gat.id = $2`,
 		groupID,
 		threadID,
+		viewerID,
 	))
 	if err != nil {
 		return nil, err
@@ -2076,6 +2119,28 @@ func (s *pgStore) getAdminThread(ctx context.Context, groupID, threadID uuid.UUI
 		thread.Messages = append(thread.Messages, *message)
 	}
 	return thread, rows.Err()
+}
+
+func (s *pgStore) markAdminThreadRead(ctx context.Context, threadID, userID uuid.UUID) error {
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO group_admin_thread_reads (thread_id, user_id, last_read_message_id, last_read_at)
+		SELECT gat.id, $2, latest.id, NOW()
+		FROM group_admin_threads gat
+		LEFT JOIN LATERAL (
+			SELECT gam.id
+			FROM group_admin_messages gam
+			WHERE gam.thread_id = gat.id
+			ORDER BY gam.created_at DESC
+			LIMIT 1
+		) latest ON TRUE
+		WHERE gat.id = $1
+		ON CONFLICT (thread_id, user_id) DO UPDATE
+		SET last_read_message_id = EXCLUDED.last_read_message_id,
+			last_read_at = EXCLUDED.last_read_at`,
+		threadID,
+		userID,
+	)
+	return err
 }
 
 func scanAdminMessage(row groupScanner) (*GroupAdminMessage, error) {

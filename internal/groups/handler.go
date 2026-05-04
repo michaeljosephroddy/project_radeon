@@ -760,7 +760,7 @@ func (h *Handler) ReplyAdminThread(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if errors.Is(err, ErrConflict) {
-		response.Error(w, http.StatusConflict, "thread is not open")
+		response.Error(w, http.StatusConflict, "thread is closed")
 		return
 	}
 	if err != nil {
@@ -772,29 +772,6 @@ func (h *Handler) ReplyAdminThread(w http.ResponseWriter, r *http.Request) {
 		_ = h.notifier.NotifyGroupAdminReply(r.Context(), groupID, threadID, message.ID, userID, message.Body)
 	}
 	response.Success(w, http.StatusCreated, message)
-}
-
-func (h *Handler) ResolveAdminThread(w http.ResponseWriter, r *http.Request) {
-	userID := middleware.CurrentUserID(r)
-	groupID, threadID, ok := parseGroupAndThreadID(w, r)
-	if !ok {
-		return
-	}
-	thread, err := h.store.ResolveAdminThread(r.Context(), userID, groupID, threadID)
-	if errors.Is(err, ErrNotFound) {
-		response.Error(w, http.StatusNotFound, "thread not found")
-		return
-	}
-	if errors.Is(err, ErrForbidden) {
-		response.Error(w, http.StatusForbidden, "you cannot resolve admin inbox")
-		return
-	}
-	if err != nil {
-		log.Printf("resolve admin thread failed for %s: %v", threadID, err)
-		response.Error(w, http.StatusInternalServerError, "could not resolve thread")
-		return
-	}
-	response.Success(w, http.StatusOK, thread)
 }
 
 func (h *Handler) ReportTarget(w http.ResponseWriter, r *http.Request) {

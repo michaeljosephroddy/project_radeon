@@ -229,11 +229,6 @@ func (m *mockStore) ReplyAdminThread(ctx context.Context, viewerID, groupID, thr
 	return &GroupAdminMessage{ID: uuid.New(), ThreadID: threadID, SenderID: viewerID, Username: "alex", Body: body, CreatedAt: time.Now().UTC()}, nil
 }
 
-func (m *mockStore) ResolveAdminThread(ctx context.Context, viewerID, groupID, threadID uuid.UUID) (*GroupAdminThread, error) {
-	now := time.Now().UTC()
-	return &GroupAdminThread{ID: threadID, GroupID: groupID, UserID: viewerID, Username: "alex", Status: "resolved", CreatedAt: now, UpdatedAt: now}, nil
-}
-
 func (m *mockStore) ReportTarget(ctx context.Context, viewerID, groupID uuid.UUID, targetType string, targetID *uuid.UUID, reason string, details *string) (*GroupReport, error) {
 	return &GroupReport{ID: uuid.New(), GroupID: groupID, ReporterID: viewerID, TargetType: targetType, TargetID: targetID, Reason: reason, Status: "open", CreatedAt: time.Now().UTC()}, nil
 }

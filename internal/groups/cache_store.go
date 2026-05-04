@@ -376,7 +376,12 @@ func (s *cachedStore) ListAdminThreads(ctx context.Context, viewerID, groupID uu
 }
 
 func (s *cachedStore) GetAdminThread(ctx context.Context, viewerID, groupID, threadID uuid.UUID) (*GroupAdminThread, error) {
-	return s.inner.GetAdminThread(ctx, viewerID, groupID, threadID)
+	thread, err := s.inner.GetAdminThread(ctx, viewerID, groupID, threadID)
+	if err != nil {
+		return nil, err
+	}
+	s.bumpGroupVersions(ctx, groupID, viewerID)
+	return thread, nil
 }
 
 func (s *cachedStore) ReplyAdminThread(ctx context.Context, viewerID, groupID, threadID uuid.UUID, body string) (*GroupAdminMessage, error) {
@@ -386,15 +391,6 @@ func (s *cachedStore) ReplyAdminThread(ctx context.Context, viewerID, groupID, t
 	}
 	s.bumpGroupVersions(ctx, groupID, viewerID)
 	return message, nil
-}
-
-func (s *cachedStore) ResolveAdminThread(ctx context.Context, viewerID, groupID, threadID uuid.UUID) (*GroupAdminThread, error) {
-	thread, err := s.inner.ResolveAdminThread(ctx, viewerID, groupID, threadID)
-	if err != nil {
-		return nil, err
-	}
-	s.bumpGroupVersions(ctx, groupID, viewerID)
-	return thread, nil
 }
 
 func (s *cachedStore) ReportTarget(ctx context.Context, viewerID, groupID uuid.UUID, targetType string, targetID *uuid.UUID, reason string, details *string) (*GroupReport, error) {
