@@ -27,6 +27,7 @@ type Querier interface {
 	GetLatestMessage(ctx context.Context, chatID uuid.UUID) (*Message, error)
 	ListChatMemberIDs(ctx context.Context, chatID uuid.UUID) ([]uuid.UUID, error)
 	FindDirectChat(ctx context.Context, userID, otherUserID uuid.UUID) (uuid.UUID, bool, error)
+	AreUsersBlocked(ctx context.Context, userID, otherUserID uuid.UUID) (bool, error)
 	CreateChat(ctx context.Context, userID uuid.UUID, isGroup bool, name *string, memberIDs []uuid.UUID) (uuid.UUID, error)
 	IsAddresseeOfChat(ctx context.Context, chatID, userID uuid.UUID) (bool, error)
 	AcceptChatRequest(ctx context.Context, chatID uuid.UUID) error
@@ -241,6 +242,16 @@ func (h *Handler) CreateChat(w http.ResponseWriter, r *http.Request) {
 	isGroup := len(input.MemberIDs) > 1
 
 	if !isGroup && len(input.MemberIDs) == 1 {
+		blocked, err := h.db.AreUsersBlocked(r.Context(), userID, input.MemberIDs[0])
+		if err != nil {
+			response.Error(w, http.StatusInternalServerError, "could not create chat")
+			return
+		}
+		if blocked {
+			response.Error(w, http.StatusForbidden, "you cannot message this user")
+			return
+		}
+
 		existingID, found, err := h.db.FindDirectChat(r.Context(), userID, input.MemberIDs[0])
 		if err != nil {
 			response.Error(w, http.StatusInternalServerError, "could not create chat")
@@ -254,6 +265,10 @@ func (h *Handler) CreateChat(w http.ResponseWriter, r *http.Request) {
 
 	chatID, err := h.db.CreateChat(r.Context(), userID, isGroup, input.Name, input.MemberIDs)
 	if err != nil {
+		if errors.Is(err, ErrForbidden) {
+			response.Error(w, http.StatusForbidden, "you cannot message this user")
+			return
+		}
 		response.Error(w, http.StatusInternalServerError, "could not create chat")
 		return
 	}

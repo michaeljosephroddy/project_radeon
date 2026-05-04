@@ -23,6 +23,7 @@ type mockQuerier struct {
 	getLatestMessage   func(ctx context.Context, chatID uuid.UUID) (*Message, error)
 	listChatMemberIDs  func(ctx context.Context, chatID uuid.UUID) ([]uuid.UUID, error)
 	findDirectChat     func(ctx context.Context, userID, otherUserID uuid.UUID) (uuid.UUID, bool, error)
+	areUsersBlocked    func(ctx context.Context, userID, otherUserID uuid.UUID) (bool, error)
 	createChat         func(ctx context.Context, userID uuid.UUID, isGroup bool, name *string, memberIDs []uuid.UUID) (uuid.UUID, error)
 	isAddresseeOfChat  func(ctx context.Context, chatID, userID uuid.UUID) (bool, error)
 	acceptChatRequest  func(ctx context.Context, chatID uuid.UUID) error
@@ -92,6 +93,12 @@ func (m *mockQuerier) FindDirectChat(ctx context.Context, userID, otherUserID uu
 		return m.findDirectChat(ctx, userID, otherUserID)
 	}
 	return uuid.Nil, false, nil
+}
+func (m *mockQuerier) AreUsersBlocked(ctx context.Context, userID, otherUserID uuid.UUID) (bool, error) {
+	if m.areUsersBlocked != nil {
+		return m.areUsersBlocked(ctx, userID, otherUserID)
+	}
+	return false, nil
 }
 func (m *mockQuerier) CreateChat(ctx context.Context, userID uuid.UUID, isGroup bool, name *string, memberIDs []uuid.UUID) (uuid.UUID, error) {
 	if m.createChat != nil {

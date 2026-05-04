@@ -29,6 +29,7 @@ const discoverProfileCompletenessExpr = `(
 		WHEN EXISTS (SELECT 1 FROM user_interests ui WHERE ui.user_id = u.id) THEN 1
 		ELSE 0
 	  END
+	+ CASE WHEN cardinality(u.connection_intents) > 0 THEN 1 ELSE 0 END
 )::smallint`
 
 // NewPgStore wraps a pgxpool.Pool as the production Querier implementation.
@@ -53,6 +54,7 @@ func (s *pgStore) GetUser(ctx context.Context, viewerID, userID uuid.UUID) (*Use
 			u.country,
 			u.bio,
 			COALESCE(interest_names.items, '{}') AS interests,
+			u.connection_intents,
 			u.gender,
 			CASE
 				WHEN u.birth_date IS NULL THEN NULL
@@ -103,7 +105,7 @@ func (s *pgStore) GetUser(ctx context.Context, viewerID, userID uuid.UUID) (*Use
 		WHERE u.id = $2`,
 		viewerID, userID,
 	).Scan(
-		&u.ID, &u.Username, &u.AvatarURL, &u.BannerURL, &u.IsPlus, &u.SubscriptionTier, &u.SubscriptionStatus, &u.City, &u.Country, &u.Bio, &u.Interests, &u.Gender, &u.BirthDate, &u.SoberSince, &u.CreatedAt,
+		&u.ID, &u.Username, &u.AvatarURL, &u.BannerURL, &u.IsPlus, &u.SubscriptionTier, &u.SubscriptionStatus, &u.City, &u.Country, &u.Bio, &u.Interests, &u.ConnectionIntents, &u.Gender, &u.BirthDate, &u.SoberSince, &u.CreatedAt,
 		&u.FriendshipStatus, &u.FriendCount, &u.IncomingFriendRequestCt, &u.OutgoingFriendRequestCt,
 		&u.CurrentCity, &u.LocationUpdatedAt,
 	)
@@ -125,7 +127,7 @@ func (s *pgStore) UsernameExistsForOthers(ctx context.Context, username string, 
 	return exists, err
 }
 
-func (s *pgStore) UpdateUser(ctx context.Context, userID uuid.UUID, username, city, country, gender, bio *string, soberSince *time.Time, replaceSoberSince bool, birthDate *time.Time, replaceBirthDate bool, interests []string, replaceInterests bool, lat, lng *float64) error {
+func (s *pgStore) UpdateUser(ctx context.Context, userID uuid.UUID, username, city, country, gender, bio *string, soberSince *time.Time, replaceSoberSince bool, birthDate *time.Time, replaceBirthDate bool, interests []string, replaceInterests bool, connectionIntents []string, replaceConnectionIntents bool, lat, lng *float64) error {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return err
@@ -155,9 +157,13 @@ func (s *pgStore) UpdateUser(ctx context.Context, userID uuid.UUID, username, ci
 				ELSE $9::date
 			END,
 			lat = COALESCE($11::float8, lat),
-			lng = COALESCE($12::float8, lng)
+			lng = COALESCE($12::float8, lng),
+			connection_intents = CASE
+				WHEN NOT $13 THEN connection_intents
+				ELSE $14::text[]
+			END
 		WHERE id = $10`,
-		username, city, country, gender, bio, replaceSoberSince, soberSince, replaceBirthDate, birthDate, userID, lat, lng,
+		username, city, country, gender, bio, replaceSoberSince, soberSince, replaceBirthDate, birthDate, userID, lat, lng, replaceConnectionIntents, connectionIntents,
 	)
 	if err != nil {
 		return err
@@ -200,6 +206,58 @@ func (s *pgStore) UpdateCurrentLocation(ctx context.Context, userID uuid.UUID, l
 			discover_lng = $3
 		WHERE id = $1`,
 		userID, lat, lng, city,
+	)
+	return err
+}
+
+func (s *pgStore) BlockUser(ctx context.Context, blockerID, blockedID uuid.UUID) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO user_blocks (blocker_id, blocked_id)
+		VALUES ($1, $2)
+		ON CONFLICT (blocker_id, blocked_id) DO NOTHING`,
+		blockerID,
+		blockedID,
+	); err != nil {
+		return err
+	}
+
+	if _, err := tx.Exec(ctx,
+		`DELETE FROM friendships
+		WHERE (user_a_id = $1 AND user_b_id = $2)
+			OR (user_a_id = $2 AND user_b_id = $1)`,
+		blockerID,
+		blockedID,
+	); err != nil {
+		return err
+	}
+
+	return tx.Commit(ctx)
+}
+
+func (s *pgStore) UnblockUser(ctx context.Context, blockerID, blockedID uuid.UUID) error {
+	_, err := s.pool.Exec(ctx,
+		`DELETE FROM user_blocks
+		WHERE blocker_id = $1 AND blocked_id = $2`,
+		blockerID,
+		blockedID,
+	)
+	return err
+}
+
+func (s *pgStore) ReportUser(ctx context.Context, reporterID, reportedUserID uuid.UUID, reason string, details *string) error {
+	_, err := s.pool.Exec(ctx,
+		`INSERT INTO user_reports (reporter_id, reported_user_id, reason, details)
+		VALUES ($1, $2, $3, $4)`,
+		reporterID,
+		reportedUserID,
+		reason,
+		details,
 	)
 	return err
 }
@@ -290,6 +348,12 @@ func (s *pgStore) CountDiscoverUsers(ctx context.Context, params DiscoverUsersPa
 		`SELECT COUNT(*)
 		FROM users u
 		WHERE u.id != $1
+			AND NOT EXISTS (
+				SELECT 1
+				FROM user_blocks ub
+				WHERE (ub.blocker_id = $1 AND ub.blocked_id = u.id)
+					OR (ub.blocker_id = u.id AND ub.blocked_id = $1)
+			)
 			AND ($2 = '' OR u.city ILIKE $2)
 			AND ($3 = '' OR u.username ILIKE '%' || $3 || '%')
 			AND ($4 = '' OR u.gender = $4)
@@ -320,8 +384,9 @@ func (s *pgStore) CountDiscoverUsers(ctx context.Context, params DiscoverUsersPa
 					WHERE ui.user_id = u.id
 					  AND i.name = ANY($11::text[])
 				)
-			)`,
-		params.CurrentUserID, params.City, params.Query, params.Gender, params.AgeMin, params.AgeMax, sobrietyMinDays, params.Lat, params.Lng, params.DistanceKm, nullableTextArray(params.Interests),
+			)
+			AND ($12 = '' OR u.connection_intents @> ARRAY[$12]::text[])`,
+		params.CurrentUserID, params.City, params.Query, params.Gender, params.AgeMin, params.AgeMax, sobrietyMinDays, params.Lat, params.Lng, params.DistanceKm, nullableTextArray(params.Interests), params.Intent,
 	).Scan(&count)
 	if err != nil {
 		return 0, err
@@ -358,6 +423,7 @@ func (s *pgStore) discoverBySearch(ctx context.Context, params DiscoverUsersPara
 			u.country,
 			u.bio,
 			COALESCE(interest_names.items, '{}') AS interests,
+			u.connection_intents,
 			u.gender,
 			CASE
 				WHEN u.birth_date IS NULL THEN NULL
@@ -390,6 +456,12 @@ func (s *pgStore) discoverBySearch(ctx context.Context, params DiscoverUsersPara
 				WHERE (fx.user_a_id = $1 AND fx.user_b_id = u.id)
 					OR (fx.user_b_id = $1 AND fx.user_a_id = u.id)
 			)
+			AND NOT EXISTS (
+				SELECT 1
+				FROM user_blocks ub
+				WHERE (ub.blocker_id = $1 AND ub.blocked_id = u.id)
+					OR (ub.blocker_id = u.id AND ub.blocked_id = $1)
+			)
 			AND ($2 = '' OR COALESCE(u.current_city, u.city) ILIKE $2)
 			AND u.username ILIKE '%' || $3 || '%'
 			AND ($4 = '' OR u.gender = $4)
@@ -421,6 +493,7 @@ func (s *pgStore) discoverBySearch(ctx context.Context, params DiscoverUsersPara
 						  AND i.name = ANY($11::text[])
 					)
 				)
+				AND ($16 = '' OR u.connection_intents @> ARRAY[$16]::text[])
 				AND (
 					$13::int IS NULL
 					OR (
@@ -454,7 +527,7 @@ func (s *pgStore) discoverBySearch(ctx context.Context, params DiscoverUsersPara
 				u.created_at DESC,
 				u.id ASC
 			LIMIT $12`,
-		params.CurrentUserID, params.City, params.Query, params.Gender, params.AgeMin, params.AgeMax, sobrietyMinDays, params.Lat, params.Lng, params.DistanceKm, nullableTextArray(params.Interests), params.Limit, cursorRank, cursorCreatedAt, cursorID,
+		params.CurrentUserID, params.City, params.Query, params.Gender, params.AgeMin, params.AgeMax, sobrietyMinDays, params.Lat, params.Lng, params.DistanceKm, nullableTextArray(params.Interests), params.Limit, cursorRank, cursorCreatedAt, cursorID, params.Intent,
 	)
 	if err != nil {
 		return nil, err
@@ -496,6 +569,7 @@ func (s *pgStore) discoverRanked(ctx context.Context, params DiscoverUsersParams
 				u.city,
 				u.country,
 				u.bio,
+				u.connection_intents,
 				u.gender,
 				u.birth_date,
 				u.sober_since,
@@ -523,6 +597,12 @@ func (s *pgStore) discoverRanked(ctx context.Context, params DiscoverUsersParams
 				OR (f.user_b_id = $1 AND f.user_a_id = u.id)
 			)
 			WHERE u.id != $1
+			  AND NOT EXISTS (
+				SELECT 1
+				FROM user_blocks ub
+				WHERE (ub.blocker_id = $1 AND ub.blocked_id = u.id)
+					OR (ub.blocker_id = u.id AND ub.blocked_id = $1)
+			  )
 			  AND ($2 = '' OR u.city ILIKE $2)
 			  AND ($3 = '' OR u.gender = $3)
 			  AND ($4::int IS NULL OR (u.birth_date IS NOT NULL AND u.birth_date <= CURRENT_DATE - make_interval(years => $4::int)))
@@ -550,9 +630,10 @@ func (s *pgStore) discoverRanked(ctx context.Context, params DiscoverUsersParams
 					FROM user_interests ui
 					JOIN interests i ON i.id = ui.interest_id
 					WHERE ui.user_id = u.id
-					  AND i.name = ANY($10::text[])
+				  AND i.name = ANY($10::text[])
 				)
 			  )
+			  AND ($13 = '' OR u.connection_intents @> ARRAY[$13]::text[])
 		)
 		SELECT
 			c.id,
@@ -565,6 +646,7 @@ func (s *pgStore) discoverRanked(ctx context.Context, params DiscoverUsersParams
 			c.country,
 			c.bio,
 			COALESCE(interest_names.items, '{}') AS interests,
+			c.connection_intents,
 			c.gender,
 			CASE
 				WHEN c.birth_date IS NULL THEN NULL
@@ -644,7 +726,7 @@ func (s *pgStore) discoverRanked(ctx context.Context, params DiscoverUsersParams
 		) active ON true
 		ORDER BY score DESC, c.id
 		LIMIT $11 OFFSET $12`,
-		params.CurrentUserID, params.City, params.Gender, params.AgeMin, params.AgeMax, sobrietyMinDays, params.Lat, params.Lng, params.DistanceKm, nullableTextArray(params.Interests), params.Limit, params.Offset,
+		params.CurrentUserID, params.City, params.Gender, params.AgeMin, params.AgeMax, sobrietyMinDays, params.Lat, params.Lng, params.DistanceKm, nullableTextArray(params.Interests), params.Limit, params.Offset, params.Intent,
 	)
 	if err != nil {
 		return nil, err
@@ -655,7 +737,7 @@ func (s *pgStore) discoverRanked(ctx context.Context, params DiscoverUsersParams
 	var score float64
 	for rows.Next() {
 		var u User
-		if err := rows.Scan(&u.ID, &u.Username, &u.AvatarURL, &u.IsPlus, &u.SubscriptionTier, &u.SubscriptionStatus, &u.City, &u.Country, &u.Bio, &u.Interests, &u.Gender, &u.BirthDate, &u.SoberSince, &u.CreatedAt, &u.FriendshipStatus, &score); err != nil {
+		if err := rows.Scan(&u.ID, &u.Username, &u.AvatarURL, &u.IsPlus, &u.SubscriptionTier, &u.SubscriptionStatus, &u.City, &u.Country, &u.Bio, &u.Interests, &u.ConnectionIntents, &u.Gender, &u.BirthDate, &u.SoberSince, &u.CreatedAt, &u.FriendshipStatus, &score); err != nil {
 			return nil, err
 		}
 		users = append(users, u)
@@ -671,7 +753,7 @@ func scanUsers(rows interface {
 	var users []User
 	for rows.Next() {
 		var u User
-		if err := rows.Scan(&u.ID, &u.Username, &u.AvatarURL, &u.IsPlus, &u.SubscriptionTier, &u.SubscriptionStatus, &u.City, &u.Country, &u.Bio, &u.Interests, &u.Gender, &u.BirthDate, &u.SoberSince, &u.CreatedAt, &u.FriendshipStatus); err != nil {
+		if err := rows.Scan(&u.ID, &u.Username, &u.AvatarURL, &u.IsPlus, &u.SubscriptionTier, &u.SubscriptionStatus, &u.City, &u.Country, &u.Bio, &u.Interests, &u.ConnectionIntents, &u.Gender, &u.BirthDate, &u.SoberSince, &u.CreatedAt, &u.FriendshipStatus); err != nil {
 			return nil, err
 		}
 		users = append(users, u)

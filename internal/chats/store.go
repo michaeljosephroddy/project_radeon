@@ -490,12 +490,37 @@ func (s *pgStore) FindDirectChat(ctx context.Context, userID, otherUserID uuid.U
 	return chatID, true, nil
 }
 
+func (s *pgStore) AreUsersBlocked(ctx context.Context, userID, otherUserID uuid.UUID) (bool, error) {
+	var blocked bool
+	err := s.pool.QueryRow(ctx,
+		`SELECT EXISTS (
+			SELECT 1
+			FROM user_blocks ub
+			WHERE (ub.blocker_id = $1 AND ub.blocked_id = $2)
+				OR (ub.blocker_id = $2 AND ub.blocked_id = $1)
+		)`,
+		userID,
+		otherUserID,
+	).Scan(&blocked)
+	return blocked, err
+}
+
 func (s *pgStore) CreateChat(ctx context.Context, userID uuid.UUID, isGroup bool, name *string, memberIDs []uuid.UUID) (uuid.UUID, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return uuid.Nil, err
 	}
 	defer tx.Rollback(ctx)
+
+	if !isGroup && len(memberIDs) == 1 {
+		blocked, err := s.AreUsersBlocked(ctx, userID, memberIDs[0])
+		if err != nil {
+			return uuid.Nil, err
+		}
+		if blocked {
+			return uuid.Nil, ErrForbidden
+		}
+	}
 
 	var chatID uuid.UUID
 	if err := tx.QueryRow(ctx,
@@ -699,6 +724,25 @@ func (s *pgStore) InsertMessage(ctx context.Context, chatID, userID uuid.UUID, b
 				last_message_sender_id = $2
 			WHERE id = $1
 				AND status = 'active'
+				AND NOT EXISTS (
+					SELECT 1
+					FROM chat_members sender_cm
+					JOIN chat_members other_cm
+						ON other_cm.chat_id = sender_cm.chat_id
+						AND other_cm.user_id != sender_cm.user_id
+					JOIN user_blocks ub
+						ON (
+							ub.blocker_id = sender_cm.user_id
+							AND ub.blocked_id = other_cm.user_id
+						)
+						OR (
+							ub.blocker_id = other_cm.user_id
+							AND ub.blocked_id = sender_cm.user_id
+						)
+					WHERE sender_cm.chat_id = chats.id
+						AND sender_cm.user_id = $2
+						AND NOT chats.is_group
+				)
 			RETURNING next_message_seq - 1 AS assigned_seq, last_message_at
 		),
 		inserted AS (
