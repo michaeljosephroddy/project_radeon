@@ -13,6 +13,12 @@ dev:
 build:
 	$(GO) build -o bin/project_radeon ./cmd/api
 
+test:
+	$(GO) test ./...
+
+vet:
+	$(GO) vet ./...
+
 tidy:
 	$(GO) mod tidy
 
@@ -22,4 +28,4 @@ migrate:
 migrate-status:
 	$(MIGRATE) status
 
-.PHONY: run dev build tidy migrate migrate-status
+.PHONY: run dev build test vet tidy migrate migrate-status

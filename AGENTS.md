@@ -5,15 +5,19 @@ This file provides guidance to Codex when working with code in this repository.
 ## Commands
 
 ```bash
-make run        # Start the API server (go run ./cmd/api)
+make run        # Start the API server with air
 make build      # Compile to bin/project_radeon
+make test       # Run the backend test suite
+make vet        # Run Go static analysis
 make tidy       # go mod tidy
-make migrate    # Apply migrations: psql $(DATABASE_URL) -f migrations/001_bootstrap.sql
+make migrate    # Apply migrations with cmd/migrate
+go test ./...    # Run the backend test suite
+go vet ./...     # Run Go static analysis
 ```
 
 Requires a `.env` file (see `.env.example`) with `PORT`, `ENV`, `DATABASE_URL`, `JWT_SECRET`, and `JWT_EXPIRY_HOURS`.
 
-There are no tests in this project.
+Tests are present across the domain and shared packages. Run `go test ./...` before considering backend cleanup or feature work complete.
 
 ## Architecture
 
