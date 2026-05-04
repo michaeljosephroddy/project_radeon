@@ -30,7 +30,19 @@ func (s *stubQuerier) UsernameExistsForOthers(context.Context, string, uuid.UUID
 	return false, nil
 }
 
-func (s *stubQuerier) UpdateUser(context.Context, uuid.UUID, *string, *string, *string, *string, *string, *time.Time, bool, *time.Time, bool, []string, bool, *float64, *float64) error {
+func (s *stubQuerier) UpdateUser(context.Context, uuid.UUID, *string, *string, *string, *string, *string, *time.Time, bool, *time.Time, bool, []string, bool, []string, bool, *float64, *float64) error {
+	return nil
+}
+
+func (s *stubQuerier) BlockUser(context.Context, uuid.UUID, uuid.UUID) error {
+	return nil
+}
+
+func (s *stubQuerier) UnblockUser(context.Context, uuid.UUID, uuid.UUID) error {
+	return nil
+}
+
+func (s *stubQuerier) ReportUser(context.Context, uuid.UUID, uuid.UUID, string, *string) error {
 	return nil
 }
 
@@ -91,7 +103,7 @@ func TestCachedStoreGetUserCachesAndInvalidates(t *testing.T) {
 		t.Fatalf("expected cached response to preserve CreatedAt, got %v and %v", first.CreatedAt, second.CreatedAt)
 	}
 
-	if err := cached.UpdateUser(context.Background(), userID, nil, nil, nil, nil, nil, nil, false, nil, false, nil, false, nil, nil); err != nil {
+	if err := cached.UpdateUser(context.Background(), userID, nil, nil, nil, nil, nil, nil, false, nil, false, nil, false, nil, false, nil, nil); err != nil {
 		t.Fatalf("UpdateUser: %v", err)
 	}
 
@@ -202,7 +214,7 @@ func TestCachedStoreCountDiscoverUsersCachesAndInvalidates(t *testing.T) {
 		t.Fatalf("expected one underlying CountDiscoverUsers call after cache hit, got %d", inner.countDiscoverCalls)
 	}
 
-	if err := cached.UpdateUser(context.Background(), viewerID, nil, nil, nil, nil, nil, nil, false, nil, false, nil, false, nil, nil); err != nil {
+	if err := cached.UpdateUser(context.Background(), viewerID, nil, nil, nil, nil, nil, nil, false, nil, false, nil, false, nil, false, nil, nil); err != nil {
 		t.Fatalf("UpdateUser: %v", err)
 	}
 

@@ -25,13 +25,19 @@ CREATE TABLE IF NOT EXISTS users (
     location_updated_at TIMESTAMPTZ,
     discover_lat DOUBLE PRECISION,
     discover_lng DOUBLE PRECISION,
+    connection_intents TEXT[] NOT NULL DEFAULT ARRAY['friends']::TEXT[],
     sobriety_band SMALLINT,
     profile_completeness SMALLINT NOT NULL DEFAULT 0,
     last_active_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     CONSTRAINT users_username_format_chk CHECK (username ~ '^[a-z0-9._]{3,20}$'),
     CONSTRAINT users_subscription_tier_chk CHECK (subscription_tier IN ('free', 'plus')),
-    CONSTRAINT users_subscription_status_chk CHECK (subscription_status IN ('inactive', 'active', 'canceled', 'expired'))
+    CONSTRAINT users_subscription_status_chk CHECK (subscription_status IN ('inactive', 'active', 'canceled', 'expired')),
+    CONSTRAINT users_connection_intents_chk CHECK (
+        cardinality(connection_intents) BETWEEN 1 AND 2
+        AND connection_intents <@ ARRAY['friends', 'dating']::TEXT[]
+        AND connection_intents @> ARRAY['friends']::TEXT[]
+    )
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS users_email_unique_idx
@@ -54,6 +60,9 @@ CREATE INDEX IF NOT EXISTS idx_users_last_active_at_desc
 
 CREATE INDEX IF NOT EXISTS idx_users_discover_lat_lng
     ON users(discover_lat, discover_lng);
+
+CREATE INDEX IF NOT EXISTS idx_users_connection_intents
+    ON users USING GIN(connection_intents);
 
 CREATE TABLE IF NOT EXISTS interests (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -1063,6 +1072,38 @@ CREATE INDEX IF NOT EXISTS idx_friendships_status_user_a
 
 CREATE INDEX IF NOT EXISTS idx_friendships_status_user_b
     ON friendships(status, user_b_id);
+
+CREATE TABLE IF NOT EXISTS user_blocks (
+    blocker_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    blocked_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (blocker_id, blocked_id),
+    CHECK (blocker_id <> blocked_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_blocks_blocked_id
+    ON user_blocks(blocked_id);
+
+CREATE TABLE IF NOT EXISTS user_reports (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    reporter_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    reported_user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    reason TEXT NOT NULL,
+    details TEXT,
+    status TEXT NOT NULL DEFAULT 'open',
+    reviewed_by UUID REFERENCES users(id) ON DELETE SET NULL,
+    reviewed_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CHECK (reporter_id <> reported_user_id),
+    CONSTRAINT user_reports_reason_chk CHECK (reason IN ('unwanted_advances', 'harassment', 'spam', 'safety_concern', 'other')),
+    CONSTRAINT user_reports_status_chk CHECK (status IN ('open', 'reviewing', 'resolved', 'dismissed'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_reports_reported_status_created
+    ON user_reports(reported_user_id, status, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_user_reports_reporter_created
+    ON user_reports(reporter_id, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS discover_impressions (
     viewer_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,

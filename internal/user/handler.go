@@ -32,6 +32,7 @@ type DiscoverUsersParams struct {
 	City          string
 	Query         string
 	Gender        string
+	Intent        string
 	Sobriety      string
 	AgeMin        *int
 	AgeMax        *int
@@ -56,6 +57,7 @@ type DiscoverPreviewResponse struct {
 
 type DiscoverPreviewFilters struct {
 	Gender     string   `json:"gender,omitempty"`
+	Intent     string   `json:"intent,omitempty"`
 	Sobriety   string   `json:"sobriety,omitempty"`
 	AgeMin     *int     `json:"age_min,omitempty"`
 	AgeMax     *int     `json:"age_max,omitempty"`
@@ -67,13 +69,16 @@ type DiscoverPreviewFilters struct {
 type Querier interface {
 	GetUser(ctx context.Context, viewerID, userID uuid.UUID) (*User, error)
 	UsernameExistsForOthers(ctx context.Context, username string, userID uuid.UUID) (bool, error)
-	UpdateUser(ctx context.Context, userID uuid.UUID, username, city, country, gender, bio *string, soberSince *time.Time, replaceSoberSince bool, birthDate *time.Time, replaceBirthDate bool, interests []string, replaceInterests bool, lat, lng *float64) error
+	UpdateUser(ctx context.Context, userID uuid.UUID, username, city, country, gender, bio *string, soberSince *time.Time, replaceSoberSince bool, birthDate *time.Time, replaceBirthDate bool, interests []string, replaceInterests bool, connectionIntents []string, replaceConnectionIntents bool, lat, lng *float64) error
 	UpdateAvatarURL(ctx context.Context, userID uuid.UUID, avatarURL string) error
 	UpdateBannerURL(ctx context.Context, userID uuid.UUID, bannerURL string) error
 	UpdateCurrentLocation(ctx context.Context, userID uuid.UUID, lat, lng float64, city string) error
 	DiscoverUsers(ctx context.Context, params DiscoverUsersParams) ([]User, error)
 	CountDiscoverUsers(ctx context.Context, params DiscoverUsersParams) (int, error)
 	ListInterests(ctx context.Context) ([]string, error)
+	BlockUser(ctx context.Context, blockerID, blockedID uuid.UUID) error
+	UnblockUser(ctx context.Context, blockerID, blockedID uuid.UUID) error
+	ReportUser(ctx context.Context, reporterID, reportedUserID uuid.UUID, reason string, details *string) error
 }
 
 type Handler struct {
@@ -98,6 +103,7 @@ type User struct {
 	Country                 *string    `json:"country"`
 	Bio                     *string    `json:"bio"`
 	Interests               []string   `json:"interests"`
+	ConnectionIntents       []string   `json:"connection_intents"`
 	Gender                  *string    `json:"gender"`
 	BirthDate               *string    `json:"birth_date"`
 	SoberSince              *time.Time `json:"sober_since"`
@@ -142,16 +148,17 @@ func (h *Handler) UpdateMe(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.CurrentUserID(r)
 
 	var input struct {
-		Username   *string   `json:"username"`
-		City       *string   `json:"city"`
-		Country    *string   `json:"country"`
-		Gender     *string   `json:"gender"`
-		Bio        *string   `json:"bio"`
-		BirthDate  *string   `json:"birth_date"`
-		SoberSince *string   `json:"sober_since"`
-		Interests  *[]string `json:"interests"`
-		Lat        *float64  `json:"lat"`
-		Lng        *float64  `json:"lng"`
+		Username          *string   `json:"username"`
+		City              *string   `json:"city"`
+		Country           *string   `json:"country"`
+		Gender            *string   `json:"gender"`
+		Bio               *string   `json:"bio"`
+		BirthDate         *string   `json:"birth_date"`
+		SoberSince        *string   `json:"sober_since"`
+		Interests         *[]string `json:"interests"`
+		ConnectionIntents *[]string `json:"connection_intents"`
+		Lat               *float64  `json:"lat"`
+		Lng               *float64  `json:"lng"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
@@ -278,6 +285,16 @@ func (h *Handler) UpdateMe(w http.ResponseWriter, r *http.Request) {
 		slices.Sort(normalizedInterests)
 	}
 
+	normalizedIntents := make([]string, 0)
+	if input.ConnectionIntents != nil {
+		var ok bool
+		normalizedIntents, ok = normalizeConnectionIntents(*input.ConnectionIntents)
+		if !ok {
+			response.ValidationError(w, map[string]string{"connection_intents": "pick one or more valid connection intents"})
+			return
+		}
+	}
+
 	if err := h.db.UpdateUser(
 		r.Context(),
 		userID,
@@ -292,6 +309,8 @@ func (h *Handler) UpdateMe(w http.ResponseWriter, r *http.Request) {
 		input.BirthDate != nil,
 		normalizedInterests,
 		input.Interests != nil,
+		normalizedIntents,
+		input.ConnectionIntents != nil,
 		input.Lat,
 		input.Lng,
 	); err != nil {
@@ -302,6 +321,79 @@ func (h *Handler) UpdateMe(w http.ResponseWriter, r *http.Request) {
 
 	user, _ := h.db.GetUser(r.Context(), userID, userID)
 	response.Success(w, http.StatusOK, user)
+}
+
+func (h *Handler) BlockUser(w http.ResponseWriter, r *http.Request) {
+	userID := middleware.CurrentUserID(r)
+	targetID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		response.Error(w, http.StatusBadRequest, "invalid user id")
+		return
+	}
+	if userID == targetID {
+		response.Error(w, http.StatusBadRequest, "you cannot block yourself")
+		return
+	}
+	if err := h.db.BlockUser(r.Context(), userID, targetID); err != nil {
+		log.Printf("block user failed for %s -> %s: %v", userID, targetID, err)
+		response.Error(w, http.StatusInternalServerError, "could not block user")
+		return
+	}
+	response.Success(w, http.StatusOK, map[string]bool{"blocked": true})
+}
+
+func (h *Handler) UnblockUser(w http.ResponseWriter, r *http.Request) {
+	userID := middleware.CurrentUserID(r)
+	targetID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		response.Error(w, http.StatusBadRequest, "invalid user id")
+		return
+	}
+	if err := h.db.UnblockUser(r.Context(), userID, targetID); err != nil {
+		log.Printf("unblock user failed for %s -> %s: %v", userID, targetID, err)
+		response.Error(w, http.StatusInternalServerError, "could not unblock user")
+		return
+	}
+	response.Success(w, http.StatusOK, map[string]bool{"blocked": false})
+}
+
+func (h *Handler) ReportUser(w http.ResponseWriter, r *http.Request) {
+	userID := middleware.CurrentUserID(r)
+	targetID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		response.Error(w, http.StatusBadRequest, "invalid user id")
+		return
+	}
+	if userID == targetID {
+		response.Error(w, http.StatusBadRequest, "you cannot report yourself")
+		return
+	}
+
+	var input struct {
+		Reason  string  `json:"reason"`
+		Details *string `json:"details"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		response.Error(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	reason, ok := normalizeUserReportReason(input.Reason)
+	if !ok {
+		response.ValidationError(w, map[string]string{"reason": "invalid report reason"})
+		return
+	}
+	details := trimOptional(input.Details)
+	if details != nil && len(*details) > 1000 {
+		response.ValidationError(w, map[string]string{"details": "details must be 1000 characters or fewer"})
+		return
+	}
+	if err := h.db.ReportUser(r.Context(), userID, targetID, reason, details); err != nil {
+		log.Printf("report user failed for %s -> %s: %v", userID, targetID, err)
+		response.Error(w, http.StatusInternalServerError, "could not report user")
+		return
+	}
+	response.Success(w, http.StatusCreated, map[string]bool{"reported": true})
 }
 
 // ListInterests returns the curated interest tags available for user profiles.
@@ -361,6 +453,70 @@ func normalizeProfileGender(raw string) (string, bool) {
 	default:
 		return "", false
 	}
+}
+
+func normalizeConnectionIntent(raw string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "":
+		return "", true
+	case "friends", "friend":
+		return "friends", true
+	case "dating", "open_to_dating", "open to dating":
+		return "dating", true
+	default:
+		return "", false
+	}
+}
+
+func normalizeConnectionIntents(raw []string) ([]string, bool) {
+	if len(raw) == 0 || len(raw) > 2 {
+		return nil, false
+	}
+	seen := make(map[string]struct{}, len(raw))
+	for _, item := range raw {
+		intent, ok := normalizeConnectionIntent(item)
+		if !ok || intent == "" {
+			return nil, false
+		}
+		if _, exists := seen[intent]; exists {
+			return nil, false
+		}
+		seen[intent] = struct{}{}
+	}
+
+	result := []string{"friends"}
+	if _, exists := seen["dating"]; exists {
+		result = append(result, "dating")
+	}
+	return result, true
+}
+
+func normalizeUserReportReason(raw string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "unwanted_advances", "unwanted advances":
+		return "unwanted_advances", true
+	case "harassment":
+		return "harassment", true
+	case "spam":
+		return "spam", true
+	case "safety_concern", "safety concern":
+		return "safety_concern", true
+	case "other":
+		return "other", true
+	default:
+		return "", false
+	}
+}
+
+func trimOptional(value *string) *string {
+	if value == nil {
+		return nil
+	}
+	trimmed := strings.TrimSpace(*value)
+	if trimmed == "" {
+		return nil
+	}
+	return &trimmed
 }
 
 func normalizeDiscoverGender(raw string) (string, bool) {
@@ -451,6 +607,10 @@ func parseDiscoverRequest(r *http.Request, allowAdvanced bool) (DiscoverUsersPar
 	request.Gender, ok = normalizeDiscoverGender(r.URL.Query().Get("gender"))
 	if !ok {
 		return DiscoverUsersParams{}, fmt.Errorf("gender must be woman, man, or non_binary")
+	}
+	request.Intent, ok = normalizeConnectionIntent(r.URL.Query().Get("intent"))
+	if !ok {
+		return DiscoverUsersParams{}, fmt.Errorf("intent must be friends or dating")
 	}
 	request.Sobriety, ok = normalizeSobrietyFilter(r.URL.Query().Get("sobriety"))
 	if !ok {
@@ -565,6 +725,9 @@ func discoverActiveFieldNames(params DiscoverUsersParams) []string {
 	if len(params.Interests) > 0 {
 		fields = append(fields, "interests")
 	}
+	if params.Intent != "" {
+		fields = append(fields, "intent")
+	}
 	if params.Sobriety != "" {
 		fields = append(fields, "sobriety")
 	}
@@ -599,12 +762,18 @@ func buildBroadenedDiscoverParams(params DiscoverUsersParams) (DiscoverUsersPara
 		relaxed = append(relaxed, "sobriety")
 	}
 
+	if params.Intent != "" {
+		broadened.Intent = ""
+		relaxed = append(relaxed, "intent")
+	}
+
 	return broadened, relaxed
 }
 
 func discoverPreviewFiltersFromParams(params DiscoverUsersParams) DiscoverPreviewFilters {
 	return DiscoverPreviewFilters{
 		Gender:     params.Gender,
+		Intent:     params.Intent,
 		Sobriety:   params.Sobriety,
 		AgeMin:     cloneInt(params.AgeMin),
 		AgeMax:     cloneInt(params.AgeMax),

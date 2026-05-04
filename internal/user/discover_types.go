@@ -14,6 +14,7 @@ const (
 	discoverSourceInterest = "interests"
 	discoverSourceSobriety = "sobriety"
 	discoverSourceActive   = "active"
+	discoverSourceIntent   = "intent"
 )
 
 const (
@@ -24,11 +25,12 @@ const (
 )
 
 type discoverViewerFeatures struct {
-	UserID       uuid.UUID
-	InterestIDs  []uuid.UUID
-	SobrietyBand *int
-	Lat          *float64
-	Lng          *float64
+	UserID            uuid.UUID
+	InterestIDs       []uuid.UUID
+	ConnectionIntents []string
+	SobrietyBand      *int
+	Lat               *float64
+	Lng               *float64
 }
 
 type discoverCandidate struct {
@@ -164,6 +166,7 @@ func discoverPrimarySource(candidate discoverCandidate) string {
 	priority := []string{
 		discoverSourceMutual,
 		discoverSourceInterest,
+		discoverSourceIntent,
 		discoverSourceNearby,
 		discoverSourceSobriety,
 		discoverSourceActive,

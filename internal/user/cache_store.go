@@ -65,8 +65,8 @@ func (s *cachedStore) UsernameExistsForOthers(ctx context.Context, username stri
 	return s.inner.UsernameExistsForOthers(ctx, username, userID)
 }
 
-func (s *cachedStore) UpdateUser(ctx context.Context, userID uuid.UUID, username, city, country, gender, bio *string, soberSince *time.Time, replaceSoberSince bool, birthDate *time.Time, replaceBirthDate bool, interests []string, replaceInterests bool, lat, lng *float64) error {
-	if err := s.inner.UpdateUser(ctx, userID, username, city, country, gender, bio, soberSince, replaceSoberSince, birthDate, replaceBirthDate, interests, replaceInterests, lat, lng); err != nil {
+func (s *cachedStore) UpdateUser(ctx context.Context, userID uuid.UUID, username, city, country, gender, bio *string, soberSince *time.Time, replaceSoberSince bool, birthDate *time.Time, replaceBirthDate bool, interests []string, replaceInterests bool, connectionIntents []string, replaceConnectionIntents bool, lat, lng *float64) error {
+	if err := s.inner.UpdateUser(ctx, userID, username, city, country, gender, bio, soberSince, replaceSoberSince, birthDate, replaceBirthDate, interests, replaceInterests, connectionIntents, replaceConnectionIntents, lat, lng); err != nil {
 		return err
 	}
 
@@ -137,6 +137,7 @@ func (s *cachedStore) DiscoverUsers(ctx context.Context, params DiscoverUsersPar
 		"city", encodePart(params.City),
 		"query", encodePart(params.Query),
 		"gender", encodePart(params.Gender),
+		"intent", encodePart(params.Intent),
 		"sobriety", encodePart(params.Sobriety),
 		"age_min", intPart(params.AgeMin),
 		"age_max", intPart(params.AgeMax),
@@ -176,6 +177,7 @@ func (s *cachedStore) discoverUsersFromRankedWindowCache(ctx context.Context, st
 		"city", encodePart(params.City),
 		"query", encodePart(params.Query),
 		"gender", encodePart(params.Gender),
+		"intent", encodePart(params.Intent),
 		"sobriety", encodePart(params.Sobriety),
 		"age_min", intPart(params.AgeMin),
 		"age_max", intPart(params.AgeMax),
@@ -226,6 +228,7 @@ func (s *cachedStore) CountDiscoverUsers(ctx context.Context, params DiscoverUse
 		"city", encodePart(params.City),
 		"query", encodePart(params.Query),
 		"gender", encodePart(params.Gender),
+		"intent", encodePart(params.Intent),
 		"sobriety", encodePart(params.Sobriety),
 		"age_min", intPart(params.AgeMin),
 		"age_max", intPart(params.AgeMax),
@@ -266,6 +269,36 @@ func (s *cachedStore) ListInterests(ctx context.Context) ([]string, error) {
 	}
 
 	return interests, nil
+}
+
+func (s *cachedStore) BlockUser(ctx context.Context, blockerID, blockedID uuid.UUID) error {
+	if err := s.inner.BlockUser(ctx, blockerID, blockedID); err != nil {
+		return err
+	}
+	return s.cache.BumpVersions(ctx,
+		s.userVersionKey(blockerID),
+		s.userVersionKey(blockedID),
+		s.discoverViewerVersionKey(blockerID),
+		s.discoverViewerVersionKey(blockedID),
+		s.discoverGlobalVersionKey(),
+	)
+}
+
+func (s *cachedStore) UnblockUser(ctx context.Context, blockerID, blockedID uuid.UUID) error {
+	if err := s.inner.UnblockUser(ctx, blockerID, blockedID); err != nil {
+		return err
+	}
+	return s.cache.BumpVersions(ctx,
+		s.userVersionKey(blockerID),
+		s.userVersionKey(blockedID),
+		s.discoverViewerVersionKey(blockerID),
+		s.discoverViewerVersionKey(blockedID),
+		s.discoverGlobalVersionKey(),
+	)
+}
+
+func (s *cachedStore) ReportUser(ctx context.Context, reporterID, reportedUserID uuid.UUID, reason string, details *string) error {
+	return s.inner.ReportUser(ctx, reporterID, reportedUserID, reason, details)
 }
 
 func (s *cachedStore) userVersionKey(userID uuid.UUID) string {

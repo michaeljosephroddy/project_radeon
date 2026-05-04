@@ -19,11 +19,14 @@ import (
 type mockQuerier struct {
 	getUser                 func(ctx context.Context, viewerID, userID uuid.UUID) (*User, error)
 	usernameExistsForOthers func(ctx context.Context, username string, userID uuid.UUID) (bool, error)
-	updateUser              func(ctx context.Context, userID uuid.UUID, username, city, country, gender, bio *string, soberSince *time.Time, replaceSoberSince bool, birthDate *time.Time, replaceBirthDate bool, interests []string, replaceInterests bool, lat, lng *float64) error
+	updateUser              func(ctx context.Context, userID uuid.UUID, username, city, country, gender, bio *string, soberSince *time.Time, replaceSoberSince bool, birthDate *time.Time, replaceBirthDate bool, interests []string, replaceInterests bool, connectionIntents []string, replaceConnectionIntents bool, lat, lng *float64) error
 	updateAvatarURL         func(ctx context.Context, userID uuid.UUID, avatarURL string) error
 	updateBannerURL         func(ctx context.Context, userID uuid.UUID, bannerURL string) error
 	discoverUsers           func(ctx context.Context, params DiscoverUsersParams) ([]User, error)
 	countDiscoverUsers      func(ctx context.Context, params DiscoverUsersParams) (int, error)
+	blockUser               func(ctx context.Context, blockerID, blockedID uuid.UUID) error
+	unblockUser             func(ctx context.Context, blockerID, blockedID uuid.UUID) error
+	reportUser              func(ctx context.Context, reporterID, reportedUserID uuid.UUID, reason string, details *string) error
 	listInterests           func(ctx context.Context) ([]string, error)
 }
 
@@ -39,9 +42,9 @@ func (m *mockQuerier) UsernameExistsForOthers(ctx context.Context, uname string,
 	}
 	return false, nil
 }
-func (m *mockQuerier) UpdateUser(ctx context.Context, userID uuid.UUID, username, city, country, gender, bio *string, soberSince *time.Time, replaceSoberSince bool, birthDate *time.Time, replaceBirthDate bool, interests []string, replaceInterests bool, lat, lng *float64) error {
+func (m *mockQuerier) UpdateUser(ctx context.Context, userID uuid.UUID, username, city, country, gender, bio *string, soberSince *time.Time, replaceSoberSince bool, birthDate *time.Time, replaceBirthDate bool, interests []string, replaceInterests bool, connectionIntents []string, replaceConnectionIntents bool, lat, lng *float64) error {
 	if m.updateUser != nil {
-		return m.updateUser(ctx, userID, username, city, country, gender, bio, soberSince, replaceSoberSince, birthDate, replaceBirthDate, interests, replaceInterests, lat, lng)
+		return m.updateUser(ctx, userID, username, city, country, gender, bio, soberSince, replaceSoberSince, birthDate, replaceBirthDate, interests, replaceInterests, connectionIntents, replaceConnectionIntents, lat, lng)
 	}
 	return nil
 }
@@ -69,6 +72,27 @@ func (m *mockQuerier) CountDiscoverUsers(ctx context.Context, params DiscoverUse
 		return m.countDiscoverUsers(ctx, params)
 	}
 	return 0, nil
+}
+
+func (m *mockQuerier) BlockUser(ctx context.Context, blockerID, blockedID uuid.UUID) error {
+	if m.blockUser != nil {
+		return m.blockUser(ctx, blockerID, blockedID)
+	}
+	return nil
+}
+
+func (m *mockQuerier) UnblockUser(ctx context.Context, blockerID, blockedID uuid.UUID) error {
+	if m.unblockUser != nil {
+		return m.unblockUser(ctx, blockerID, blockedID)
+	}
+	return nil
+}
+
+func (m *mockQuerier) ReportUser(ctx context.Context, reporterID, reportedUserID uuid.UUID, reason string, details *string) error {
+	if m.reportUser != nil {
+		return m.reportUser(ctx, reporterID, reportedUserID, reason, details)
+	}
+	return nil
 }
 
 func (m *mockQuerier) ListInterests(ctx context.Context) ([]string, error) {
@@ -262,7 +286,7 @@ func TestUpdateMeSuccess(t *testing.T) {
 
 func TestUpdateMeDBError(t *testing.T) {
 	h := NewHandler(&mockQuerier{
-		updateUser: func(_ context.Context, _ uuid.UUID, _, _, _, _, _ *string, _ *time.Time, _ bool, _ *time.Time, _ bool, _ []string, _ bool, _, _ *float64) error {
+		updateUser: func(_ context.Context, _ uuid.UUID, _, _, _, _, _ *string, _ *time.Time, _ bool, _ *time.Time, _ bool, _ []string, _ bool, _ []string, _ bool, _, _ *float64) error {
 			return errors.New("db error")
 		},
 	}, &mockUploader{})
@@ -280,7 +304,7 @@ func TestUpdateMePersistsSoberSince(t *testing.T) {
 	var gotSoberSince *time.Time
 	var gotReplace bool
 	h := NewHandler(&mockQuerier{
-		updateUser: func(_ context.Context, _ uuid.UUID, _, _, _, _, _ *string, soberSince *time.Time, replaceSoberSince bool, _ *time.Time, _ bool, _ []string, _ bool, _, _ *float64) error {
+		updateUser: func(_ context.Context, _ uuid.UUID, _, _, _, _, _ *string, soberSince *time.Time, replaceSoberSince bool, _ *time.Time, _ bool, _ []string, _ bool, _ []string, _ bool, _, _ *float64) error {
 			gotSoberSince = soberSince
 			gotReplace = replaceSoberSince
 			return nil
@@ -343,7 +367,7 @@ func TestUpdateMePersistsGenderAndBirthDate(t *testing.T) {
 	var gotBirthDate *time.Time
 	var gotReplaceBirthDate bool
 	h := NewHandler(&mockQuerier{
-		updateUser: func(_ context.Context, _ uuid.UUID, _, _, _, gender, _ *string, _ *time.Time, _ bool, birthDate *time.Time, replaceBirthDate bool, _ []string, _ bool, _, _ *float64) error {
+		updateUser: func(_ context.Context, _ uuid.UUID, _, _, _, gender, _ *string, _ *time.Time, _ bool, birthDate *time.Time, replaceBirthDate bool, _ []string, _ bool, _ []string, _ bool, _, _ *float64) error {
 			gotGender = gender
 			gotBirthDate = birthDate
 			gotReplaceBirthDate = replaceBirthDate
@@ -393,6 +417,44 @@ func TestUpdateMeRejectsInvalidInterest(t *testing.T) {
 	}
 }
 
+func TestUpdateMePersistsConnectionIntents(t *testing.T) {
+	var gotIntents []string
+	var gotReplace bool
+	h := NewHandler(&mockQuerier{
+		updateUser: func(_ context.Context, _ uuid.UUID, _, _, _, _, _ *string, _ *time.Time, _ bool, _ *time.Time, _ bool, _ []string, _ bool, connectionIntents []string, replaceConnectionIntents bool, _, _ *float64) error {
+			gotIntents = connectionIntents
+			gotReplace = replaceConnectionIntents
+			return nil
+		},
+	}, &mockUploader{})
+	req := withUserID(httptest.NewRequest(http.MethodPatch, "/users/me", strings.NewReader(`{"connection_intents":["dating"]}`)), fixedUser)
+	rec := httptest.NewRecorder()
+
+	h.UpdateMe(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if !gotReplace {
+		t.Fatal("expected connection_intents replacement flag to be true")
+	}
+	if len(gotIntents) != 2 || gotIntents[0] != "friends" || gotIntents[1] != "dating" {
+		t.Fatalf("connectionIntents = %v, want [friends dating]", gotIntents)
+	}
+}
+
+func TestUpdateMeRejectsInvalidConnectionIntents(t *testing.T) {
+	h := NewHandler(&mockQuerier{}, &mockUploader{})
+	req := withUserID(httptest.NewRequest(http.MethodPatch, "/users/me", strings.NewReader(`{"connection_intents":["networking"]}`)), fixedUser)
+	rec := httptest.NewRecorder()
+
+	h.UpdateMe(rec, req)
+
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnprocessableEntity)
+	}
+}
+
 func TestListInterestsSuccess(t *testing.T) {
 	h := NewHandler(&mockQuerier{}, &mockUploader{})
 	req := withUserID(httptest.NewRequest(http.MethodGet, "/interests", nil), fixedUser)
@@ -402,6 +464,88 @@ func TestListInterestsSuccess(t *testing.T) {
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+}
+
+// ── Safety ───────────────────────────────────────────────────────────────────
+
+func TestBlockUserSuccess(t *testing.T) {
+	var gotBlocker uuid.UUID
+	var gotBlocked uuid.UUID
+	h := NewHandler(&mockQuerier{
+		blockUser: func(_ context.Context, blockerID, blockedID uuid.UUID) error {
+			gotBlocker = blockerID
+			gotBlocked = blockedID
+			return nil
+		},
+	}, &mockUploader{})
+	req := withUserID(httptest.NewRequest(http.MethodPost, "/users/"+fixedOther.String()+"/block", nil), fixedUser)
+	req = withURLParam(req, "id", fixedOther.String())
+	rec := httptest.NewRecorder()
+
+	h.BlockUser(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if gotBlocker != fixedUser || gotBlocked != fixedOther {
+		t.Fatalf("block args = %s -> %s, want %s -> %s", gotBlocker, gotBlocked, fixedUser, fixedOther)
+	}
+}
+
+func TestBlockUserRejectsSelf(t *testing.T) {
+	h := NewHandler(&mockQuerier{}, &mockUploader{})
+	req := withUserID(httptest.NewRequest(http.MethodPost, "/users/"+fixedUser.String()+"/block", nil), fixedUser)
+	req = withURLParam(req, "id", fixedUser.String())
+	rec := httptest.NewRecorder()
+
+	h.BlockUser(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+}
+
+func TestReportUserSuccess(t *testing.T) {
+	var gotReason string
+	var gotDetails *string
+	h := NewHandler(&mockQuerier{
+		reportUser: func(_ context.Context, reporterID, reportedUserID uuid.UUID, reason string, details *string) error {
+			if reporterID != fixedUser || reportedUserID != fixedOther {
+				t.Fatalf("report args = %s -> %s, want %s -> %s", reporterID, reportedUserID, fixedUser, fixedOther)
+			}
+			gotReason = reason
+			gotDetails = details
+			return nil
+		},
+	}, &mockUploader{})
+	req := withUserID(httptest.NewRequest(http.MethodPost, "/users/"+fixedOther.String()+"/report", strings.NewReader(`{"reason":"unwanted_advances","details":"  crossed a boundary  "}`)), fixedUser)
+	req = withURLParam(req, "id", fixedOther.String())
+	rec := httptest.NewRecorder()
+
+	h.ReportUser(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusCreated)
+	}
+	if gotReason != "unwanted_advances" {
+		t.Fatalf("reason = %q, want unwanted_advances", gotReason)
+	}
+	if gotDetails == nil || *gotDetails != "crossed a boundary" {
+		t.Fatalf("details = %v, want trimmed details", gotDetails)
+	}
+}
+
+func TestReportUserRejectsInvalidReason(t *testing.T) {
+	h := NewHandler(&mockQuerier{}, &mockUploader{})
+	req := withUserID(httptest.NewRequest(http.MethodPost, "/users/"+fixedOther.String()+"/report", strings.NewReader(`{"reason":"bad"}`)), fixedUser)
+	req = withURLParam(req, "id", fixedOther.String())
+	rec := httptest.NewRecorder()
+
+	h.ReportUser(rec, req)
+
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnprocessableEntity)
 	}
 }
 
@@ -452,7 +596,7 @@ func TestDiscoverParsesAdvancedFilters(t *testing.T) {
 			return []User{}, nil
 		},
 	}, &mockUploader{})
-	req := withUserID(httptest.NewRequest(http.MethodGet, "/users/discover?q=hello&gender=woman&age_min=25&age_max=40&distance_km=30&sobriety=years_1&interest=Coffee&interest=Hiking&lat=53.34&lng=-6.26", nil), fixedUser)
+	req := withUserID(httptest.NewRequest(http.MethodGet, "/users/discover?q=hello&gender=woman&intent=dating&age_min=25&age_max=40&distance_km=30&sobriety=years_1&interest=Coffee&interest=Hiking&lat=53.34&lng=-6.26", nil), fixedUser)
 	rec := httptest.NewRecorder()
 
 	h.Discover(rec, req)
@@ -465,6 +609,9 @@ func TestDiscoverParsesAdvancedFilters(t *testing.T) {
 	}
 	if got.Gender != "woman" {
 		t.Fatalf("gender = %q, want woman", got.Gender)
+	}
+	if got.Intent != "dating" {
+		t.Fatalf("intent = %q, want dating", got.Intent)
 	}
 	if got.Sobriety != "years_1" {
 		t.Fatalf("sobriety = %q, want years_1", got.Sobriety)
@@ -505,7 +652,7 @@ func TestDiscoverIgnoresAdvancedFiltersWithoutPlus(t *testing.T) {
 			return []User{}, nil
 		},
 	}, &mockUploader{})
-	req := withUserID(httptest.NewRequest(http.MethodGet, "/users/discover?q=hello&gender=robot&age_min=40&age_max=25&distance_km=30&sobriety=not-real&lat=53.34&lng=-6.26", nil), fixedUser)
+	req := withUserID(httptest.NewRequest(http.MethodGet, "/users/discover?q=hello&gender=robot&intent=dating&age_min=40&age_max=25&distance_km=30&sobriety=not-real&lat=53.34&lng=-6.26", nil), fixedUser)
 	rec := httptest.NewRecorder()
 
 	h.Discover(rec, req)
@@ -518,6 +665,9 @@ func TestDiscoverIgnoresAdvancedFiltersWithoutPlus(t *testing.T) {
 	}
 	if got.Gender != "" {
 		t.Fatalf("gender = %q, want empty", got.Gender)
+	}
+	if got.Intent != "" {
+		t.Fatalf("intent = %q, want empty", got.Intent)
 	}
 	if got.Sobriety != "" {
 		t.Fatalf("sobriety = %q, want empty", got.Sobriety)
