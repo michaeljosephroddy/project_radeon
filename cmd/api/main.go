@@ -333,7 +333,7 @@ func main() {
 		log.Default(),
 		db,
 		time.Duration(parseIntEnvWithDefault("FEED_AGGREGATE_WORKER_POLL_MS", 2000))*time.Millisecond,
-		parseIntEnvWithDefault("FEED_AGGREGATE_WORKER_BATCH_SIZE", 200),
+		parseIntEnvWithDefault("FEED_AGGREGATE_WORKER_BATCH_SIZE", 50),
 	)
 	if err := chatsRealtimeBus.Start(workerCtx, chatsRealtimeHub); err != nil {
 		log.Fatalf("chat realtime bus failed: %v", err)

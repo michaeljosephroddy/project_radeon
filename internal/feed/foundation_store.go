@@ -96,8 +96,19 @@ func (s *pgStore) LogFeedImpressions(ctx context.Context, userID uuid.UUID, impr
 		return nil
 	}
 
-	batch := &pgx.Batch{}
 	now := time.Now().UTC()
+	itemIDs := make([]uuid.UUID, 0, len(impressions))
+	itemKinds := make([]string, 0, len(impressions))
+	feedModes := make([]string, 0, len(impressions))
+	sessionIDs := make([]string, 0, len(impressions))
+	positions := make([]int, 0, len(impressions))
+	servedAts := make([]time.Time, 0, len(impressions))
+	viewedAts := make([]time.Time, 0, len(impressions))
+	viewMS := make([]int, 0, len(impressions))
+	wasClicked := make([]bool, 0, len(impressions))
+	wasLiked := make([]bool, 0, len(impressions))
+	wasCommented := make([]bool, 0, len(impressions))
+
 	for _, impression := range impressions {
 		if !impression.ItemKind.Valid() {
 			return ErrInvalidFeedItemKind
@@ -115,8 +126,50 @@ func (s *pgStore) LogFeedImpressions(ctx context.Context, userID uuid.UUID, impr
 			viewedAt = now
 		}
 
-		batch.Queue(
-			`INSERT INTO feed_impressions (
+		itemIDs = append(itemIDs, impression.ItemID)
+		itemKinds = append(itemKinds, string(impression.ItemKind))
+		feedModes = append(feedModes, string(impression.FeedMode))
+		sessionIDs = append(sessionIDs, strings.TrimSpace(impression.SessionID))
+		positions = append(positions, impression.Position)
+		servedAts = append(servedAts, servedAt.UTC())
+		viewedAts = append(viewedAts, viewedAt.UTC())
+		viewMS = append(viewMS, impression.ViewMS)
+		wasClicked = append(wasClicked, impression.WasClicked)
+		wasLiked = append(wasLiked, impression.WasLiked)
+		wasCommented = append(wasCommented, impression.WasCommented)
+	}
+
+	_, err := s.pool.Exec(ctx,
+		`WITH input_rows AS (
+			SELECT *
+			FROM unnest(
+				$2::uuid[],
+				$3::text[],
+				$4::text[],
+				$5::text[],
+				$6::int[],
+				$7::timestamptz[],
+				$8::timestamptz[],
+				$9::int[],
+				$10::boolean[],
+				$11::boolean[],
+				$12::boolean[]
+			) AS t(
+				item_id,
+				item_kind,
+				feed_mode,
+				session_id,
+				position,
+				served_at,
+				viewed_at,
+				view_ms,
+				was_clicked,
+				was_liked,
+				was_commented
+			)
+		),
+		upserted AS (
+			INSERT INTO feed_impressions (
 				user_id,
 				item_id,
 				item_kind,
@@ -129,41 +182,68 @@ func (s *pgStore) LogFeedImpressions(ctx context.Context, userID uuid.UUID, impr
 				was_clicked,
 				was_liked,
 				was_commented
-			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+			)
+			SELECT
+				$1,
+				item_id,
+				item_kind,
+				feed_mode,
+				session_id,
+				position,
+				served_at,
+				viewed_at,
+				view_ms,
+				was_clicked,
+				was_liked,
+				was_commented
+			FROM input_rows
 			ON CONFLICT (user_id, item_id, item_kind, feed_mode, session_id, served_at) DO UPDATE SET
 				position = LEAST(feed_impressions.position, EXCLUDED.position),
 				viewed_at = GREATEST(feed_impressions.viewed_at, EXCLUDED.viewed_at),
 				view_ms = GREATEST(feed_impressions.view_ms, EXCLUDED.view_ms),
 				was_clicked = feed_impressions.was_clicked OR EXCLUDED.was_clicked,
 				was_liked = feed_impressions.was_liked OR EXCLUDED.was_liked,
-				was_commented = feed_impressions.was_commented OR EXCLUDED.was_commented`,
-			userID,
-			impression.ItemID,
-			string(impression.ItemKind),
-			string(impression.FeedMode),
-			strings.TrimSpace(impression.SessionID),
-			impression.Position,
-			servedAt.UTC(),
-			viewedAt.UTC(),
-			impression.ViewMS,
-			impression.WasClicked,
-			impression.WasLiked,
-			impression.WasCommented,
+				was_commented = feed_impressions.was_commented OR EXCLUDED.was_commented
+			RETURNING item_id, item_kind
+		),
+		targets AS (
+			SELECT DISTINCT
+				CASE item_kind
+					WHEN 'post' THEN 'post'
+					WHEN 'reshare' THEN 'share'
+				END AS target_kind,
+				item_id AS target_id
+			FROM upserted
 		)
-	}
-
-	results := s.pool.SendBatch(ctx, batch)
-	defer results.Close()
-	for range impressions {
-		if _, err := results.Exec(); err != nil {
-			return err
-		}
-	}
-	if err := results.Close(); err != nil {
-		return err
-	}
-
-	return nil
+		INSERT INTO feed_aggregate_jobs (
+			target_kind,
+			target_id,
+			queued_at,
+			available_at,
+			claimed_at,
+			last_error
+		)
+		SELECT target_kind, target_id, NOW(), NOW(), NULL, NULL
+		FROM targets
+		WHERE target_kind IS NOT NULL
+		ON CONFLICT (target_kind, target_id) DO UPDATE
+		SET queued_at = EXCLUDED.queued_at,
+			available_at = EXCLUDED.available_at,
+			last_error = NULL`,
+		userID,
+		itemIDs,
+		itemKinds,
+		feedModes,
+		sessionIDs,
+		positions,
+		servedAts,
+		viewedAts,
+		viewMS,
+		wasClicked,
+		wasLiked,
+		wasCommented,
+	)
+	return err
 }
 
 func (s *pgStore) LogFeedEvents(ctx context.Context, userID uuid.UUID, events []FeedEventInput) error {

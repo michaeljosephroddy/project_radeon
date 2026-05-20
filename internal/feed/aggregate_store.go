@@ -143,6 +143,9 @@ func (s *pgStore) refreshPostQualityFeatures(ctx context.Context, postIDs []uuid
 	}
 
 	_, err := s.pool.Exec(ctx, `
+		WITH target_posts AS (
+			SELECT unnest($1::uuid[]) AS id
+		)
 		INSERT INTO post_quality_features (
 			post_id,
 			author_id,
@@ -195,65 +198,75 @@ func (s *pgStore) refreshPostQualityFeatures(ctx context.Context, postIDs []uuid
 			) AS last_engagement_at,
 			$2::timestamptz
 		FROM posts p
+		JOIN target_posts target ON target.id = p.id
 		LEFT JOIN (
 			SELECT item_id AS post_id, COUNT(*)::int AS cnt, MAX(viewed_at) AS last_at
-			FROM feed_impressions
-			WHERE item_kind = 'post'
-			GROUP BY item_id
+			FROM feed_impressions fi
+			JOIN target_posts target ON target.id = fi.item_id
+			WHERE fi.item_kind = 'post'
+			GROUP BY fi.item_id
 		) total_impressions ON total_impressions.post_id = p.id
 		LEFT JOIN (
 			SELECT item_id AS post_id, COUNT(*)::int AS cnt
-			FROM feed_impressions
-			WHERE item_kind = 'post' AND viewed_at >= NOW() - INTERVAL '14 days'
-			GROUP BY item_id
+			FROM feed_impressions fi
+			JOIN target_posts target ON target.id = fi.item_id
+			WHERE fi.item_kind = 'post' AND fi.viewed_at >= NOW() - INTERVAL '14 days'
+			GROUP BY fi.item_id
 		) recent_impressions ON recent_impressions.post_id = p.id
 		LEFT JOIN (
-			SELECT post_id, COUNT(*)::int AS cnt
-			FROM post_reactions
-			WHERE type = 'like'
-			GROUP BY post_id
+			SELECT pr.post_id, COUNT(*)::int AS cnt
+			FROM post_reactions pr
+			JOIN target_posts target ON target.id = pr.post_id
+			WHERE pr.type = 'like'
+			GROUP BY pr.post_id
 		) total_likes ON total_likes.post_id = p.id
 		LEFT JOIN (
 			SELECT item_id AS post_id, COUNT(*)::int AS cnt
-			FROM feed_events
-			WHERE item_kind = 'post' AND event_type = 'like' AND event_at >= NOW() - INTERVAL '14 days'
-			GROUP BY item_id
+			FROM feed_events fe
+			JOIN target_posts target ON target.id = fe.item_id
+			WHERE fe.item_kind = 'post' AND fe.event_type = 'like' AND fe.event_at >= NOW() - INTERVAL '14 days'
+			GROUP BY fe.item_id
 		) recent_likes ON recent_likes.post_id = p.id
 		LEFT JOIN (
-			SELECT post_id, COUNT(*)::int AS cnt, MAX(created_at) AS last_at
-			FROM comments
-			GROUP BY post_id
+			SELECT c.post_id, COUNT(*)::int AS cnt, MAX(c.created_at) AS last_at
+			FROM comments c
+			JOIN target_posts target ON target.id = c.post_id
+			GROUP BY c.post_id
 		) total_comments ON total_comments.post_id = p.id
 		LEFT JOIN (
-			SELECT post_id, COUNT(*)::int AS cnt
-			FROM comments
-			WHERE created_at >= NOW() - INTERVAL '14 days'
-			GROUP BY post_id
+			SELECT c.post_id, COUNT(*)::int AS cnt
+			FROM comments c
+			JOIN target_posts target ON target.id = c.post_id
+			WHERE c.created_at >= NOW() - INTERVAL '14 days'
+			GROUP BY c.post_id
 		) recent_comments ON recent_comments.post_id = p.id
 		LEFT JOIN (
-			SELECT post_id, COUNT(*)::int AS cnt, MAX(created_at) AS last_at
-			FROM post_shares
-			GROUP BY post_id
+			SELECT ps.post_id, COUNT(*)::int AS cnt, MAX(ps.created_at) AS last_at
+			FROM post_shares ps
+			JOIN target_posts target ON target.id = ps.post_id
+			GROUP BY ps.post_id
 		) total_shares ON total_shares.post_id = p.id
 		LEFT JOIN (
-			SELECT post_id, COUNT(*)::int AS cnt
-			FROM post_shares
-			WHERE created_at >= NOW() - INTERVAL '14 days'
-			GROUP BY post_id
+			SELECT ps.post_id, COUNT(*)::int AS cnt
+			FROM post_shares ps
+			JOIN target_posts target ON target.id = ps.post_id
+			WHERE ps.created_at >= NOW() - INTERVAL '14 days'
+			GROUP BY ps.post_id
 		) recent_shares ON recent_shares.post_id = p.id
 		LEFT JOIN (
 			SELECT item_id AS post_id, COUNT(*)::int AS cnt, MAX(hidden_at) AS last_at
-			FROM feed_hidden_posts
-			WHERE item_kind = 'post'
-			GROUP BY item_id
+			FROM feed_hidden_posts fh
+			JOIN target_posts target ON target.id = fh.item_id
+			WHERE fh.item_kind = 'post'
+			GROUP BY fh.item_id
 		) total_hides ON total_hides.post_id = p.id
 		LEFT JOIN (
 			SELECT item_id AS post_id, COUNT(*)::int AS cnt
-			FROM feed_hidden_posts
-			WHERE item_kind = 'post' AND hidden_at >= NOW() - INTERVAL '14 days'
-			GROUP BY item_id
+			FROM feed_hidden_posts fh
+			JOIN target_posts target ON target.id = fh.item_id
+			WHERE fh.item_kind = 'post' AND fh.hidden_at >= NOW() - INTERVAL '14 days'
+			GROUP BY fh.item_id
 		) recent_hides ON recent_hides.post_id = p.id
-		WHERE p.id = ANY($1::uuid[])
 		ON CONFLICT (post_id) DO UPDATE SET
 			author_id = EXCLUDED.author_id,
 			has_body = EXCLUDED.has_body,
@@ -283,6 +296,9 @@ func (s *pgStore) refreshShareQualityFeatures(ctx context.Context, shareIDs []uu
 	}
 
 	_, err := s.pool.Exec(ctx, `
+		WITH target_shares AS (
+			SELECT unnest($1::uuid[]) AS id
+		)
 		INSERT INTO share_quality_features (
 			share_id,
 			author_id,
@@ -330,54 +346,62 @@ func (s *pgStore) refreshShareQualityFeatures(ctx context.Context, shareIDs []uu
 			) AS last_engagement_at,
 			$2::timestamptz
 		FROM post_shares ps
+		JOIN target_shares target ON target.id = ps.id
 		LEFT JOIN (
 			SELECT item_id AS share_id, COUNT(*)::int AS cnt, MAX(viewed_at) AS last_at
-			FROM feed_impressions
-			WHERE item_kind = 'reshare'
-			GROUP BY item_id
+			FROM feed_impressions fi
+			JOIN target_shares target ON target.id = fi.item_id
+			WHERE fi.item_kind = 'reshare'
+			GROUP BY fi.item_id
 		) total_impressions ON total_impressions.share_id = ps.id
 		LEFT JOIN (
 			SELECT item_id AS share_id, COUNT(*)::int AS cnt
-			FROM feed_impressions
-			WHERE item_kind = 'reshare' AND viewed_at >= NOW() - INTERVAL '14 days'
-			GROUP BY item_id
+			FROM feed_impressions fi
+			JOIN target_shares target ON target.id = fi.item_id
+			WHERE fi.item_kind = 'reshare' AND fi.viewed_at >= NOW() - INTERVAL '14 days'
+			GROUP BY fi.item_id
 		) recent_impressions ON recent_impressions.share_id = ps.id
 		LEFT JOIN (
-			SELECT share_id, COUNT(*)::int AS cnt, MAX(created_at) AS last_at
-			FROM share_reactions
-			WHERE type = 'like'
-			GROUP BY share_id
+			SELECT sr.share_id, COUNT(*)::int AS cnt, MAX(sr.created_at) AS last_at
+			FROM share_reactions sr
+			JOIN target_shares target ON target.id = sr.share_id
+			WHERE sr.type = 'like'
+			GROUP BY sr.share_id
 		) total_likes ON total_likes.share_id = ps.id
 		LEFT JOIN (
 			SELECT item_id AS share_id, COUNT(*)::int AS cnt
-			FROM feed_events
-			WHERE item_kind = 'reshare' AND event_type = 'like' AND event_at >= NOW() - INTERVAL '14 days'
-			GROUP BY item_id
+			FROM feed_events fe
+			JOIN target_shares target ON target.id = fe.item_id
+			WHERE fe.item_kind = 'reshare' AND fe.event_type = 'like' AND fe.event_at >= NOW() - INTERVAL '14 days'
+			GROUP BY fe.item_id
 		) recent_likes ON recent_likes.share_id = ps.id
 		LEFT JOIN (
-			SELECT share_id, COUNT(*)::int AS cnt, MAX(created_at) AS last_at
-			FROM share_comments
-			GROUP BY share_id
+			SELECT sc.share_id, COUNT(*)::int AS cnt, MAX(sc.created_at) AS last_at
+			FROM share_comments sc
+			JOIN target_shares target ON target.id = sc.share_id
+			GROUP BY sc.share_id
 		) total_comments ON total_comments.share_id = ps.id
 		LEFT JOIN (
-			SELECT share_id, COUNT(*)::int AS cnt
-			FROM share_comments
-			WHERE created_at >= NOW() - INTERVAL '14 days'
-			GROUP BY share_id
+			SELECT sc.share_id, COUNT(*)::int AS cnt
+			FROM share_comments sc
+			JOIN target_shares target ON target.id = sc.share_id
+			WHERE sc.created_at >= NOW() - INTERVAL '14 days'
+			GROUP BY sc.share_id
 		) recent_comments ON recent_comments.share_id = ps.id
 		LEFT JOIN (
 			SELECT item_id AS share_id, COUNT(*)::int AS cnt, MAX(hidden_at) AS last_at
-			FROM feed_hidden_posts
-			WHERE item_kind = 'reshare'
-			GROUP BY item_id
+			FROM feed_hidden_posts fh
+			JOIN target_shares target ON target.id = fh.item_id
+			WHERE fh.item_kind = 'reshare'
+			GROUP BY fh.item_id
 		) total_hides ON total_hides.share_id = ps.id
 		LEFT JOIN (
 			SELECT item_id AS share_id, COUNT(*)::int AS cnt
-			FROM feed_hidden_posts
-			WHERE item_kind = 'reshare' AND hidden_at >= NOW() - INTERVAL '14 days'
-			GROUP BY item_id
+			FROM feed_hidden_posts fh
+			JOIN target_shares target ON target.id = fh.item_id
+			WHERE fh.item_kind = 'reshare' AND fh.hidden_at >= NOW() - INTERVAL '14 days'
+			GROUP BY fh.item_id
 		) recent_hides ON recent_hides.share_id = ps.id
-		WHERE ps.id = ANY($1::uuid[])
 		ON CONFLICT (share_id) DO UPDATE SET
 			author_id = EXCLUDED.author_id,
 			original_post_id = EXCLUDED.original_post_id,
@@ -405,6 +429,9 @@ func (s *pgStore) refreshAuthorFeedStats(ctx context.Context, authorIDs []uuid.U
 	}
 
 	_, err := s.pool.Exec(ctx, `
+		WITH target_authors AS (
+			SELECT unnest($1::uuid[]) AS id
+		)
 		INSERT INTO author_feed_stats (
 			author_id,
 			recent_post_count,
@@ -429,31 +456,37 @@ func (s *pgStore) refreshAuthorFeedStats(ctx context.Context, authorIDs []uuid.U
 			shares_last.last_at AS last_share_at,
 			$2::timestamptz
 		FROM users u
+		JOIN target_authors target ON target.id = u.id
 		LEFT JOIN (
-			SELECT user_id, COUNT(*)::int AS cnt
-			FROM posts
-			WHERE created_at >= NOW() - INTERVAL '14 days'
-			GROUP BY user_id
+			SELECT p.user_id, COUNT(*)::int AS cnt
+			FROM posts p
+			JOIN target_authors target ON target.id = p.user_id
+			WHERE p.created_at >= NOW() - INTERVAL '14 days'
+			GROUP BY p.user_id
 		) posts_14d ON posts_14d.user_id = u.id
 		LEFT JOIN (
-			SELECT user_id, MAX(created_at) AS last_at
-			FROM posts
-			GROUP BY user_id
+			SELECT p.user_id, MAX(p.created_at) AS last_at
+			FROM posts p
+			JOIN target_authors target ON target.id = p.user_id
+			GROUP BY p.user_id
 		) posts_last ON posts_last.user_id = u.id
 		LEFT JOIN (
-			SELECT user_id, COUNT(*)::int AS cnt
-			FROM post_shares
-			WHERE created_at >= NOW() - INTERVAL '14 days'
-			GROUP BY user_id
+			SELECT ps.user_id, COUNT(*)::int AS cnt
+			FROM post_shares ps
+			JOIN target_authors target ON target.id = ps.user_id
+			WHERE ps.created_at >= NOW() - INTERVAL '14 days'
+			GROUP BY ps.user_id
 		) shares_14d ON shares_14d.user_id = u.id
 		LEFT JOIN (
-			SELECT user_id, MAX(created_at) AS last_at
-			FROM post_shares
-			GROUP BY user_id
+			SELECT ps.user_id, MAX(ps.created_at) AS last_at
+			FROM post_shares ps
+			JOIN target_authors target ON target.id = ps.user_id
+			GROUP BY ps.user_id
 		) shares_last ON shares_last.user_id = u.id
 		LEFT JOIN (
 			SELECT p.user_id, COUNT(*)::int AS cnt
 			FROM posts p
+			JOIN target_authors target ON target.id = p.user_id
 			JOIN feed_impressions fi ON fi.item_id = p.id AND fi.item_kind = 'post'
 			WHERE fi.viewed_at >= NOW() - INTERVAL '30 days'
 			GROUP BY p.user_id
@@ -461,6 +494,7 @@ func (s *pgStore) refreshAuthorFeedStats(ctx context.Context, authorIDs []uuid.U
 		LEFT JOIN (
 			SELECT ps.user_id, COUNT(*)::int AS cnt
 			FROM post_shares ps
+			JOIN target_authors target ON target.id = ps.user_id
 			JOIN feed_impressions fi ON fi.item_id = ps.id AND fi.item_kind = 'reshare'
 			WHERE fi.viewed_at >= NOW() - INTERVAL '30 days'
 			GROUP BY ps.user_id
@@ -468,40 +502,45 @@ func (s *pgStore) refreshAuthorFeedStats(ctx context.Context, authorIDs []uuid.U
 		LEFT JOIN (
 			SELECT p.user_id, COUNT(*)::int AS cnt
 			FROM posts p
+			JOIN target_authors target ON target.id = p.user_id
 			JOIN post_reactions pr ON pr.post_id = p.id AND pr.type = 'like'
 			GROUP BY p.user_id
 		) post_likes ON post_likes.user_id = u.id
 		LEFT JOIN (
 			SELECT ps.user_id, COUNT(*)::int AS cnt
 			FROM post_shares ps
+			JOIN target_authors target ON target.id = ps.user_id
 			JOIN share_reactions sr ON sr.share_id = ps.id AND sr.type = 'like'
 			GROUP BY ps.user_id
 		) share_likes ON share_likes.user_id = u.id
 		LEFT JOIN (
 			SELECT p.user_id, COUNT(*)::int AS cnt
 			FROM posts p
+			JOIN target_authors target ON target.id = p.user_id
 			JOIN comments c ON c.post_id = p.id
 			GROUP BY p.user_id
 		) post_comments ON post_comments.user_id = u.id
 		LEFT JOIN (
 			SELECT ps.user_id, COUNT(*)::int AS cnt
 			FROM post_shares ps
+			JOIN target_authors target ON target.id = ps.user_id
 			JOIN share_comments sc ON sc.share_id = ps.id
 			GROUP BY ps.user_id
 		) share_comments ON share_comments.user_id = u.id
 		LEFT JOIN (
 			SELECT p.user_id, COUNT(*)::int AS cnt
 			FROM posts p
+			JOIN target_authors target ON target.id = p.user_id
 			JOIN feed_hidden_posts fh ON fh.item_id = p.id AND fh.item_kind = 'post'
 			GROUP BY p.user_id
 		) post_hides ON post_hides.user_id = u.id
 		LEFT JOIN (
 			SELECT ps.user_id, COUNT(*)::int AS cnt
 			FROM post_shares ps
+			JOIN target_authors target ON target.id = ps.user_id
 			JOIN feed_hidden_posts fh ON fh.item_id = ps.id AND fh.item_kind = 'reshare'
 			GROUP BY ps.user_id
 		) share_hides ON share_hides.user_id = u.id
-		WHERE u.id = ANY($1::uuid[])
 		ON CONFLICT (author_id) DO UPDATE SET
 			recent_post_count = EXCLUDED.recent_post_count,
 			recent_share_count = EXCLUDED.recent_share_count,

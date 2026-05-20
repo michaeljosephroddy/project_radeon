@@ -653,7 +653,6 @@ BEGIN
     ON CONFLICT (target_kind, target_id) DO UPDATE
     SET queued_at = EXCLUDED.queued_at,
         available_at = EXCLUDED.available_at,
-        claimed_at = NULL,
         last_error = NULL;
 END;
 $$ LANGUAGE plpgsql;
@@ -694,7 +693,7 @@ BEGIN
         RETURN NEW;
     END IF;
 
-    IF TG_TABLE_NAME = 'feed_impressions' OR TG_TABLE_NAME = 'feed_hidden_posts' THEN
+    IF TG_TABLE_NAME = 'feed_hidden_posts' THEN
         IF TG_OP = 'DELETE' THEN
             IF OLD.item_kind = 'post' THEN
                 PERFORM enqueue_feed_aggregate_job('post', OLD.item_id);
@@ -745,12 +744,6 @@ EXECUTE FUNCTION trigger_enqueue_feed_aggregate_job();
 DROP TRIGGER IF EXISTS trg_post_shares_enqueue_feed_aggregate_job ON post_shares;
 CREATE TRIGGER trg_post_shares_enqueue_feed_aggregate_job
 AFTER INSERT OR DELETE ON post_shares
-FOR EACH ROW
-EXECUTE FUNCTION trigger_enqueue_feed_aggregate_job();
-
-DROP TRIGGER IF EXISTS trg_feed_impressions_enqueue_feed_aggregate_job ON feed_impressions;
-CREATE TRIGGER trg_feed_impressions_enqueue_feed_aggregate_job
-AFTER INSERT OR UPDATE ON feed_impressions
 FOR EACH ROW
 EXECUTE FUNCTION trigger_enqueue_feed_aggregate_job();
 
