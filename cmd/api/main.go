@@ -21,6 +21,7 @@ import (
 	"github.com/joho/godotenv"
 	"github.com/project_radeon/api/internal/auth"
 	"github.com/project_radeon/api/internal/chats"
+	"github.com/project_radeon/api/internal/dating"
 	"github.com/project_radeon/api/internal/feed"
 	"github.com/project_radeon/api/internal/friends"
 	"github.com/project_radeon/api/internal/groups"
@@ -93,6 +94,7 @@ func main() {
 	supportStore := support.NewCachedStore(support.NewPgStore(db), cacheStore)
 	friendsStore := friends.NewCachedStore(friends.NewPgStore(db), cacheStore)
 	groupsStore := groups.NewCachedStore(groups.NewPgStore(db), cacheStore)
+	datingStore := dating.NewCachedStore(dating.NewPgStore(db), cacheStore)
 
 	userHandler := user.NewHandler(userStore, uploader)
 	notificationsService := notifications.NewService(
@@ -103,6 +105,7 @@ func main() {
 	chatsRealtimeHub := chats.NewRealtimeHub()
 	chatsRealtimeBus := chats.NewRedisRealtimeBus(cacheStore)
 	chatsHandler := chats.NewHandlerWithRealtimeInfra(chats.NewPgStore(db), notificationsService, chatsRealtimeHub, chatsRealtimeBus)
+	datingHandler := dating.NewHandler(datingStore, notificationsService)
 	friendsHandler := friends.NewHandler(friendsStore)
 	groupsHandler := groups.NewHandlerWithNotifier(groupsStore, notificationsService, uploader)
 	feedHandler := feed.NewHandlerWithNotifier(feedStore, notificationsService, uploader)
@@ -230,6 +233,16 @@ func main() {
 		r.Patch("/users/{id}/friend-request", friendsHandler.UpdateRequest)
 		r.Delete("/users/{id}/friend-request", friendsHandler.CancelRequest)
 		r.Delete("/users/{id}/friend", friendsHandler.RemoveFriend)
+
+		// Dating
+		r.Get("/dating/discover", datingHandler.Discover)
+		r.Get("/dating/discover/preview", datingHandler.DiscoverPreview)
+		r.Get("/dating/likes", datingHandler.ListLikes)
+		r.Get("/dating/likes/preview", datingHandler.LikesPreview)
+		r.Post("/dating/actions", datingHandler.RecordAction)
+		r.Get("/dating/matches", datingHandler.ListMatches)
+		r.Get("/dating/matches/{id}", datingHandler.GetMatch)
+		r.Post("/dating/matches/{id}/unmatch", datingHandler.Unmatch)
 
 		// Meetups
 		r.Get("/meetups/categories", meetupsHandler.ListCategories)

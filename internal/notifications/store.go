@@ -843,6 +843,47 @@ func (s *pgStore) CreateSupportOfferNotification(ctx context.Context, requestID,
 	return tx.Commit(ctx)
 }
 
+func (s *pgStore) CreateDatingMatchNotification(ctx context.Context, matchID, chatID, actorID, recipientID uuid.UUID) error {
+	if actorID == recipientID {
+		return nil
+	}
+
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	var actorUsername string
+	if err := tx.QueryRow(ctx, `SELECT username FROM users WHERE id = $1`, actorID).Scan(&actorUsername); err != nil {
+		return err
+	}
+
+	payload := map[string]any{
+		"type":            NotificationTypeDatingMatch,
+		"match_id":        matchID.String(),
+		"chat_id":         chatID.String(),
+		"actor_user_id":   actorID.String(),
+		"notification_id": "",
+	}
+
+	if err := s.createNotification(
+		ctx,
+		tx,
+		recipientID,
+		NotificationTypeDatingMatch,
+		actorID,
+		ResourceTypeDatingMatch,
+		matchID,
+		"It's a match",
+		actorUsername+" matched with you",
+		payload,
+	); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
 func markNotificationIDsRead(ctx context.Context, tx pgx.Tx, userID uuid.UUID, notificationIDs []uuid.UUID, readAt time.Time) (int, error) {
 	var updated int
 	if err := tx.QueryRow(ctx,
