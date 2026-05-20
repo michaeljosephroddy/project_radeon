@@ -789,6 +789,17 @@ CREATE TABLE IF NOT EXISTS event_categories (
     sort_order INT NOT NULL DEFAULT 0
 );
 
+INSERT INTO event_categories (slug, label, sort_order) VALUES
+    ('recovery', 'Recovery', 10),
+    ('social', 'Social', 20),
+    ('activity', 'Activities', 30),
+    ('wellness', 'Wellness', 40),
+    ('online', 'Online', 50),
+    ('service', 'Service', 60)
+ON CONFLICT (slug) DO UPDATE SET
+    label = EXCLUDED.label,
+    sort_order = EXCLUDED.sort_order;
+
 CREATE TABLE IF NOT EXISTS meetups (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     organiser_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,

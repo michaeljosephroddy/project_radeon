@@ -32,24 +32,33 @@ func (m *mockUploader) Upload(ctx context.Context, key, contentType string, body
 }
 
 type mockQuerier struct {
-	listCategories  func(ctx context.Context) ([]MeetupCategory, error)
-	discoverMeetups func(ctx context.Context, userID uuid.UUID, params DiscoverMeetupsParams) (*CursorPage[Meetup], error)
-	listMyMeetups   func(ctx context.Context, userID uuid.UUID, params MyMeetupsParams) (*CursorPage[Meetup], error)
-	getMeetup       func(ctx context.Context, meetupID, userID uuid.UUID) (*Meetup, error)
-	createMeetup    func(ctx context.Context, userID uuid.UUID, input CreateMeetupInput) (*Meetup, error)
-	updateMeetup    func(ctx context.Context, meetupID, userID uuid.UUID, input UpdateMeetupInput) (*Meetup, error)
-	cancelMeetup    func(ctx context.Context, meetupID, userID uuid.UUID) (*Meetup, error)
-	deleteMeetup    func(ctx context.Context, meetupID, userID uuid.UUID) error
-	getAttendees    func(ctx context.Context, meetupID uuid.UUID, limit, offset int) ([]Attendee, error)
-	getWaitlist     func(ctx context.Context, meetupID, userID uuid.UUID, limit, offset int) ([]Attendee, error)
-	toggleRSVP      func(ctx context.Context, meetupID, userID uuid.UUID) (*RSVPResult, error)
+	listCategories          func(ctx context.Context) ([]MeetupCategory, error)
+	listLocationSuggestions func(ctx context.Context, query string, limit int) ([]MeetupLocationSuggestion, error)
+	discoverMeetups         func(ctx context.Context, userID uuid.UUID, params DiscoverMeetupsParams) (*CursorPage[Meetup], error)
+	listMyMeetups           func(ctx context.Context, userID uuid.UUID, params MyMeetupsParams) (*CursorPage[Meetup], error)
+	getMeetup               func(ctx context.Context, meetupID, userID uuid.UUID) (*Meetup, error)
+	createMeetup            func(ctx context.Context, userID uuid.UUID, input CreateMeetupInput) (*Meetup, error)
+	updateMeetup            func(ctx context.Context, meetupID, userID uuid.UUID, input UpdateMeetupInput) (*Meetup, error)
+	cancelMeetup            func(ctx context.Context, meetupID, userID uuid.UUID) (*Meetup, error)
+	deleteMeetup            func(ctx context.Context, meetupID, userID uuid.UUID) error
+	getAttendees            func(ctx context.Context, meetupID uuid.UUID, limit, offset int) ([]Attendee, error)
+	getWaitlist             func(ctx context.Context, meetupID, userID uuid.UUID, limit, offset int) ([]Attendee, error)
+	toggleRSVP              func(ctx context.Context, meetupID, userID uuid.UUID) (*RSVPResult, error)
 }
 
 func (m *mockQuerier) ListCategories(ctx context.Context) ([]MeetupCategory, error) {
 	if m.listCategories != nil {
 		return m.listCategories(ctx)
 	}
-	return []MeetupCategory{{Slug: "coffee", Label: "Coffee", SortOrder: 1}}, nil
+	return []MeetupCategory{{Slug: "social", Label: "Social", SortOrder: 20}}, nil
+}
+
+func (m *mockQuerier) ListLocationSuggestions(ctx context.Context, query string, limit int) ([]MeetupLocationSuggestion, error) {
+	if m.listLocationSuggestions != nil {
+		return m.listLocationSuggestions(ctx, query, limit)
+	}
+	country := "Ireland"
+	return []MeetupLocationSuggestion{{Label: "Dublin, Ireland", City: "Dublin", Country: &country, MeetupCount: 2}}, nil
 }
 
 func (m *mockQuerier) DiscoverMeetups(ctx context.Context, userID uuid.UUID, params DiscoverMeetupsParams) (*CursorPage[Meetup], error) {
@@ -70,21 +79,21 @@ func (m *mockQuerier) GetMeetup(ctx context.Context, meetupID, userID uuid.UUID)
 	if m.getMeetup != nil {
 		return m.getMeetup(ctx, meetupID, userID)
 	}
-	return &Meetup{ID: meetupID, OrganizerID: userID, Title: "Coffee", CategorySlug: "coffee", CategoryLabel: "Coffee", City: "Dublin", StartsAt: time.Now().UTC()}, nil
+	return &Meetup{ID: meetupID, OrganizerID: userID, Title: "Coffee", CategorySlug: "social", CategoryLabel: "Social", City: "Dublin", StartsAt: time.Now().UTC()}, nil
 }
 
 func (m *mockQuerier) CreateMeetup(ctx context.Context, userID uuid.UUID, input CreateMeetupInput) (*Meetup, error) {
 	if m.createMeetup != nil {
 		return m.createMeetup(ctx, userID, input)
 	}
-	return &Meetup{ID: uuid.New(), OrganizerID: userID, Title: input.Title, CategorySlug: input.CategorySlug, CategoryLabel: "Coffee", City: input.City, StartsAt: input.StartsAt}, nil
+	return &Meetup{ID: uuid.New(), OrganizerID: userID, Title: input.Title, CategorySlug: input.CategorySlug, CategoryLabel: "Social", City: input.City, StartsAt: input.StartsAt}, nil
 }
 
 func (m *mockQuerier) UpdateMeetup(ctx context.Context, meetupID, userID uuid.UUID, input UpdateMeetupInput) (*Meetup, error) {
 	if m.updateMeetup != nil {
 		return m.updateMeetup(ctx, meetupID, userID, input)
 	}
-	return &Meetup{ID: meetupID, OrganizerID: userID, Title: input.Title, CategorySlug: input.CategorySlug, CategoryLabel: "Coffee", City: input.City, StartsAt: input.StartsAt}, nil
+	return &Meetup{ID: meetupID, OrganizerID: userID, Title: input.Title, CategorySlug: input.CategorySlug, CategoryLabel: "Social", City: input.City, StartsAt: input.StartsAt}, nil
 }
 
 func (m *mockQuerier) CancelMeetup(ctx context.Context, meetupID, userID uuid.UUID) (*Meetup, error) {
@@ -148,7 +157,7 @@ func authedRequest(method, target, body string) *http.Request {
 }
 
 func validCreateBody() string {
-	return `{"title":"Coffee Walk","category_slug":"coffee","event_type":"in_person","status":"published","visibility":"public","city":"Dublin","starts_at":"2026-05-01T19:00:00Z"}`
+	return `{"title":"Coffee Walk","category_slug":"social","event_type":"in_person","status":"published","visibility":"public","city":"Dublin","starts_at":"2026-05-01T19:00:00Z"}`
 }
 
 func TestListCategoriesSuccess(t *testing.T) {
@@ -160,10 +169,76 @@ func TestListCategoriesSuccess(t *testing.T) {
 	}
 }
 
+func TestListLocationSuggestionsSuccess(t *testing.T) {
+	h := NewHandler(&mockQuerier{
+		listLocationSuggestions: func(_ context.Context, query string, limit int) ([]MeetupLocationSuggestion, error) {
+			if query != "dubl" {
+				t.Fatalf("query = %q, want dubl", query)
+			}
+			if limit != 8 {
+				t.Fatalf("limit = %d, want 8", limit)
+			}
+			country := "Ireland"
+			return []MeetupLocationSuggestion{{Label: "Dublin, Ireland", City: "Dublin", Country: &country, MeetupCount: 2}}, nil
+		},
+	})
+	rec := httptest.NewRecorder()
+	h.ListLocationSuggestions(rec, httptest.NewRequest(http.MethodGet, "/meetups/locations?q=dubl", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+}
+
+func TestListLocationSuggestionsRequiresTwoCharacters(t *testing.T) {
+	h := NewHandler(&mockQuerier{
+		listLocationSuggestions: func(context.Context, string, int) ([]MeetupLocationSuggestion, error) {
+			t.Fatal("expected short query to skip store lookup")
+			return nil, nil
+		},
+	})
+	rec := httptest.NewRecorder()
+	h.ListLocationSuggestions(rec, httptest.NewRequest(http.MethodGet, "/meetups/locations?q=d", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+}
+
 func TestListMeetupsSuccess(t *testing.T) {
 	h := NewHandler(&mockQuerier{})
 	rec := httptest.NewRecorder()
 	h.ListMeetups(rec, authedRequest(http.MethodGet, "/meetups", ""))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+}
+
+func TestListMeetupsNormalizesLegacyCategoryFilter(t *testing.T) {
+	h := NewHandler(&mockQuerier{
+		discoverMeetups: func(_ context.Context, _ uuid.UUID, params DiscoverMeetupsParams) (*CursorPage[Meetup], error) {
+			if params.CategorySlug != "social" {
+				t.Fatalf("CategorySlug = %q, want social", params.CategorySlug)
+			}
+			return &CursorPage[Meetup]{Items: []Meetup{}, Limit: params.Limit}, nil
+		},
+	})
+	rec := httptest.NewRecorder()
+	h.ListMeetups(rec, authedRequest(http.MethodGet, "/meetups?category=coffee", ""))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+}
+
+func TestListMeetupsParsesSelectedLocationCountry(t *testing.T) {
+	h := NewHandler(&mockQuerier{
+		discoverMeetups: func(_ context.Context, _ uuid.UUID, params DiscoverMeetupsParams) (*CursorPage[Meetup], error) {
+			if params.City != "Dublin" || params.Country != "Ireland" {
+				t.Fatalf("location = %q/%q, want Dublin/Ireland", params.City, params.Country)
+			}
+			return &CursorPage[Meetup]{Items: []Meetup{}, Limit: params.Limit}, nil
+		},
+	})
+	rec := httptest.NewRecorder()
+	h.ListMeetups(rec, authedRequest(http.MethodGet, "/meetups?city=Dublin&country=Ireland", ""))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
 	}
@@ -248,7 +323,7 @@ func TestCreateMeetupParsesCoHosts(t *testing.T) {
 			if len(input.CoHostIDs) != 1 || input.CoHostIDs[0] != coHostID {
 				t.Fatalf("co-host ids = %v, want [%s]", input.CoHostIDs, coHostID)
 			}
-			return &Meetup{ID: uuid.New(), OrganizerID: userID, Title: input.Title, CategorySlug: input.CategorySlug, CategoryLabel: "Coffee", City: input.City, StartsAt: input.StartsAt}, nil
+			return &Meetup{ID: uuid.New(), OrganizerID: userID, Title: input.Title, CategorySlug: input.CategorySlug, CategoryLabel: "Social", City: input.City, StartsAt: input.StartsAt}, nil
 		},
 	})
 	body := `{"title":"Coffee Walk","category_slug":"coffee","event_type":"in_person","status":"published","visibility":"public","city":"Dublin","starts_at":"2026-05-01T19:00:00Z","co_host_ids":["` + coHostID.String() + `"]}`

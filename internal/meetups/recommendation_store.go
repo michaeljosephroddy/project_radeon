@@ -270,8 +270,8 @@ func buildRecommendedMeetupQuery(userID uuid.UUID) (string, []any) {
 			u.avatar_url,
 			m.title,
 			m.description,
-			COALESCE(m.category_slug, 'community') AS category_slug,
-			COALESCE(ec.label, 'Community') AS category_label,
+			COALESCE(m.category_slug, 'social') AS category_slug,
+			COALESCE(ec.label, 'Social') AS category_label,
 			m.event_type,
 			m.status,
 			m.visibility,
@@ -328,8 +328,8 @@ func buildRecommendedSocialMeetupQuery(userID uuid.UUID) (string, []any) {
 			u.avatar_url,
 			m.title,
 			m.description,
-			COALESCE(m.category_slug, 'community') AS category_slug,
-			COALESCE(ec.label, 'Community') AS category_label,
+			COALESCE(m.category_slug, 'social') AS category_slug,
+			COALESCE(ec.label, 'Social') AS category_label,
 			m.event_type,
 			m.status,
 			m.visibility,
@@ -381,7 +381,7 @@ func appendCommonRecommendedFilters(query *string, args *[]any, params DiscoverM
 		`, placeholder, placeholder, placeholder, placeholder)
 	}
 	if params.CategorySlug != "" {
-		*query += " AND COALESCE(m.category_slug, 'community') = " + appendQueryArg(args, params.CategorySlug)
+		*query += " AND COALESCE(m.category_slug, 'social') = " + appendQueryArg(args, params.CategorySlug)
 	}
 	if params.EventType != "" {
 		*query += " AND m.event_type = " + appendQueryArg(args, params.EventType)
@@ -396,6 +396,9 @@ func appendCommonRecommendedFilters(query *string, args *[]any, params DiscoverM
 				OR COALESCE(m.venue_name, '') ILIKE %s
 			)
 		`, placeholder, placeholder, placeholder)
+	}
+	if params.Country != "" {
+		*query += " AND COALESCE(m.country, '') ILIKE " + appendQueryArg(args, params.Country)
 	}
 	if params.OpenSpotsOnly {
 		*query += " AND (m.capacity IS NULL OR m.attendee_count < m.capacity)"
