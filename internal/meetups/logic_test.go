@@ -19,7 +19,7 @@ func TestNormalizeMeetupInput(t *testing.T) {
 	if input.Title != "Weekly Meetup" || input.City != "Dublin" {
 		t.Fatalf("unexpected normalized input: %+v", input)
 	}
-	if input.CategorySlug != "coffee" || input.EventType != "in_person" || input.Status != "published" || input.Visibility != "public" {
+	if input.CategorySlug != "social" || input.EventType != "in_person" || input.Status != "published" || input.Visibility != "public" {
 		t.Fatalf("unexpected normalized metadata: %+v", input)
 	}
 	if input.Description == nil || *input.Description != "hello world" {
@@ -27,6 +27,27 @@ func TestNormalizeMeetupInput(t *testing.T) {
 	}
 	if input.Country == nil || *input.Country != "Ireland" {
 		t.Fatalf("unexpected country: %v", input.Country)
+	}
+}
+
+func TestNormalizeMeetupCategorySlug(t *testing.T) {
+	cases := map[string]string{
+		"coffee":       "social",
+		"food":         "social",
+		"books":        "social",
+		"arts":         "social",
+		"community":    "social",
+		"running":      "activity",
+		"outdoors":     "activity",
+		"volunteering": "service",
+		"wellness":     "wellness",
+		" Online ":     "online",
+	}
+
+	for raw, want := range cases {
+		if got := normalizeMeetupCategorySlug(raw); got != want {
+			t.Fatalf("normalizeMeetupCategorySlug(%q) = %q, want %q", raw, got, want)
+		}
 	}
 }
 

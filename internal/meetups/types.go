@@ -12,6 +12,15 @@ type MeetupCategory struct {
 	SortOrder int    `json:"sort_order"`
 }
 
+type MeetupLocationSuggestion struct {
+	Label       string   `json:"label"`
+	City        string   `json:"city"`
+	Country     *string  `json:"country,omitempty"`
+	Latitude    *float64 `json:"lat,omitempty"`
+	Longitude   *float64 `json:"lng,omitempty"`
+	MeetupCount int      `json:"meetup_count"`
+}
+
 type MeetupHost struct {
 	ID        uuid.UUID `json:"id"`
 	Username  string    `json:"username"`
@@ -93,6 +102,7 @@ type DiscoverMeetupsParams struct {
 	Query         string
 	CategorySlug  string
 	City          string
+	Country       string
 	DistanceKM    *int
 	EventType     string
 	DatePreset    string

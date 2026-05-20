@@ -51,6 +51,31 @@ func (s *cachedStore) ListCategories(ctx context.Context) ([]MeetupCategory, err
 	return categories, nil
 }
 
+func (s *cachedStore) ListLocationSuggestions(ctx context.Context, query string, limit int) ([]MeetupLocationSuggestion, error) {
+	version, err := s.cache.GetVersion(ctx, s.meetupsVersionKey())
+	if err != nil {
+		return s.inner.ListLocationSuggestions(ctx, query, limit)
+	}
+	key := s.cache.Key(
+		"meetups", "locations",
+		"v", strconv.FormatInt(version, 10),
+		"q", encodeMeetupPart(strings.ToLower(strings.TrimSpace(query))),
+		"limit", strconv.Itoa(limit),
+	)
+	var suggestions []MeetupLocationSuggestion
+	if err := s.cache.ReadThrough(ctx, key, categoriesTTL, &suggestions, func(ctx context.Context, dest any) error {
+		loaded, err := s.inner.ListLocationSuggestions(ctx, query, limit)
+		if err != nil {
+			return err
+		}
+		*dest.(*[]MeetupLocationSuggestion) = loaded
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	return suggestions, nil
+}
+
 func (s *cachedStore) DiscoverMeetups(ctx context.Context, userID uuid.UUID, params DiscoverMeetupsParams) (*CursorPage[Meetup], error) {
 	version, err := s.cache.GetVersion(ctx, s.meetupsVersionKey())
 	if err != nil {
@@ -69,6 +94,7 @@ func (s *cachedStore) DiscoverMeetups(ctx context.Context, userID uuid.UUID, par
 		"q", encodeMeetupPart(params.Query),
 		"category", encodeMeetupPart(params.CategorySlug),
 		"city", encodeMeetupPart(params.City),
+		"country", encodeMeetupPart(params.Country),
 		"distance", encodeOptionalInt(params.DistanceKM),
 		"type", encodeMeetupPart(params.EventType),
 		"date_preset", encodeMeetupPart(params.DatePreset),
@@ -110,6 +136,7 @@ func (s *cachedStore) discoverRecommendedMeetupsFromWindowCache(ctx context.Cont
 		"q", encodeMeetupPart(params.Query),
 		"category", encodeMeetupPart(params.CategorySlug),
 		"city", encodeMeetupPart(params.City),
+		"country", encodeMeetupPart(params.Country),
 		"distance", encodeOptionalInt(params.DistanceKM),
 		"type", encodeMeetupPart(params.EventType),
 		"date_preset", encodeMeetupPart(params.DatePreset),

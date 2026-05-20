@@ -70,6 +70,82 @@ func (s *pgStore) ListCategories(ctx context.Context) ([]MeetupCategory, error) 
 	return categories, rows.Err()
 }
 
+func (s *pgStore) ListLocationSuggestions(ctx context.Context, query string, limit int) ([]MeetupLocationSuggestion, error) {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return []MeetupLocationSuggestion{}, nil
+	}
+	if limit < 1 {
+		limit = 8
+	}
+	if limit > 15 {
+		limit = 15
+	}
+
+	containsPattern := "%" + query + "%"
+	prefixPattern := query + "%"
+	rows, err := s.pool.Query(ctx, `
+		WITH grouped_locations AS (
+			SELECT
+				TRIM(m.city) AS city,
+				NULLIF(TRIM(COALESCE(m.country, '')), '') AS country,
+				AVG(m.lat) AS lat,
+				AVG(m.lng) AS lng,
+				COUNT(*)::int AS meetup_count
+			FROM meetups m
+			WHERE m.status = 'published'
+				AND m.visibility = 'public'
+				AND m.starts_at >= NOW()
+				AND TRIM(COALESCE(m.city, '')) <> ''
+				AND (
+					m.city ILIKE $1
+					OR COALESCE(m.country, '') ILIKE $1
+					OR CONCAT_WS(', ', m.city, m.country) ILIKE $1
+				)
+			GROUP BY TRIM(m.city), NULLIF(TRIM(COALESCE(m.country, '')), '')
+		)
+		SELECT city, country, lat, lng, meetup_count
+		FROM grouped_locations
+		ORDER BY
+			CASE
+				WHEN LOWER(city) = LOWER($2) THEN 0
+				WHEN LOWER(city) LIKE LOWER($3) THEN 1
+				ELSE 2
+			END,
+			meetup_count DESC,
+			city ASC
+		LIMIT $4
+	`, containsPattern, query, prefixPattern, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	suggestions := []MeetupLocationSuggestion{}
+	for rows.Next() {
+		var suggestion MeetupLocationSuggestion
+		if err := rows.Scan(
+			&suggestion.City,
+			&suggestion.Country,
+			&suggestion.Latitude,
+			&suggestion.Longitude,
+			&suggestion.MeetupCount,
+		); err != nil {
+			return nil, err
+		}
+		suggestion.Label = formatMeetupLocationLabel(suggestion.City, suggestion.Country)
+		suggestions = append(suggestions, suggestion)
+	}
+	return suggestions, rows.Err()
+}
+
+func formatMeetupLocationLabel(city string, country *string) string {
+	if country != nil && strings.TrimSpace(*country) != "" {
+		return city + ", " + strings.TrimSpace(*country)
+	}
+	return city
+}
+
 func (s *pgStore) DiscoverMeetups(ctx context.Context, userID uuid.UUID, params DiscoverMeetupsParams) (*CursorPage[Meetup], error) {
 	viewer, err := s.loadViewerContext(ctx, userID)
 	if err != nil {
@@ -605,8 +681,8 @@ func (s *pgStore) loadDiscoverMeetups(ctx context.Context, userID uuid.UUID, par
 			u.avatar_url,
 			m.title,
 			m.description,
-			COALESCE(m.category_slug, 'community') AS category_slug,
-			COALESCE(ec.label, 'Community') AS category_label,
+			COALESCE(m.category_slug, 'social') AS category_slug,
+			COALESCE(ec.label, 'Social') AS category_label,
 			m.event_type,
 			m.status,
 			m.visibility,
@@ -670,7 +746,7 @@ func (s *pgStore) loadDiscoverMeetups(ctx context.Context, userID uuid.UUID, par
 		`, placeholder, placeholder, placeholder, placeholder)
 	}
 	if params.CategorySlug != "" {
-		query += fmt.Sprintf(" AND COALESCE(m.category_slug, 'community') = %s", arg(params.CategorySlug))
+		query += fmt.Sprintf(" AND COALESCE(m.category_slug, 'social') = %s", arg(params.CategorySlug))
 	}
 	if params.EventType != "" {
 		query += fmt.Sprintf(" AND m.event_type = %s", arg(params.EventType))
@@ -685,6 +761,9 @@ func (s *pgStore) loadDiscoverMeetups(ctx context.Context, userID uuid.UUID, par
 				OR COALESCE(m.venue_name, '') ILIKE %s
 			)
 		`, placeholder, placeholder, placeholder)
+	}
+	if params.Country != "" {
+		query += fmt.Sprintf(" AND COALESCE(m.country, '') ILIKE %s", arg(params.Country))
 	}
 	if params.OpenSpotsOnly {
 		query += " AND (m.capacity IS NULL OR m.attendee_count < m.capacity)"
@@ -748,8 +827,8 @@ func (s *pgStore) loadMyMeetups(ctx context.Context, userID uuid.UUID, scope str
 			u.avatar_url,
 			m.title,
 			m.description,
-			COALESCE(m.category_slug, 'community') AS category_slug,
-			COALESCE(ec.label, 'Community') AS category_label,
+			COALESCE(m.category_slug, 'social') AS category_slug,
+			COALESCE(ec.label, 'Social') AS category_label,
 			m.event_type,
 			m.status,
 			m.visibility,
@@ -832,8 +911,8 @@ func (s *pgStore) loadMeetupByID(ctx context.Context, meetupID, userID uuid.UUID
 			u.avatar_url,
 			m.title,
 			m.description,
-			COALESCE(m.category_slug, 'community') AS category_slug,
-			COALESCE(ec.label, 'Community') AS category_label,
+			COALESCE(m.category_slug, 'social') AS category_slug,
+			COALESCE(ec.label, 'Social') AS category_label,
 			m.event_type,
 			m.status,
 			m.visibility,

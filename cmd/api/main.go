@@ -246,6 +246,7 @@ func main() {
 
 		// Meetups
 		r.Get("/meetups/categories", meetupsHandler.ListCategories)
+		r.Get("/meetups/locations", meetupsHandler.ListLocationSuggestions)
 		r.Get("/meetups", meetupsHandler.ListMeetups)
 		r.Post("/meetups", meetupsHandler.CreateMeetup)
 		r.Post("/meetups/images", meetupsHandler.UploadCoverImage)

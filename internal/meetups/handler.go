@@ -26,6 +26,7 @@ import (
 
 type Querier interface {
 	ListCategories(ctx context.Context) ([]MeetupCategory, error)
+	ListLocationSuggestions(ctx context.Context, query string, limit int) ([]MeetupLocationSuggestion, error)
 	DiscoverMeetups(ctx context.Context, userID uuid.UUID, params DiscoverMeetupsParams) (*CursorPage[Meetup], error)
 	ListMyMeetups(ctx context.Context, userID uuid.UUID, params MyMeetupsParams) (*CursorPage[Meetup], error)
 	GetMeetup(ctx context.Context, meetupID, userID uuid.UUID) (*Meetup, error)
@@ -62,6 +63,21 @@ func (h *Handler) ListCategories(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	response.Success(w, http.StatusOK, categories)
+}
+
+func (h *Handler) ListLocationSuggestions(w http.ResponseWriter, r *http.Request) {
+	query := strings.TrimSpace(r.URL.Query().Get("q"))
+	if len([]rune(query)) < 2 {
+		response.Success(w, http.StatusOK, []MeetupLocationSuggestion{})
+		return
+	}
+
+	locations, err := h.db.ListLocationSuggestions(r.Context(), query, parseLimit(r, 8, 15))
+	if err != nil {
+		response.Error(w, http.StatusInternalServerError, "could not fetch meetup locations")
+		return
+	}
+	response.Success(w, http.StatusOK, locations)
 }
 
 func (h *Handler) ListMeetups(w http.ResponseWriter, r *http.Request) {
@@ -530,8 +546,9 @@ func parseDiscoverMeetupsParams(r *http.Request) DiscoverMeetupsParams {
 	query := r.URL.Query()
 	params := DiscoverMeetupsParams{
 		Query:         strings.TrimSpace(query.Get("q")),
-		CategorySlug:  strings.TrimSpace(strings.ToLower(query.Get("category"))),
+		CategorySlug:  normalizeMeetupCategorySlug(query.Get("category")),
 		City:          strings.TrimSpace(query.Get("city")),
+		Country:       strings.TrimSpace(query.Get("country")),
 		EventType:     strings.TrimSpace(strings.ToLower(query.Get("event_type"))),
 		DatePreset:    strings.TrimSpace(strings.ToLower(query.Get("date_preset"))),
 		OpenSpotsOnly: parseBoolQuery(query.Get("open_spots_only")),

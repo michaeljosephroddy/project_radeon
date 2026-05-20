@@ -13,14 +13,14 @@ func TestRankRecommendedCandidatesBoostsFriendAttendance(t *testing.T) {
 	now := time.Date(2026, 4, 26, 12, 0, 0, 0, time.UTC)
 	baseStartsAt := now.Add(24 * time.Hour)
 	organizerID := uuid.New()
-	viewer := viewerContext{Interests: map[string]struct{}{"coffee": {}}}
+	viewer := viewerContext{Interests: map[string]struct{}{"social": {}}}
 
 	withoutFriends := recommendedCandidate{
 		Meetup: Meetup{
 			ID:            uuid.New(),
 			OrganizerID:   organizerID,
-			CategorySlug:  "coffee",
-			CategoryLabel: "Coffee",
+			CategorySlug:  "social",
+			CategoryLabel: "Social",
 			Title:         "Quiet coffee walk",
 			StartsAt:      baseStartsAt,
 			CreatedAt:     now.Add(-2 * time.Hour),
@@ -48,8 +48,8 @@ func TestDiversifyRecommendedCandidatesSplitsRepeatedOrganizers(t *testing.T) {
 			Meetup: Meetup{
 				ID:            uuid.New(),
 				OrganizerID:   organizerA,
-				CategorySlug:  "coffee",
-				CategoryLabel: "Coffee",
+				CategorySlug:  "social",
+				CategoryLabel: "Social",
 				Title:         "A1",
 				StartsAt:      now.Add(24 * time.Hour),
 				CreatedAt:     now,
@@ -60,8 +60,8 @@ func TestDiversifyRecommendedCandidatesSplitsRepeatedOrganizers(t *testing.T) {
 			Meetup: Meetup{
 				ID:            uuid.New(),
 				OrganizerID:   organizerA,
-				CategorySlug:  "coffee",
-				CategoryLabel: "Coffee",
+				CategorySlug:  "social",
+				CategoryLabel: "Social",
 				Title:         "A2",
 				StartsAt:      now.Add(25 * time.Hour),
 				CreatedAt:     now,

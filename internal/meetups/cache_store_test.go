@@ -16,7 +16,11 @@ type stubQuerier struct {
 var organizerID = uuid.New()
 
 func (s *stubQuerier) ListCategories(context.Context) ([]MeetupCategory, error) {
-	return []MeetupCategory{{Slug: "coffee", Label: "Coffee", SortOrder: 1}}, nil
+	return []MeetupCategory{{Slug: "social", Label: "Social", SortOrder: 20}}, nil
+}
+
+func (s *stubQuerier) ListLocationSuggestions(context.Context, string, int) ([]MeetupLocationSuggestion, error) {
+	return []MeetupLocationSuggestion{{Label: "Dublin, Ireland", City: "Dublin", MeetupCount: 1}}, nil
 }
 
 func (s *stubQuerier) DiscoverMeetups(context.Context, uuid.UUID, DiscoverMeetupsParams) (*CursorPage[Meetup], error) {
@@ -34,8 +38,8 @@ func (s *stubQuerier) GetMeetup(_ context.Context, meetupID, userID uuid.UUID) (
 		OrganizerID:       organizerID,
 		OrganizerUsername: "host",
 		Title:             "meetup",
-		CategorySlug:      "coffee",
-		CategoryLabel:     "Coffee",
+		CategorySlug:      "social",
+		CategoryLabel:     "Social",
 		City:              "Dublin",
 		StartsAt:          time.Unix(int64(s.getMeetupCalls), 0).UTC(),
 		IsAttending:       userID == organizerID,

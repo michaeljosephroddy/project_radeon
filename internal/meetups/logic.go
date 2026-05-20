@@ -56,6 +56,17 @@ var validMyMeetupScopes = map[string]bool{
 	"past":      true,
 }
 
+var legacyMeetupCategorySlugs = map[string]string{
+	"coffee":       "social",
+	"food":         "social",
+	"books":        "social",
+	"arts":         "social",
+	"community":    "social",
+	"running":      "activity",
+	"outdoors":     "activity",
+	"volunteering": "service",
+}
+
 type meetupInput struct {
 	Title           string   `json:"title"`
 	Description     *string  `json:"description"`
@@ -83,7 +94,7 @@ type meetupInput struct {
 
 func normalizeMeetupInput(input meetupInput) meetupInput {
 	input.Title = strings.TrimSpace(input.Title)
-	input.CategorySlug = strings.TrimSpace(strings.ToLower(input.CategorySlug))
+	input.CategorySlug = normalizeMeetupCategorySlug(input.CategorySlug)
 	input.EventType = strings.TrimSpace(strings.ToLower(input.EventType))
 	if input.EventType == "" {
 		input.EventType = "in_person"
@@ -114,6 +125,14 @@ func normalizeMeetupInput(input meetupInput) meetupInput {
 	}
 	input.CoHostIDs = normalizeStringSlice(input.CoHostIDs)
 	return input
+}
+
+func normalizeMeetupCategorySlug(value string) string {
+	slug := strings.TrimSpace(strings.ToLower(value))
+	if replacement, ok := legacyMeetupCategorySlugs[slug]; ok {
+		return replacement
+	}
+	return slug
 }
 
 func normalizeStringSlice(values []string) []string {
