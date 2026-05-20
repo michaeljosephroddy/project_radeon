@@ -636,7 +636,7 @@ func TestDiscoverParsesAdvancedFilters(t *testing.T) {
 	}
 }
 
-func TestDiscoverIgnoresAdvancedFiltersWithoutPlus(t *testing.T) {
+func TestDiscoverParsesAdvancedFiltersWithoutPlus(t *testing.T) {
 	var got DiscoverUsersParams
 	h := NewHandler(&mockQuerier{
 		getUser: func(_ context.Context, _, userID uuid.UUID) (*User, error) {
@@ -652,7 +652,7 @@ func TestDiscoverIgnoresAdvancedFiltersWithoutPlus(t *testing.T) {
 			return []User{}, nil
 		},
 	}, &mockUploader{})
-	req := withUserID(httptest.NewRequest(http.MethodGet, "/users/discover?q=hello&gender=robot&intent=dating&age_min=40&age_max=25&distance_km=30&sobriety=not-real&lat=53.34&lng=-6.26", nil), fixedUser)
+	req := withUserID(httptest.NewRequest(http.MethodGet, "/users/discover?q=hello&gender=woman&intent=dating&age_min=25&age_max=40&distance_km=30&sobriety=years_1&interest=Coffee&lat=53.34&lng=-6.26", nil), fixedUser)
 	rec := httptest.NewRecorder()
 
 	h.Discover(rec, req)
@@ -663,23 +663,26 @@ func TestDiscoverIgnoresAdvancedFiltersWithoutPlus(t *testing.T) {
 	if got.Query != "hello" {
 		t.Fatalf("query = %q, want hello", got.Query)
 	}
-	if got.Gender != "" {
-		t.Fatalf("gender = %q, want empty", got.Gender)
+	if got.Gender != "woman" {
+		t.Fatalf("gender = %q, want woman", got.Gender)
 	}
-	if got.Intent != "" {
-		t.Fatalf("intent = %q, want empty", got.Intent)
+	if got.Intent != "dating" {
+		t.Fatalf("intent = %q, want dating", got.Intent)
 	}
-	if got.Sobriety != "" {
-		t.Fatalf("sobriety = %q, want empty", got.Sobriety)
+	if got.Sobriety != "years_1" {
+		t.Fatalf("sobriety = %q, want years_1", got.Sobriety)
 	}
-	if got.AgeMin != nil {
-		t.Fatalf("ageMin = %v, want nil", got.AgeMin)
+	if got.AgeMin == nil || *got.AgeMin != 25 {
+		t.Fatalf("ageMin = %v, want 25", got.AgeMin)
 	}
-	if got.AgeMax != nil {
-		t.Fatalf("ageMax = %v, want nil", got.AgeMax)
+	if got.AgeMax == nil || *got.AgeMax != 40 {
+		t.Fatalf("ageMax = %v, want 40", got.AgeMax)
 	}
-	if got.DistanceKm != nil {
-		t.Fatalf("distanceKm = %v, want nil", got.DistanceKm)
+	if got.DistanceKm == nil || *got.DistanceKm != 30 {
+		t.Fatalf("distanceKm = %v, want 30", got.DistanceKm)
+	}
+	if len(got.Interests) != 1 || got.Interests[0] != "Coffee" {
+		t.Fatalf("interests = %v, want [Coffee]", got.Interests)
 	}
 	if got.Lat == nil || *got.Lat != 53.34 {
 		t.Fatalf("lat = %v, want 53.34", got.Lat)

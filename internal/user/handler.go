@@ -573,7 +573,7 @@ func parseInterestFilters(r *http.Request) []string {
 	return interests
 }
 
-func parseDiscoverRequest(r *http.Request, allowAdvanced bool) (DiscoverUsersParams, error) {
+func parseDiscoverRequest(r *http.Request) (DiscoverUsersParams, error) {
 	params := pagination.Parse(r, 20, 50)
 	query := strings.TrimSpace(r.URL.Query().Get("q"))
 
@@ -597,10 +597,6 @@ func parseDiscoverRequest(r *http.Request, allowAdvanced bool) (DiscoverUsersPar
 		if v, err := strconv.ParseFloat(s, 64); err == nil {
 			request.Lng = &v
 		}
-	}
-
-	if !allowAdvanced {
-		return request, nil
 	}
 
 	var ok bool
@@ -949,13 +945,7 @@ func (h *Handler) UploadBanner(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) Discover(w http.ResponseWriter, r *http.Request) {
 	currentUserID := middleware.CurrentUserID(r)
 
-	viewer, err := h.db.GetUser(r.Context(), currentUserID, currentUserID)
-	if err != nil {
-		response.Error(w, http.StatusInternalServerError, "could not load discover access")
-		return
-	}
-
-	discoverParams, err := parseDiscoverRequest(r, hasDiscoverAdvancedAccess(viewer))
+	discoverParams, err := parseDiscoverRequest(r)
 	if err != nil {
 		response.Error(w, http.StatusBadRequest, err.Error())
 		return
@@ -974,7 +964,7 @@ func (h *Handler) Discover(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) DiscoverPreview(w http.ResponseWriter, r *http.Request) {
 	currentUserID := middleware.CurrentUserID(r)
 
-	discoverParams, err := parseDiscoverRequest(r, true)
+	discoverParams, err := parseDiscoverRequest(r)
 	if err != nil {
 		response.Error(w, http.StatusBadRequest, err.Error())
 		return
@@ -990,13 +980,6 @@ func (h *Handler) DiscoverPreview(w http.ResponseWriter, r *http.Request) {
 	}
 
 	response.Success(w, http.StatusOK, preview)
-}
-
-func hasDiscoverAdvancedAccess(user *User) bool {
-	if user == nil {
-		return false
-	}
-	return user.IsPlus || (user.SubscriptionTier == "plus" && user.SubscriptionStatus == "active")
 }
 
 func parseOptionalIntParam(r *http.Request, key string) (*int, error) {
