@@ -166,7 +166,7 @@ func normalizeSupportTopics(values []string) []string {
 	seen := map[string]bool{}
 	topics := make([]string, 0, len(values))
 	for _, value := range values {
-		topic := strings.TrimSpace(value)
+		topic := normalizeSupportTopic(strings.TrimSpace(value))
 		if topic == "" || seen[topic] {
 			continue
 		}
@@ -174,4 +174,19 @@ func normalizeSupportTopics(values []string) []string {
 		topics = append(topics, topic)
 	}
 	return topics
+}
+
+func normalizeSupportTopic(value string) string {
+	switch value {
+	case "anxiety", "depression":
+		return "mental_health"
+	case "family":
+		return "relationships"
+	case "work", "sleep":
+		return "practical_support"
+	case "celebration":
+		return "general"
+	default:
+		return value
+	}
 }

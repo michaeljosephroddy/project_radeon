@@ -12,6 +12,7 @@ func TestNormalizeCreateSupportRequestInput(t *testing.T) {
 		Urgency:      " soon ",
 		PrivacyLevel: " standard ",
 		Message:      &message,
+		Topics:       []string{" anxiety ", "depression", "family", "work", "sleep", "celebration", "cravings"},
 	})
 
 	if input.SupportType != "chat" || input.Urgency != "medium" || input.PrivacyLevel != "standard" {
@@ -19,6 +20,10 @@ func TestNormalizeCreateSupportRequestInput(t *testing.T) {
 	}
 	if input.Message == nil || *input.Message != "need a chat" {
 		t.Fatalf("unexpected message: %v", input.Message)
+	}
+	wantTopics := []string{"mental_health", "relationships", "practical_support", "general", "cravings"}
+	if strings.Join(input.Topics, ",") != strings.Join(wantTopics, ",") {
+		t.Fatalf("topics = %+v, want %+v", input.Topics, wantTopics)
 	}
 }
 
@@ -85,6 +90,7 @@ func TestValidateCreateSupportRequestInput(t *testing.T) {
 		SupportType:  "chat",
 		Message:      &message,
 		Urgency:      "medium",
+		Topics:       []string{"mental_health", "relationships", "practical_support"},
 		PrivacyLevel: "standard",
 	})
 	if len(errs) != 0 {
