@@ -29,7 +29,7 @@ type Querier interface {
 	GetSupportRequestState(ctx context.Context, requestID uuid.UUID) (requesterID uuid.UUID, status string, err error)
 	CreateSupportOffer(ctx context.Context, requestID, userID uuid.UUID, offerType string, message *string, scheduledFor *time.Time) (*CreateSupportOfferResult, error)
 	GetSupportRequestOwner(ctx context.Context, requestID uuid.UUID) (uuid.UUID, error)
-	ListSupportOffers(ctx context.Context, requestID uuid.UUID, limit, offset int) ([]SupportOffer, error)
+	ListSupportOffers(ctx context.Context, requestID uuid.UUID, status string, limit, offset int) ([]SupportOffer, error)
 	CreateSupportReply(ctx context.Context, requestID, authorID uuid.UUID, body string) (*SupportReply, error)
 	ListSupportReplies(ctx context.Context, requestID uuid.UUID, cursor *SupportReplyCursor, limit int) ([]SupportReply, error)
 	DeclineSupportOffer(ctx context.Context, requesterID, requestID, offerID uuid.UUID) error
@@ -613,8 +613,13 @@ func (h *Handler) ListSupportOffers(w http.ResponseWriter, r *http.Request) {
 	}
 
 	params := pagination.Parse(r, 50, 100)
+	status := strings.TrimSpace(r.URL.Query().Get("status"))
+	if status != "" && status != "pending" && status != "accepted" {
+		response.Error(w, http.StatusBadRequest, "invalid support offer status")
+		return
+	}
 
-	offers, err := h.db.ListSupportOffers(r.Context(), requestID, params.Limit+1, params.Offset)
+	offers, err := h.db.ListSupportOffers(r.Context(), requestID, status, params.Limit+1, params.Offset)
 	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "could not fetch support offers")
 		return
