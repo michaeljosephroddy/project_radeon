@@ -27,7 +27,7 @@ type mockQuerier struct {
 	getSupportRequestState        func(ctx context.Context, requestID uuid.UUID) (uuid.UUID, string, error)
 	createSupportOffer            func(ctx context.Context, requestID, userID uuid.UUID, offerType string, message *string, scheduledFor *time.Time) (*CreateSupportOfferResult, error)
 	getSupportRequestOwner        func(ctx context.Context, requestID uuid.UUID) (uuid.UUID, error)
-	listSupportOffers             func(ctx context.Context, requestID uuid.UUID, limit, offset int) ([]SupportOffer, error)
+	listSupportOffers             func(ctx context.Context, requestID uuid.UUID, status string, limit, offset int) ([]SupportOffer, error)
 	createSupportReply            func(ctx context.Context, requestID, authorID uuid.UUID, body string) (*SupportReply, error)
 	listSupportReplies            func(ctx context.Context, requestID uuid.UUID, cursor *SupportReplyCursor, limit int) ([]SupportReply, error)
 	declineSupportOffer           func(ctx context.Context, requesterID, requestID, offerID uuid.UUID) error
@@ -100,9 +100,9 @@ func (m *mockQuerier) GetSupportRequestOwner(ctx context.Context, requestID uuid
 	}
 	return uuid.Nil, ErrNotFound
 }
-func (m *mockQuerier) ListSupportOffers(ctx context.Context, requestID uuid.UUID, limit, offset int) ([]SupportOffer, error) {
+func (m *mockQuerier) ListSupportOffers(ctx context.Context, requestID uuid.UUID, status string, limit, offset int) ([]SupportOffer, error) {
 	if m.listSupportOffers != nil {
-		return m.listSupportOffers(ctx, requestID, limit, offset)
+		return m.listSupportOffers(ctx, requestID, status, limit, offset)
 	}
 	return nil, nil
 }
@@ -460,5 +460,45 @@ func TestListSupportOffersSuccess(t *testing.T) {
 	h.ListSupportOffers(rec, authedRequestWithID(http.MethodGet, "", fixedRequest.String()))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+}
+
+func TestListSupportOffersFiltersByStatus(t *testing.T) {
+	var gotStatus string
+	h := NewHandler(&mockQuerier{
+		getSupportRequestOwner: func(_ context.Context, _ uuid.UUID) (uuid.UUID, error) {
+			return fixedUser, nil
+		},
+		listSupportOffers: func(_ context.Context, _ uuid.UUID, status string, _ int, _ int) ([]SupportOffer, error) {
+			gotStatus = status
+			return nil, nil
+		},
+	})
+	req := authedRequestWithID(http.MethodGet, "", fixedRequest.String())
+	req.URL.RawQuery = "status=pending"
+	rec := httptest.NewRecorder()
+	h.ListSupportOffers(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if gotStatus != "pending" {
+		t.Fatalf("offer status filter = %q, want pending", gotStatus)
+	}
+}
+
+func TestListSupportOffersRejectsUnsupportedStatus(t *testing.T) {
+	h := NewHandler(&mockQuerier{
+		getSupportRequestOwner: func(_ context.Context, _ uuid.UUID) (uuid.UUID, error) {
+			return fixedUser, nil
+		},
+	})
+	for _, status := range []string{"bogus", "not_selected", "all"} {
+		req := authedRequestWithID(http.MethodGet, "", fixedRequest.String())
+		req.URL.RawQuery = "status=" + status
+		rec := httptest.NewRecorder()
+		h.ListSupportOffers(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("status %q got http %d, want %d", status, rec.Code, http.StatusBadRequest)
+		}
 	}
 }

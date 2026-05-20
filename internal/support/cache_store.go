@@ -214,8 +214,8 @@ func (s *cachedStore) GetSupportRequestOwner(ctx context.Context, requestID uuid
 	return s.inner.GetSupportRequestOwner(ctx, requestID)
 }
 
-func (s *cachedStore) ListSupportOffers(ctx context.Context, requestID uuid.UUID, limit, offset int) ([]SupportOffer, error) {
-	return s.inner.ListSupportOffers(ctx, requestID, limit, offset)
+func (s *cachedStore) ListSupportOffers(ctx context.Context, requestID uuid.UUID, status string, limit, offset int) ([]SupportOffer, error) {
+	return s.inner.ListSupportOffers(ctx, requestID, status, limit, offset)
 }
 
 func (s *cachedStore) CreateSupportReply(ctx context.Context, requestID, authorID uuid.UUID, body string) (*SupportReply, error) {

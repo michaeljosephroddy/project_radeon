@@ -67,7 +67,7 @@ func (s *stubQuerier) GetSupportRequestOwner(context.Context, uuid.UUID) (uuid.U
 	return requestOwnerID, nil
 }
 
-func (s *stubQuerier) ListSupportOffers(context.Context, uuid.UUID, int, int) ([]SupportOffer, error) {
+func (s *stubQuerier) ListSupportOffers(context.Context, uuid.UUID, string, int, int) ([]SupportOffer, error) {
 	return nil, nil
 }
 

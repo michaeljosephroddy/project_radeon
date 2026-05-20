@@ -794,9 +794,8 @@ func (s *pgStore) GetSupportRequestOwner(ctx context.Context, requestID uuid.UUI
 	return requesterID, err
 }
 
-func (s *pgStore) ListSupportOffers(ctx context.Context, requestID uuid.UUID, limit, offset int) ([]SupportOffer, error) {
-	rows, err := s.pool.Query(ctx,
-		`SELECT
+func (s *pgStore) ListSupportOffers(ctx context.Context, requestID uuid.UUID, status string, limit, offset int) ([]SupportOffer, error) {
+	query := `SELECT
 			sres.id, sres.support_request_id, sres.responder_id,
 			u.username, u.avatar_url, u.city,
 			sres.response_type, sres.message, sres.status, sres.scheduled_for, sres.created_at,
@@ -804,11 +803,22 @@ func (s *pgStore) ListSupportOffers(ctx context.Context, requestID uuid.UUID, li
 		FROM support_responses sres
 		JOIN support_requests sr ON sr.id = sres.support_request_id
 		JOIN users u ON u.id = sres.responder_id
-		WHERE sres.support_request_id = $1
+		WHERE sres.support_request_id = $1`
+	args := []any{requestID}
+	if status != "" {
+		query += `
+			AND sres.status = $2
 		ORDER BY sres.created_at ASC
-		LIMIT $2 OFFSET $3`,
-		requestID, limit, offset,
-	)
+		LIMIT $3 OFFSET $4`
+		args = append(args, status, limit, offset)
+	} else {
+		query += `
+		ORDER BY sres.created_at ASC
+		LIMIT $2 OFFSET $3`
+		args = append(args, limit, offset)
+	}
+
+	rows, err := s.pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
