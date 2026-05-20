@@ -70,6 +70,8 @@ type Querier interface {
 	GetUser(ctx context.Context, viewerID, userID uuid.UUID) (*User, error)
 	UsernameExistsForOthers(ctx context.Context, username string, userID uuid.UUID) (bool, error)
 	UpdateUser(ctx context.Context, userID uuid.UUID, username, city, country, gender, bio *string, soberSince *time.Time, replaceSoberSince bool, birthDate *time.Time, replaceBirthDate bool, interests []string, replaceInterests bool, connectionIntents []string, replaceConnectionIntents bool, lat, lng *float64) error
+	UpdateOnboardingMilestones(ctx context.Context, userID uuid.UUID, firstFriendUserID, firstGroupID, firstPostID *uuid.UUID) error
+	CompleteOnboarding(ctx context.Context, userID uuid.UUID) error
 	UpdateAvatarURL(ctx context.Context, userID uuid.UUID, avatarURL string) error
 	UpdateBannerURL(ctx context.Context, userID uuid.UUID, bannerURL string) error
 	UpdateCurrentLocation(ctx context.Context, userID uuid.UUID, lat, lng float64, city string) error
@@ -92,28 +94,35 @@ func NewHandler(db Querier, uploader Uploader) *Handler {
 }
 
 type User struct {
-	ID                      uuid.UUID  `json:"id"`
-	Username                string     `json:"username"`
-	AvatarURL               *string    `json:"avatar_url"`
-	BannerURL               *string    `json:"banner_url"`
-	IsPlus                  bool       `json:"is_plus"`
-	SubscriptionTier        string     `json:"subscription_tier"`
-	SubscriptionStatus      string     `json:"subscription_status"`
-	City                    *string    `json:"city"`
-	Country                 *string    `json:"country"`
-	Bio                     *string    `json:"bio"`
-	Interests               []string   `json:"interests"`
-	ConnectionIntents       []string   `json:"connection_intents"`
-	Gender                  *string    `json:"gender"`
-	BirthDate               *string    `json:"birth_date"`
-	SoberSince              *time.Time `json:"sober_since"`
-	CreatedAt               time.Time  `json:"created_at"`
-	FriendshipStatus        string     `json:"friendship_status"`
-	FriendCount             int        `json:"friend_count"`
-	IncomingFriendRequestCt int        `json:"incoming_friend_request_count"`
-	OutgoingFriendRequestCt int        `json:"outgoing_friend_request_count"`
-	CurrentCity             *string    `json:"current_city,omitempty"`
-	LocationUpdatedAt       *time.Time `json:"location_updated_at,omitempty"`
+	ID                            uuid.UUID  `json:"id"`
+	Username                      string     `json:"username"`
+	AvatarURL                     *string    `json:"avatar_url"`
+	BannerURL                     *string    `json:"banner_url"`
+	IsPlus                        bool       `json:"is_plus"`
+	SubscriptionTier              string     `json:"subscription_tier"`
+	SubscriptionStatus            string     `json:"subscription_status"`
+	OnboardingCompletedAt         *time.Time `json:"onboarding_completed_at"`
+	IdentityVerificationStatus    string     `json:"identity_verification_status"`
+	IdentityVerifiedAt            *time.Time `json:"identity_verified_at"`
+	IdentityVerificationLastError *string    `json:"identity_verification_last_error"`
+	OnboardingFirstFriendUserID   *uuid.UUID `json:"onboarding_first_friend_user_id"`
+	OnboardingFirstGroupID        *uuid.UUID `json:"onboarding_first_group_id"`
+	OnboardingFirstPostID         *uuid.UUID `json:"onboarding_first_post_id"`
+	City                          *string    `json:"city"`
+	Country                       *string    `json:"country"`
+	Bio                           *string    `json:"bio"`
+	Interests                     []string   `json:"interests"`
+	ConnectionIntents             []string   `json:"connection_intents"`
+	Gender                        *string    `json:"gender"`
+	BirthDate                     *string    `json:"birth_date"`
+	SoberSince                    *time.Time `json:"sober_since"`
+	CreatedAt                     time.Time  `json:"created_at"`
+	FriendshipStatus              string     `json:"friendship_status"`
+	FriendCount                   int        `json:"friend_count"`
+	IncomingFriendRequestCt       int        `json:"incoming_friend_request_count"`
+	OutgoingFriendRequestCt       int        `json:"outgoing_friend_request_count"`
+	CurrentCity                   *string    `json:"current_city,omitempty"`
+	LocationUpdatedAt             *time.Time `json:"location_updated_at,omitempty"`
 }
 
 // GetMe returns the authenticated user's profile record.
@@ -148,17 +157,21 @@ func (h *Handler) UpdateMe(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.CurrentUserID(r)
 
 	var input struct {
-		Username          *string   `json:"username"`
-		City              *string   `json:"city"`
-		Country           *string   `json:"country"`
-		Gender            *string   `json:"gender"`
-		Bio               *string   `json:"bio"`
-		BirthDate         *string   `json:"birth_date"`
-		SoberSince        *string   `json:"sober_since"`
-		Interests         *[]string `json:"interests"`
-		ConnectionIntents *[]string `json:"connection_intents"`
-		Lat               *float64  `json:"lat"`
-		Lng               *float64  `json:"lng"`
+		Username                    *string   `json:"username"`
+		City                        *string   `json:"city"`
+		Country                     *string   `json:"country"`
+		Gender                      *string   `json:"gender"`
+		Bio                         *string   `json:"bio"`
+		BirthDate                   *string   `json:"birth_date"`
+		SoberSince                  *string   `json:"sober_since"`
+		Interests                   *[]string `json:"interests"`
+		ConnectionIntents           *[]string `json:"connection_intents"`
+		Lat                         *float64  `json:"lat"`
+		Lng                         *float64  `json:"lng"`
+		OnboardingCompleted         *bool     `json:"onboarding_completed"`
+		OnboardingFirstFriendUserID *string   `json:"onboarding_first_friend_user_id"`
+		OnboardingFirstGroupID      *string   `json:"onboarding_first_group_id"`
+		OnboardingFirstPostID       *string   `json:"onboarding_first_post_id"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
@@ -295,6 +308,34 @@ func (h *Handler) UpdateMe(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	var onboardingFirstFriendUserID *uuid.UUID
+	var onboardingFirstGroupID *uuid.UUID
+	var onboardingFirstPostID *uuid.UUID
+	if input.OnboardingFirstFriendUserID != nil {
+		parsedID, err := uuid.Parse(*input.OnboardingFirstFriendUserID)
+		if err != nil {
+			response.Error(w, http.StatusBadRequest, "invalid first friend user id")
+			return
+		}
+		onboardingFirstFriendUserID = &parsedID
+	}
+	if input.OnboardingFirstGroupID != nil {
+		parsedID, err := uuid.Parse(*input.OnboardingFirstGroupID)
+		if err != nil {
+			response.Error(w, http.StatusBadRequest, "invalid first group id")
+			return
+		}
+		onboardingFirstGroupID = &parsedID
+	}
+	if input.OnboardingFirstPostID != nil {
+		parsedID, err := uuid.Parse(*input.OnboardingFirstPostID)
+		if err != nil {
+			response.Error(w, http.StatusBadRequest, "invalid first post id")
+			return
+		}
+		onboardingFirstPostID = &parsedID
+	}
+
 	if err := h.db.UpdateUser(
 		r.Context(),
 		userID,
@@ -317,6 +358,22 @@ func (h *Handler) UpdateMe(w http.ResponseWriter, r *http.Request) {
 		log.Printf("update profile failed for user %s: %v", userID, err)
 		response.Error(w, http.StatusInternalServerError, "could not update profile")
 		return
+	}
+
+	if onboardingFirstFriendUserID != nil || onboardingFirstGroupID != nil || onboardingFirstPostID != nil {
+		if err := h.db.UpdateOnboardingMilestones(r.Context(), userID, onboardingFirstFriendUserID, onboardingFirstGroupID, onboardingFirstPostID); err != nil {
+			log.Printf("update onboarding milestones failed for user %s: %v", userID, err)
+			response.Error(w, http.StatusInternalServerError, "could not update onboarding progress")
+			return
+		}
+	}
+
+	if input.OnboardingCompleted != nil && *input.OnboardingCompleted {
+		if err := h.db.CompleteOnboarding(r.Context(), userID); err != nil {
+			log.Printf("complete onboarding failed for user %s: %v", userID, err)
+			response.Error(w, http.StatusInternalServerError, "could not complete onboarding")
+			return
+		}
 	}
 
 	user, _ := h.db.GetUser(r.Context(), userID, userID)

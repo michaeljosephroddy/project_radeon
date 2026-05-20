@@ -89,6 +89,22 @@ func (s *cachedStore) UpdateCurrentLocation(ctx context.Context, userID uuid.UUI
 	)
 }
 
+func (s *cachedStore) CompleteOnboarding(ctx context.Context, userID uuid.UUID) error {
+	if err := s.inner.CompleteOnboarding(ctx, userID); err != nil {
+		return err
+	}
+
+	return s.cache.BumpVersions(ctx, s.userVersionKey(userID))
+}
+
+func (s *cachedStore) UpdateOnboardingMilestones(ctx context.Context, userID uuid.UUID, firstFriendUserID, firstGroupID, firstPostID *uuid.UUID) error {
+	if err := s.inner.UpdateOnboardingMilestones(ctx, userID, firstFriendUserID, firstGroupID, firstPostID); err != nil {
+		return err
+	}
+
+	return s.cache.BumpVersions(ctx, s.userVersionKey(userID))
+}
+
 func (s *cachedStore) UpdateAvatarURL(ctx context.Context, userID uuid.UUID, avatarURL string) error {
 	if err := s.inner.UpdateAvatarURL(ctx, userID, avatarURL); err != nil {
 		return err

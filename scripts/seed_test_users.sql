@@ -36,72 +36,72 @@ END;
 $$;
 
 -- Step 2: Assign interests (varied combos to exercise both interest similarity and proximity scoring)
--- Available: Running, Coffee, Hiking, Music, Travel, Mindfulness, Yoga, Cycling, Reading, Film, Cooking, Photography, Gaming, Art, Volunteering
+-- Available: Coffee, Fitness, Outdoors, Reading, Music, Movies & TV, Cooking, Gaming, Art & Creativity, Mindfulness, Meetings, Volunteering, Family, Sports, Travel, Pets
 
 -- Aoife, Portlaoise
 INSERT INTO user_interests (user_id, interest_id)
 SELECT 'a1000000-0000-0000-0000-000000000001', id FROM interests
-WHERE name IN ('Running', 'Hiking', 'Music', 'Travel')
+WHERE name IN ('Fitness', 'Outdoors', 'Music', 'Travel')
 ON CONFLICT DO NOTHING;
 
 -- Ciaran, Carlow
 INSERT INTO user_interests (user_id, interest_id)
 SELECT 'a1000000-0000-0000-0000-000000000002', id FROM interests
-WHERE name IN ('Coffee', 'Music', 'Mindfulness', 'Yoga')
+WHERE name IN ('Coffee', 'Music', 'Mindfulness', 'Fitness')
 ON CONFLICT DO NOTHING;
 
 -- Siobhan, Dublin
 INSERT INTO user_interests (user_id, interest_id)
 SELECT 'a1000000-0000-0000-0000-000000000003', id FROM interests
-WHERE name IN ('Running', 'Cycling', 'Reading', 'Gaming')
+WHERE name IN ('Fitness', 'Sports', 'Reading', 'Gaming')
 ON CONFLICT DO NOTHING;
 
 -- Declan, Cork
 INSERT INTO user_interests (user_id, interest_id)
 SELECT 'a1000000-0000-0000-0000-000000000004', id FROM interests
-WHERE name IN ('Travel', 'Film', 'Cooking', 'Photography')
+WHERE name IN ('Travel', 'Movies & TV', 'Cooking', 'Art & Creativity')
 ON CONFLICT DO NOTHING;
 
 -- Niamh, Athy
 INSERT INTO user_interests (user_id, interest_id)
 SELECT 'a1000000-0000-0000-0000-000000000005', id FROM interests
-WHERE name IN ('Running', 'Music', 'Travel', 'Volunteering')
+WHERE name IN ('Fitness', 'Music', 'Travel', 'Volunteering')
 ON CONFLICT DO NOTHING;
 
 -- Seamus, Galway
 INSERT INTO user_interests (user_id, interest_id)
 SELECT 'a1000000-0000-0000-0000-000000000006', id FROM interests
-WHERE name IN ('Hiking', 'Mindfulness', 'Reading', 'Art')
+WHERE name IN ('Outdoors', 'Mindfulness', 'Reading', 'Art & Creativity')
 ON CONFLICT DO NOTHING;
 
 -- Grainne, Athlone
 INSERT INTO user_interests (user_id, interest_id)
 SELECT 'a1000000-0000-0000-0000-000000000007', id FROM interests
-WHERE name IN ('Coffee', 'Music', 'Film', 'Gaming')
+WHERE name IN ('Coffee', 'Music', 'Movies & TV', 'Gaming')
 ON CONFLICT DO NOTHING;
 
 -- Padraic, Monasterevin
 INSERT INTO user_interests (user_id, interest_id)
 SELECT 'a1000000-0000-0000-0000-000000000008', id FROM interests
-WHERE name IN ('Running', 'Hiking', 'Cycling', 'Volunteering')
+WHERE name IN ('Fitness', 'Outdoors', 'Sports', 'Volunteering')
 ON CONFLICT DO NOTHING;
 
 -- Orla, Stradbally
 INSERT INTO user_interests (user_id, interest_id)
 SELECT 'a1000000-0000-0000-0000-000000000009', id FROM interests
-WHERE name IN ('Music', 'Mindfulness', 'Yoga', 'Art')
+WHERE name IN ('Music', 'Mindfulness', 'Fitness', 'Art & Creativity')
 ON CONFLICT DO NOTHING;
 
 -- Brendan, Abbeyleix
 INSERT INTO user_interests (user_id, interest_id)
 SELECT 'a1000000-0000-0000-0000-000000000010', id FROM interests
-WHERE name IN ('Coffee', 'Travel', 'Reading', 'Photography')
+WHERE name IN ('Coffee', 'Travel', 'Reading', 'Art & Creativity')
 ON CONFLICT DO NOTHING;
 
 -- Fionnuala, Kilkenny
 INSERT INTO user_interests (user_id, interest_id)
 SELECT 'a1000000-0000-0000-0000-000000000011', id FROM interests
-WHERE name IN ('Running', 'Film', 'Cooking', 'Gaming')
+WHERE name IN ('Fitness', 'Movies & TV', 'Cooking', 'Gaming')
 ON CONFLICT DO NOTHING;
 
 -- Step 3: Rebuild interest_vec for the test users.
