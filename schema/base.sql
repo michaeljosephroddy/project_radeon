@@ -1119,6 +1119,90 @@ CREATE INDEX IF NOT EXISTS idx_discover_impressions_viewer_shown_at
 CREATE INDEX IF NOT EXISTS idx_discover_impressions_viewer_candidate
     ON discover_impressions(viewer_id, candidate_id, shown_at DESC);
 
+CREATE TABLE IF NOT EXISTS dating_impressions (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    viewer_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    candidate_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    source TEXT NOT NULL,
+    rank_score DOUBLE PRECISION,
+    rank_position INT,
+    request_id UUID,
+    shown_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CHECK (viewer_id <> candidate_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_dating_impressions_viewer_shown_at
+    ON dating_impressions(viewer_id, shown_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_dating_impressions_viewer_candidate
+    ON dating_impressions(viewer_id, candidate_id, shown_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_dating_impressions_candidate_shown_at
+    ON dating_impressions(candidate_id, shown_at DESC);
+
+CREATE TABLE IF NOT EXISTS dating_actions (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    actor_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    target_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    action TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CHECK (actor_id <> target_id),
+    CONSTRAINT dating_actions_action_chk CHECK (action IN ('like', 'pass')),
+    UNIQUE (actor_id, target_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_dating_actions_actor_updated
+    ON dating_actions(actor_id, updated_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_dating_actions_target_like
+    ON dating_actions(target_id, actor_id)
+    WHERE action = 'like';
+
+CREATE INDEX IF NOT EXISTS idx_dating_actions_target_like_updated
+    ON dating_actions(target_id, action, updated_at DESC, id DESC)
+    WHERE action = 'like';
+
+CREATE TABLE IF NOT EXISTS dating_matches (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_a_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    user_b_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    chat_id UUID REFERENCES chats(id) ON DELETE SET NULL,
+    status TEXT NOT NULL DEFAULT 'active',
+    matched_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    unmatched_at TIMESTAMPTZ,
+    unmatched_by UUID REFERENCES users(id) ON DELETE SET NULL,
+    CHECK (user_a_id < user_b_id),
+    CONSTRAINT dating_matches_status_chk CHECK (status IN ('active', 'unmatched')),
+    CONSTRAINT dating_matches_unmatch_chk CHECK (
+        (status = 'active' AND unmatched_at IS NULL AND unmatched_by IS NULL)
+        OR (status = 'unmatched' AND unmatched_at IS NOT NULL AND unmatched_by IS NOT NULL)
+    ),
+    UNIQUE (user_a_id, user_b_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_dating_matches_user_a_status
+    ON dating_matches(user_a_id, status, matched_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_dating_matches_user_b_status
+    ON dating_matches(user_b_id, status, matched_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_dating_matches_chat_id
+    ON dating_matches(chat_id);
+
+CREATE INDEX IF NOT EXISTS idx_users_dating_geo_active
+    ON users(discover_lat, discover_lng, last_active_at DESC)
+    WHERE connection_intents @> ARRAY['dating']::text[];
+
+CREATE INDEX IF NOT EXISTS idx_users_dating_last_active
+    ON users(last_active_at DESC, profile_completeness DESC, id DESC)
+    WHERE connection_intents @> ARRAY['dating']::text[];
+
+CREATE INDEX IF NOT EXISTS idx_users_dating_created_at
+    ON users(created_at DESC, id DESC)
+    WHERE connection_intents @> ARRAY['dating']::text[];
+
 CREATE TABLE IF NOT EXISTS comment_mentions (
     comment_id UUID NOT NULL REFERENCES comments(id) ON DELETE CASCADE,
     user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,

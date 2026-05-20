@@ -160,6 +160,13 @@ func (s *Service) NotifySupportOffer(ctx context.Context, requestID, offerID, re
 	return nil
 }
 
+func (s *Service) NotifyDatingMatch(ctx context.Context, matchID, chatID, actorID, recipientID uuid.UUID) error {
+	go s.runGroupNotification("create dating match notification", func(ctx context.Context) error {
+		return s.store.CreateDatingMatchNotification(ctx, matchID, chatID, actorID, recipientID)
+	})
+	return nil
+}
+
 func (s *Service) runGroupNotification(label string, create func(context.Context) error) {
 	notifyCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

@@ -19,6 +19,7 @@ const (
 	NotificationTypeGroupReport       = "group.report"
 	NotificationTypeGroupReportStatus = "group.report_status"
 	NotificationTypeSupportOffer      = "support.offer"
+	NotificationTypeDatingMatch       = "dating.match"
 
 	ResourceTypeChat             = "chat"
 	ResourceTypeComment          = "comment"
@@ -28,6 +29,7 @@ const (
 	ResourceTypeGroupAdminThread = "group_admin_thread"
 	ResourceTypeGroupReport      = "group_report"
 	ResourceTypeSupportOffer     = "support_offer"
+	ResourceTypeDatingMatch      = "dating_match"
 )
 
 type RegisterDeviceInput struct {
@@ -122,6 +124,7 @@ type Store interface {
 	CreateGroupReportNotifications(ctx context.Context, groupID, reportID, reporterID uuid.UUID, targetType, reason string) error
 	CreateGroupReportStatusNotification(ctx context.Context, groupID, reportID, reviewerID, reporterID uuid.UUID, status string) error
 	CreateSupportOfferNotification(ctx context.Context, requestID, offerID, responderID, requesterID uuid.UUID) error
+	CreateDatingMatchNotification(ctx context.Context, matchID, chatID, actorID, recipientID uuid.UUID) error
 	ClaimPendingDeliveries(ctx context.Context, limit int, now time.Time) ([]deliveryJob, error)
 	MarkDeliverySent(ctx context.Context, deliveryID uuid.UUID, providerMessageID string, sentAt time.Time) error
 	MarkDeliveryFailed(ctx context.Context, deliveryID uuid.UUID, retryable bool, lastError string, nextAttemptAt time.Time) error

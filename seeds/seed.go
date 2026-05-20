@@ -25,7 +25,9 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
-const totalUsers = 150
+const baseSocialUsers = 150
+const datingMockUsers = 76
+const totalUsers = baseSocialUsers + datingMockUsers
 
 var rng = rand.New(rand.NewSource(42))
 
@@ -74,6 +76,7 @@ type seededUser struct {
 	LastActiveAt       time.Time
 	SubscriptionTier   string
 	SubscriptionStatus string
+	ConnectionIntents  []string
 	Lat                float64
 	Lng                float64
 	CurrentLat         float64
@@ -210,6 +213,7 @@ func seed(ctx context.Context, pool *pgxpool.Pool) error {
 			meetup_waitlist, meetup_hosts, meetup_attendees, meetups,
 			post_reactions, comment_mentions, comments, post_images, posts,
 			discover_impressions,
+			dating_actions, dating_matches,
 			notification_deliveries, notifications, notification_preferences, user_devices,
 			user_interests, friendships, users
 		RESTART IDENTITY CASCADE
@@ -226,8 +230,8 @@ func seed(ctx context.Context, pool *pgxpool.Pool) error {
 		return fmt.Errorf("load interests: %w", err)
 	}
 
-	fmt.Printf("→ inserting %d realistic users…\n", totalUsers)
 	users := buildUsers(interestNames)
+	fmt.Printf("→ inserting %d realistic users…\n", len(users))
 	applyUnsplashAvatarURLs(ctx, users)
 	contentImages := loadUnsplashContentImages(ctx)
 	if err := insertUsers(ctx, tx, users, passwordHash); err != nil {
@@ -240,6 +244,10 @@ func seed(ctx context.Context, pool *pgxpool.Pool) error {
 	fmt.Println("→ inserting friendships…")
 	acceptedFriendIDs, err := insertFriendships(ctx, tx, users)
 	if err != nil {
+		return err
+	}
+	fmt.Println("→ inserting dating signals…")
+	if err := insertDatingActions(ctx, tx, users); err != nil {
 		return err
 	}
 
@@ -451,6 +459,7 @@ func buildUsers(interestNames []string) []seededUser {
 		LastActiveAt:       now.Add(-90 * time.Minute),
 		SubscriptionTier:   "plus",
 		SubscriptionStatus: "active",
+		ConnectionIntents:  []string{"friends", "dating"},
 		Lat:                testLat,
 		Lng:                testLng,
 		CurrentLat:         testLat,
@@ -468,8 +477,8 @@ func buildUsers(interestNames []string) []seededUser {
 			cityAssignments = append(cityAssignments, city)
 		}
 	}
-	if len(cityAssignments) != totalUsers-1 {
-		panic(fmt.Sprintf("city assignment mismatch: got %d, want %d", len(cityAssignments), totalUsers-1))
+	if len(cityAssignments) != baseSocialUsers-1 {
+		panic(fmt.Sprintf("city assignment mismatch: got %d, want %d", len(cityAssignments), baseSocialUsers-1))
 	}
 
 	for index, city := range cityAssignments {
@@ -517,6 +526,7 @@ func buildUsers(interestNames []string) []seededUser {
 			LastActiveAt:       lastActiveAt,
 			SubscriptionTier:   subscriptionTier,
 			SubscriptionStatus: subscriptionStatus,
+			ConnectionIntents:  []string{"friends"},
 			Lat:                lat,
 			Lng:                lng,
 			CurrentLat:         lat,
@@ -528,7 +538,108 @@ func buildUsers(interestNames []string) []seededUser {
 		})
 	}
 
+	users = append(users, buildDatingUsers(now, interestNames, usedUsernames, womenNames, menNames, neutralNames, lastNames)...)
+
 	return users
+}
+
+func buildDatingUsers(
+	now time.Time,
+	interestNames []string,
+	usedUsernames map[string]int,
+	womenNames []string,
+	menNames []string,
+	neutralNames []string,
+	lastNames []string,
+) []seededUser {
+	cities := []citySeed{
+		{City: "Portlaoise", Country: "Ireland", Lat: 53.029160, Lng: -7.320510, SpreadKm: 5, Count: 8, Flavors: []string{"Coffee", "Running", "Meetups"}},
+		{City: "Carlow", Country: "Ireland", Lat: 52.840022, Lng: -6.927866, SpreadKm: 6, Count: 5, Flavors: []string{"Coffee", "Nature Walks", "Yoga"}},
+		{City: "Dublin", Country: "Ireland", Lat: 53.349804, Lng: -6.260310, SpreadKm: 10, Count: 10, Flavors: []string{"Coffee", "Live Music", "Meetups"}},
+		{City: "Cork", Country: "Ireland", Lat: 51.896893, Lng: -8.486316, SpreadKm: 8, Count: 5, Flavors: []string{"Cooking", "Live Music", "Volunteering"}},
+		{City: "Galway", Country: "Ireland", Lat: 53.276685, Lng: -9.045096, SpreadKm: 8, Count: 4, Flavors: []string{"Live Music", "Hiking", "Movies"}},
+		{City: "London", Country: "United Kingdom", Lat: 51.507446, Lng: -0.127765, SpreadKm: 12, Count: 12, Flavors: []string{"Coffee", "Live Music", "Meetups"}},
+		{City: "Reading", Country: "United Kingdom", Lat: 51.447520623597065, Lng: -0.9484581707798112, SpreadKm: 7, Count: 8, Flavors: []string{"Books", "Coffee", "Nature Walks"}},
+		{City: "Southampton", Country: "United Kingdom", Lat: 50.8944, Lng: -1.319039, SpreadKm: 7, Count: 7, Flavors: []string{"Cooking", "Gym", "Meetups"}},
+		{City: "Cambridge", Country: "United Kingdom", Lat: 52.20636959918806, Lng: 0.12123455830333363, SpreadKm: 7, Count: 7, Flavors: []string{"Books", "Cycling", "Coffee"}},
+		{City: "Birmingham", Country: "United Kingdom", Lat: 52.484548520168566, Lng: -1.896065736524295, SpreadKm: 9, Count: 6, Flavors: []string{"Art", "Live Music", "Volunteering"}},
+		{City: "Manchester", Country: "United Kingdom", Lat: 53.47181355354253, Lng: -2.1971371060319123, SpreadKm: 9, Count: 4, Flavors: []string{"Running", "Live Music", "Coffee"}},
+	}
+
+	var assignments []citySeed
+	for _, city := range cities {
+		for i := 0; i < city.Count; i++ {
+			assignments = append(assignments, city)
+		}
+	}
+	if len(assignments) != datingMockUsers {
+		panic(fmt.Sprintf("dating assignment mismatch: got %d, want %d", len(assignments), datingMockUsers))
+	}
+
+	users := make([]seededUser, 0, datingMockUsers)
+	for index, city := range assignments {
+		gender := weightedGender(index + 3)
+		firstName := chooseFirstName(gender, womenNames, menNames, neutralNames)
+		lastName := pick(lastNames)
+		username := buildUsername(firstName, lastName, usedUsernames)
+		age := pickDatingAge(index)
+		birthDate := buildBirthDate(age)
+		soberSince := buildSoberSince(now, age)
+		lat, lng := jitterCoords(city)
+		interests := chooseDatingInterests(interestNames, city.Flavors, 4+rng.Intn(2))
+		createdAt := now.Add(-time.Duration(rng.Intn(720)+30) * 24 * time.Hour)
+		lastActiveAt := now.Add(-time.Duration(rng.Intn(96)+1) * time.Hour)
+		subscriptionTier := "free"
+		subscriptionStatus := "inactive"
+		if rng.Intn(100) < 22 {
+			subscriptionTier = "plus"
+			subscriptionStatus = "active"
+		}
+
+		users = append(users, seededUser{
+			ID:                 uuid.New(),
+			Username:           username,
+			Email:              fmt.Sprintf("%s@radeon.dev", username),
+			AvatarURL:          seededAvatarURL(gender, baseSocialUsers+index),
+			FirstName:          firstName,
+			LastName:           lastName,
+			City:               city.City,
+			Country:            city.Country,
+			CurrentCity:        city.City,
+			Bio:                buildDatingBio(firstName, city.City, interests, soberSince, now),
+			Gender:             gender,
+			BirthDate:          birthDate,
+			SoberSince:         soberSince,
+			CreatedAt:          createdAt,
+			LastActiveAt:       lastActiveAt,
+			SubscriptionTier:   subscriptionTier,
+			SubscriptionStatus: subscriptionStatus,
+			ConnectionIntents:  []string{"friends", "dating"},
+			Lat:                lat,
+			Lng:                lng,
+			CurrentLat:         lat,
+			CurrentLng:         lng,
+			DiscoverLat:        lat,
+			DiscoverLng:        lng,
+			LocationUpdatedAt:  now.Add(-time.Duration(rng.Intn(72)+1) * time.Hour),
+			Interests:          interests,
+		})
+	}
+
+	return users
+}
+
+func pickDatingAge(index int) int {
+	switch {
+	case index%11 == 0:
+		return 24 + rng.Intn(5)
+	case index%7 == 0:
+		return 39 + rng.Intn(8)
+	case index%5 == 0:
+		return 31 + rng.Intn(8)
+	default:
+		return 26 + rng.Intn(18)
+	}
 }
 
 func weightedGender(index int) string {
@@ -899,6 +1010,27 @@ func buildBio(firstName, city string, interests []string, soberSince, now time.T
 	return templates[rng.Intn(len(templates))]
 }
 
+func buildDatingBio(firstName, city string, interests []string, soberSince, now time.Time) string {
+	primary := "coffee"
+	secondary := "weekend plans"
+	if len(interests) > 0 {
+		primary = strings.ToLower(interests[0])
+	}
+	if len(interests) > 1 {
+		secondary = strings.ToLower(interests[1])
+	}
+
+	milestone := recoveryPhrase(now.Sub(soberSince))
+	templates := []string{
+		fmt.Sprintf("%s in %s. %s sober and open to something intentional, easy-paced, and honest.", firstName, city, milestone),
+		fmt.Sprintf("Dating with recovery first. Happiest around %s, %s, and conversations that do not need a pub to work.", primary, secondary),
+		fmt.Sprintf("%s based in %s. Looking for a steady connection with room for laughs, plans, and real check-ins.", firstName, city),
+		fmt.Sprintf("Sober life suits me. Open to meeting someone kind who likes %s, %s, and low-pressure first dates.", primary, secondary),
+		fmt.Sprintf("%s here. Recovery is part of the story, not the whole thing. Big on %s, good food, and clear intentions.", firstName, primary),
+	}
+	return templates[rng.Intn(len(templates))]
+}
+
 func recoveryPhrase(duration time.Duration) string {
 	days := int(duration.Hours() / 24)
 	switch {
@@ -919,6 +1051,12 @@ func recoveryPhrase(duration time.Duration) string {
 
 func chooseInterests(all []string, flavors []string, count int) []string {
 	return normalizeInterestSelection(all, flavors, count)
+}
+
+func chooseDatingInterests(all []string, flavors []string, count int) []string {
+	preferred := append([]string{}, flavors...)
+	preferred = append(preferred, "Coffee", "Movies", "Gym", "Nature Walks", "Live Music", "Cooking", "Books", "Yoga")
+	return normalizeInterestSelection(all, preferred, count)
 }
 
 func normalizeInterestSelection(all []string, preferred []string, count int) []string {
@@ -972,31 +1110,39 @@ func jitterCoords(city citySeed) (float64, float64) {
 func insertUsers(ctx context.Context, tx pgx.Tx, users []seededUser, passwordHash string) error {
 	for _, user := range users {
 		sobrietyBand := computeSobrietyBand(user.SoberSince)
+		connectionIntents := connectionIntentsOrDefault(user.ConnectionIntents)
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO users (
 				id, username, email, password_hash, avatar_url,
 				city, country, bio, gender, birth_date, sober_since,
 				subscription_tier, subscription_status,
 				lat, lng, current_lat, current_lng, current_city, location_updated_at,
-				discover_lat, discover_lng, sobriety_band, profile_completeness, last_active_at, created_at
+				discover_lat, discover_lng, connection_intents, sobriety_band, profile_completeness, last_active_at, created_at
 			)
 			VALUES (
 				$1, $2, $3, $4, $5,
 				$6, $7, $8, $9, $10, $11,
 				$12, $13,
 				$14, $15, $16, $17, $18, $19,
-				$20, $21, $22, $23, $24, $25
+				$20, $21, $22, $23, $24, $25, $26
 			)`,
 			user.ID, user.Username, user.Email, passwordHash, user.AvatarURL,
 			user.City, user.Country, user.Bio, user.Gender, user.BirthDate, user.SoberSince,
 			user.SubscriptionTier, user.SubscriptionStatus,
 			user.Lat, user.Lng, user.CurrentLat, user.CurrentLng, user.CurrentCity, user.LocationUpdatedAt,
-			user.DiscoverLat, user.DiscoverLng, sobrietyBand, 8, user.LastActiveAt, user.CreatedAt,
+			user.DiscoverLat, user.DiscoverLng, connectionIntents, sobrietyBand, 8, user.LastActiveAt, user.CreatedAt,
 		); err != nil {
 			return fmt.Errorf("insert user %s: %w", user.Username, err)
 		}
 	}
 	return nil
+}
+
+func connectionIntentsOrDefault(intents []string) []string {
+	if len(intents) == 0 {
+		return []string{"friends"}
+	}
+	return intents
 }
 
 func insertUserInterests(ctx context.Context, tx pgx.Tx, users []seededUser, interestIDs map[string]uuid.UUID) error {
@@ -1129,6 +1275,59 @@ func insertFriendships(ctx context.Context, tx pgx.Tx, users []seededUser) (map[
 	}
 
 	return acceptedFriendIDs, nil
+}
+
+func insertDatingActions(ctx context.Context, tx pgx.Tx, users []seededUser) error {
+	if len(users) == 0 || !hasConnectionIntent(users[0], "dating") {
+		return nil
+	}
+
+	incomingLikes := 0
+	for _, user := range users[1:] {
+		if incomingLikes >= 16 {
+			break
+		}
+		if !hasConnectionIntent(user, "dating") || !isLocalDatingCity(user.City) {
+			continue
+		}
+		createdAt := time.Now().UTC().Add(-time.Duration(incomingLikes+2) * time.Hour)
+		if err := insertDatingAction(ctx, tx, user.ID, users[0].ID, "like", createdAt); err != nil {
+			return err
+		}
+		incomingLikes++
+	}
+
+	return nil
+}
+
+func insertDatingAction(ctx context.Context, tx pgx.Tx, actorID, targetID uuid.UUID, action string, createdAt time.Time) error {
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO dating_actions (actor_id, target_id, action, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $4)
+		ON CONFLICT (actor_id, target_id) DO NOTHING`,
+		actorID, targetID, action, createdAt,
+	); err != nil {
+		return fmt.Errorf("insert dating action %s -> %s: %w", actorID, targetID, err)
+	}
+	return nil
+}
+
+func hasConnectionIntent(user seededUser, intent string) bool {
+	for _, candidate := range user.ConnectionIntents {
+		if candidate == intent {
+			return true
+		}
+	}
+	return false
+}
+
+func isLocalDatingCity(city string) bool {
+	switch city {
+	case "Portlaoise", "Athy", "Carlow", "Kilkenny", "Kildare", "Naas":
+		return true
+	default:
+		return false
+	}
 }
 
 func buildCityBuckets(users []seededUser) map[string][]int {
