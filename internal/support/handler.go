@@ -75,16 +75,13 @@ var validSupportOfferTypes = map[string]bool{
 }
 
 var validSupportTopics = map[string]bool{
-	"anxiety":      true,
-	"relapse_risk": true,
-	"loneliness":   true,
-	"cravings":     true,
-	"depression":   true,
-	"family":       true,
-	"work":         true,
-	"sleep":        true,
-	"celebration":  true,
-	"general":      true,
+	"cravings":          true,
+	"relapse_risk":      true,
+	"mental_health":     true,
+	"loneliness":        true,
+	"relationships":     true,
+	"practical_support": true,
+	"general":           true,
 }
 
 var validPreferredGenders = map[string]bool{
