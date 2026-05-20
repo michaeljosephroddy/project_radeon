@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -26,6 +25,7 @@ type aggregateRefreshJob struct {
 	TargetKind   aggregateRefreshTargetKind
 	TargetID     uuid.UUID
 	AttemptCount int
+	ClaimedAt    time.Time
 }
 
 type AggregateRefreshWorker struct {
@@ -127,7 +127,7 @@ func (s *pgStore) claimAggregateRefreshJobs(ctx context.Context, now time.Time, 
 		FROM candidates
 		WHERE jobs.target_kind = candidates.target_kind
 			AND jobs.target_id = candidates.target_id
-		RETURNING jobs.target_kind, jobs.target_id, jobs.attempt_count
+		RETURNING jobs.target_kind, jobs.target_id, jobs.attempt_count, jobs.claimed_at
 	`, now, now.Add(-claimTimeout), limit)
 	if err != nil {
 		return nil, err
@@ -138,7 +138,7 @@ func (s *pgStore) claimAggregateRefreshJobs(ctx context.Context, now time.Time, 
 	for rows.Next() {
 		var job aggregateRefreshJob
 		var targetKind string
-		if err := rows.Scan(&targetKind, &job.TargetID, &job.AttemptCount); err != nil {
+		if err := rows.Scan(&targetKind, &job.TargetID, &job.AttemptCount, &job.ClaimedAt); err != nil {
 			return nil, err
 		}
 		job.TargetKind = aggregateRefreshTargetKind(targetKind)
@@ -180,44 +180,60 @@ func (s *pgStore) processAggregateRefreshJobs(ctx context.Context, jobs []aggreg
 }
 
 func (s *pgStore) completeAggregateRefreshJobs(ctx context.Context, jobs []aggregateRefreshJob) error {
-	query, args := buildAggregateRefreshJobsWhereClause(
-		`DELETE FROM feed_aggregate_jobs WHERE `,
-		jobs,
-		0,
-	)
-	_, err := s.pool.Exec(ctx, query, args...)
+	if len(jobs) == 0 {
+		return nil
+	}
+
+	kinds, ids, claimedAts := aggregateRefreshJobArrays(jobs)
+	_, err := s.pool.Exec(ctx, `
+		DELETE FROM feed_aggregate_jobs jobs
+		USING (
+			SELECT *
+			FROM unnest($1::text[], $2::uuid[], $3::timestamptz[])
+				AS done(target_kind, target_id, claimed_at)
+		) done
+		WHERE jobs.target_kind = done.target_kind
+			AND jobs.target_id = done.target_id
+			AND jobs.claimed_at = done.claimed_at
+			AND jobs.queued_at <= done.claimed_at
+	`, kinds, ids, claimedAts)
 	return err
 }
 
 func (s *pgStore) markAggregateRefreshJobsFailed(ctx context.Context, jobs []aggregateRefreshJob, message string, retryAt time.Time) error {
-	query, args := buildAggregateRefreshJobsWhereClause(
-		`UPDATE feed_aggregate_jobs
+	if len(jobs) == 0 {
+		return nil
+	}
+
+	kinds, ids, claimedAts := aggregateRefreshJobArrays(jobs)
+	_, err := s.pool.Exec(ctx, `
+		UPDATE feed_aggregate_jobs jobs
 		SET claimed_at = NULL,
 			available_at = $1,
 			last_error = $2
-		WHERE `,
-		jobs,
-		2,
-	)
-	args = append([]any{retryAt, truncateAggregateRefreshError(message)}, args...)
-	_, err := s.pool.Exec(ctx, query, args...)
+		FROM (
+			SELECT *
+			FROM unnest($3::text[], $4::uuid[], $5::timestamptz[])
+				AS failed(target_kind, target_id, claimed_at)
+		) failed
+		WHERE jobs.target_kind = failed.target_kind
+			AND jobs.target_id = failed.target_id
+			AND jobs.claimed_at = failed.claimed_at
+			AND jobs.queued_at <= failed.claimed_at
+	`, retryAt, truncateAggregateRefreshError(message), kinds, ids, claimedAts)
 	return err
 }
 
-func buildAggregateRefreshJobsWhereClause(prefix string, jobs []aggregateRefreshJob, placeholderOffset int) (string, []any) {
-	args := make([]any, 0, len(jobs)*2)
-	var builder strings.Builder
-	builder.WriteString(prefix)
-	builder.WriteString("(target_kind, target_id) IN (")
-	for index, job := range jobs {
-		if index > 0 {
-			builder.WriteString(", ")
-		}
-		builder.WriteString(fmt.Sprintf("($%d, $%d)", placeholderOffset+(index*2)+1, placeholderOffset+(index*2)+2))
-		args = append(args, string(job.TargetKind), job.TargetID)
+func aggregateRefreshJobArrays(jobs []aggregateRefreshJob) ([]string, []uuid.UUID, []time.Time) {
+	kinds := make([]string, 0, len(jobs))
+	ids := make([]uuid.UUID, 0, len(jobs))
+	claimedAts := make([]time.Time, 0, len(jobs))
+	for _, job := range jobs {
+		kinds = append(kinds, string(job.TargetKind))
+		ids = append(ids, job.TargetID)
+		claimedAts = append(claimedAts, job.ClaimedAt)
 	}
-	builder.WriteString(")")
-	return builder.String(), args
+	return kinds, ids, claimedAts
 }
 
 func truncateAggregateRefreshError(message string) string {

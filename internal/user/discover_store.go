@@ -124,7 +124,7 @@ func (s *pgStore) discoverUsersPageFromCandidates(ctx context.Context, params Di
 		page = page[:visibleLimit]
 	}
 
-	_ = s.recordDiscoverImpressions(ctx, params.CurrentUserID, page, shownAt)
+	s.recordDiscoverImpressionsAsync(params.CurrentUserID, page, shownAt)
 	return users, nil
 }
 
@@ -456,12 +456,20 @@ func (s *pgStore) loadRecentDiscoverImpressions(ctx context.Context, viewerID uu
 	}
 
 	rows, err := s.pool.Query(ctx,
-		`SELECT candidate_id, MAX(shown_at) AS shown_at
-		FROM discover_impressions
-		WHERE viewer_id = $1
-			AND candidate_id = ANY($2::uuid[])
-			AND shown_at > NOW() - INTERVAL '45 minutes'
-		GROUP BY candidate_id`,
+		`WITH candidates AS (
+			SELECT unnest($2::uuid[]) AS candidate_id
+		)
+		SELECT candidates.candidate_id, recent.shown_at
+		FROM candidates
+		JOIN LATERAL (
+			SELECT di.shown_at
+			FROM discover_impressions di
+			WHERE di.viewer_id = $1
+				AND di.candidate_id = candidates.candidate_id
+				AND di.shown_at > NOW() - INTERVAL '45 minutes'
+			ORDER BY di.shown_at DESC
+			LIMIT 1
+		) recent ON true`,
 		viewerID, candidateIDs,
 	)
 	if err != nil {
@@ -500,6 +508,20 @@ func (s *pgStore) recordDiscoverImpressions(ctx context.Context, viewerID uuid.U
 		args...,
 	)
 	return err
+}
+
+func (s *pgStore) recordDiscoverImpressionsAsync(viewerID uuid.UUID, candidates []discoverCandidate, shownAt time.Time) {
+	if len(candidates) == 0 {
+		return
+	}
+
+	copied := make([]discoverCandidate, len(candidates))
+	copy(copied, candidates)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = s.recordDiscoverImpressions(ctx, viewerID, copied, shownAt)
+	}()
 }
 
 func scanDiscoverCandidates(rows interface {
