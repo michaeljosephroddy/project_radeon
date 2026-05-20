@@ -26,6 +26,16 @@ CREATE TABLE IF NOT EXISTS users (
     discover_lat DOUBLE PRECISION,
     discover_lng DOUBLE PRECISION,
     connection_intents TEXT[] NOT NULL DEFAULT ARRAY['friends']::TEXT[],
+    onboarding_completed_at TIMESTAMPTZ,
+    identity_verification_status TEXT NOT NULL DEFAULT 'not_started',
+    identity_verification_provider TEXT,
+    identity_verification_session_id TEXT,
+    identity_verification_last_error TEXT,
+    identity_verified_at TIMESTAMPTZ,
+    onboarding_first_friend_user_id UUID,
+    onboarding_first_group_id UUID,
+    onboarding_first_post_id UUID,
+    onboarding_owner_welcome_comment_id UUID,
     sobriety_band SMALLINT,
     profile_completeness SMALLINT NOT NULL DEFAULT 0,
     last_active_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -37,6 +47,16 @@ CREATE TABLE IF NOT EXISTS users (
         cardinality(connection_intents) BETWEEN 1 AND 2
         AND connection_intents <@ ARRAY['friends', 'dating']::TEXT[]
         AND connection_intents @> ARRAY['friends']::TEXT[]
+    ),
+    CONSTRAINT users_identity_verification_status_chk CHECK (
+        identity_verification_status IN (
+            'not_started',
+            'requires_input',
+            'pending',
+            'verified',
+            'failed',
+            'requires_retry'
+        )
     )
 );
 
@@ -63,6 +83,16 @@ CREATE INDEX IF NOT EXISTS idx_users_discover_lat_lng
 
 CREATE INDEX IF NOT EXISTS idx_users_connection_intents
     ON users USING GIN(connection_intents);
+
+CREATE INDEX IF NOT EXISTS idx_users_onboarding_completed_at
+    ON users(onboarding_completed_at);
+
+CREATE INDEX IF NOT EXISTS idx_users_identity_verification_status
+    ON users(identity_verification_status);
+
+CREATE INDEX IF NOT EXISTS idx_users_identity_verification_session_id
+    ON users(identity_verification_session_id)
+    WHERE identity_verification_session_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS interests (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -419,6 +449,34 @@ CREATE INDEX IF NOT EXISTS idx_comments_post_id_created_at
 
 CREATE INDEX IF NOT EXISTS idx_comments_user_id
     ON comments(user_id);
+
+ALTER TABLE users
+    DROP CONSTRAINT IF EXISTS users_onboarding_first_friend_user_id_fkey;
+
+ALTER TABLE users
+    DROP CONSTRAINT IF EXISTS users_onboarding_first_group_id_fkey;
+
+ALTER TABLE users
+    DROP CONSTRAINT IF EXISTS users_onboarding_first_post_id_fkey;
+
+ALTER TABLE users
+    DROP CONSTRAINT IF EXISTS users_onboarding_owner_welcome_comment_id_fkey;
+
+ALTER TABLE users
+    ADD CONSTRAINT users_onboarding_first_friend_user_id_fkey
+        FOREIGN KEY (onboarding_first_friend_user_id) REFERENCES users(id) ON DELETE SET NULL;
+
+ALTER TABLE users
+    ADD CONSTRAINT users_onboarding_first_group_id_fkey
+        FOREIGN KEY (onboarding_first_group_id) REFERENCES groups(id) ON DELETE SET NULL;
+
+ALTER TABLE users
+    ADD CONSTRAINT users_onboarding_first_post_id_fkey
+        FOREIGN KEY (onboarding_first_post_id) REFERENCES posts(id) ON DELETE SET NULL;
+
+ALTER TABLE users
+    ADD CONSTRAINT users_onboarding_owner_welcome_comment_id_fkey
+        FOREIGN KEY (onboarding_owner_welcome_comment_id) REFERENCES comments(id) ON DELETE SET NULL;
 
 CREATE TABLE IF NOT EXISTS post_shares (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

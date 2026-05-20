@@ -391,24 +391,24 @@ func flushRedisCache(ctx context.Context) error {
 
 func buildUsers(interestNames []string) []seededUser {
 	cities := []citySeed{
-		{City: "Portlaoise", Country: "Ireland", Lat: 53.029160, Lng: -7.320510, SpreadKm: 7, Count: 12, Flavors: []string{"Coffee", "Running", "Meetups"}},
-		{City: "Carlow", Country: "Ireland", Lat: 52.840022, Lng: -6.927866, SpreadKm: 7, Count: 9, Flavors: []string{"Coffee", "Nature Walks", "Yoga"}},
-		{City: "Dublin", Country: "Ireland", Lat: 53.349804, Lng: -6.260310, SpreadKm: 11, Count: 27, Flavors: []string{"Coffee", "Live Music", "Meetups"}},
-		{City: "Cork", Country: "Ireland", Lat: 51.896893, Lng: -8.486316, SpreadKm: 9, Count: 11, Flavors: []string{"Cooking", "Live Music", "Volunteering"}},
-		{City: "Athy", Country: "Ireland", Lat: 52.993279, Lng: -6.981844, SpreadKm: 6, Count: 7, Flavors: []string{"Running", "Coffee", "Books"}},
-		{City: "Galway", Country: "Ireland", Lat: 53.276685, Lng: -9.045096, SpreadKm: 8, Count: 7, Flavors: []string{"Live Music", "Hiking", "Movies"}},
-		{City: "Athlone", Country: "Ireland", Lat: 53.430401, Lng: -7.941021, SpreadKm: 7, Count: 7, Flavors: []string{"Gym", "Meetups", "Nature Walks"}},
-		{City: "Monasterevin", Country: "Ireland", Lat: 53.142826, Lng: -7.064399, SpreadKm: 5, Count: 6, Flavors: []string{"Journaling", "Coffee", "Running"}},
-		{City: "Stradbally", Country: "Ireland", Lat: 53.014746, Lng: -7.148406, SpreadKm: 4, Count: 5, Flavors: []string{"Nature Walks", "Art", "Volunteering"}},
-		{City: "Abbeyleix", Country: "Ireland", Lat: 52.914571, Lng: -7.350522, SpreadKm: 4, Count: 5, Flavors: []string{"Books", "Coffee", "Volunteering"}},
-		{City: "Kilkenny", Country: "Ireland", Lat: 52.654245, Lng: -7.244605, SpreadKm: 6, Count: 7, Flavors: []string{"Art", "Coffee", "Movies"}},
-		{City: "Belfast", Country: "United Kingdom", Lat: 54.618853, Lng: -5.966949, SpreadKm: 8, Count: 6, Flavors: []string{"Running", "Live Music", "Cooking"}},
-		{City: "Rennes", Country: "France", Lat: 48.102703, Lng: -1.677351, SpreadKm: 8, Count: 5, Flavors: []string{"Cycling", "Coffee", "Meditation"}},
-		{City: "Paris", Country: "France", Lat: 48.852821, Lng: 2.331892, SpreadKm: 10, Count: 6, Flavors: []string{"Art", "Coffee", "Meetups"}},
-		{City: "Berlin", Country: "Germany", Lat: 52.514288, Lng: 13.372189, SpreadKm: 10, Count: 6, Flavors: []string{"Cycling", "Live Music", "Art"}},
-		{City: "Madrid", Country: "Spain", Lat: 40.403317, Lng: -3.689342, SpreadKm: 10, Count: 5, Flavors: []string{"Running", "Cooking", "Meetups"}},
-		{City: "New York", Country: "United States", Lat: 40.735958, Lng: -74.042681, SpreadKm: 12, Count: 10, Flavors: []string{"Coffee", "Running", "Volunteering"}},
-		{City: "Los Angeles", Country: "United States", Lat: 33.863217, Lng: -118.195127, SpreadKm: 14, Count: 8, Flavors: []string{"Hiking", "Yoga", "Movies"}},
+		{City: "Portlaoise", Country: "Ireland", Lat: 53.029160, Lng: -7.320510, SpreadKm: 7, Count: 12, Flavors: []string{"Coffee", "Fitness", "Meetings"}},
+		{City: "Carlow", Country: "Ireland", Lat: 52.840022, Lng: -6.927866, SpreadKm: 7, Count: 9, Flavors: []string{"Coffee", "Outdoors", "Fitness"}},
+		{City: "Dublin", Country: "Ireland", Lat: 53.349804, Lng: -6.260310, SpreadKm: 11, Count: 27, Flavors: []string{"Coffee", "Music", "Meetings"}},
+		{City: "Cork", Country: "Ireland", Lat: 51.896893, Lng: -8.486316, SpreadKm: 9, Count: 11, Flavors: []string{"Cooking", "Music", "Volunteering"}},
+		{City: "Athy", Country: "Ireland", Lat: 52.993279, Lng: -6.981844, SpreadKm: 6, Count: 7, Flavors: []string{"Fitness", "Coffee", "Reading"}},
+		{City: "Galway", Country: "Ireland", Lat: 53.276685, Lng: -9.045096, SpreadKm: 8, Count: 7, Flavors: []string{"Music", "Outdoors", "Movies & TV"}},
+		{City: "Athlone", Country: "Ireland", Lat: 53.430401, Lng: -7.941021, SpreadKm: 7, Count: 7, Flavors: []string{"Fitness", "Meetings", "Outdoors"}},
+		{City: "Monasterevin", Country: "Ireland", Lat: 53.142826, Lng: -7.064399, SpreadKm: 5, Count: 6, Flavors: []string{"Mindfulness", "Coffee", "Fitness"}},
+		{City: "Stradbally", Country: "Ireland", Lat: 53.014746, Lng: -7.148406, SpreadKm: 4, Count: 5, Flavors: []string{"Outdoors", "Art & Creativity", "Volunteering"}},
+		{City: "Abbeyleix", Country: "Ireland", Lat: 52.914571, Lng: -7.350522, SpreadKm: 4, Count: 5, Flavors: []string{"Reading", "Coffee", "Volunteering"}},
+		{City: "Kilkenny", Country: "Ireland", Lat: 52.654245, Lng: -7.244605, SpreadKm: 6, Count: 7, Flavors: []string{"Art & Creativity", "Coffee", "Movies & TV"}},
+		{City: "Belfast", Country: "United Kingdom", Lat: 54.618853, Lng: -5.966949, SpreadKm: 8, Count: 6, Flavors: []string{"Fitness", "Music", "Cooking"}},
+		{City: "Rennes", Country: "France", Lat: 48.102703, Lng: -1.677351, SpreadKm: 8, Count: 5, Flavors: []string{"Fitness", "Coffee", "Mindfulness"}},
+		{City: "Paris", Country: "France", Lat: 48.852821, Lng: 2.331892, SpreadKm: 10, Count: 6, Flavors: []string{"Art & Creativity", "Coffee", "Meetings"}},
+		{City: "Berlin", Country: "Germany", Lat: 52.514288, Lng: 13.372189, SpreadKm: 10, Count: 6, Flavors: []string{"Fitness", "Music", "Art & Creativity"}},
+		{City: "Madrid", Country: "Spain", Lat: 40.403317, Lng: -3.689342, SpreadKm: 10, Count: 5, Flavors: []string{"Fitness", "Cooking", "Meetings"}},
+		{City: "New York", Country: "United States", Lat: 40.735958, Lng: -74.042681, SpreadKm: 12, Count: 10, Flavors: []string{"Coffee", "Fitness", "Volunteering"}},
+		{City: "Los Angeles", Country: "United States", Lat: 33.863217, Lng: -118.195127, SpreadKm: 14, Count: 8, Flavors: []string{"Outdoors", "Fitness", "Movies & TV"}},
 	}
 
 	womenNames := []string{
@@ -440,7 +440,7 @@ func buildUsers(interestNames []string) []seededUser {
 	testCurrentAt := now.Add(-2 * time.Hour)
 	testBirthDate := buildBirthDate(34)
 	testSoberSince := now.AddDate(-3, -4, 0)
-	testInterests := normalizeInterestSelection(interestNames, []string{"Coffee", "Running", "Meetups", "Volunteering"}, 4)
+	testInterests := normalizeInterestSelection(interestNames, []string{"Coffee", "Fitness", "Meetings", "Volunteering"}, 4)
 	users = append(users, seededUser{
 		ID:                 uuid.New(),
 		Username:           "testuser",
@@ -553,17 +553,17 @@ func buildDatingUsers(
 	lastNames []string,
 ) []seededUser {
 	cities := []citySeed{
-		{City: "Portlaoise", Country: "Ireland", Lat: 53.029160, Lng: -7.320510, SpreadKm: 5, Count: 8, Flavors: []string{"Coffee", "Running", "Meetups"}},
-		{City: "Carlow", Country: "Ireland", Lat: 52.840022, Lng: -6.927866, SpreadKm: 6, Count: 5, Flavors: []string{"Coffee", "Nature Walks", "Yoga"}},
-		{City: "Dublin", Country: "Ireland", Lat: 53.349804, Lng: -6.260310, SpreadKm: 10, Count: 10, Flavors: []string{"Coffee", "Live Music", "Meetups"}},
-		{City: "Cork", Country: "Ireland", Lat: 51.896893, Lng: -8.486316, SpreadKm: 8, Count: 5, Flavors: []string{"Cooking", "Live Music", "Volunteering"}},
-		{City: "Galway", Country: "Ireland", Lat: 53.276685, Lng: -9.045096, SpreadKm: 8, Count: 4, Flavors: []string{"Live Music", "Hiking", "Movies"}},
-		{City: "London", Country: "United Kingdom", Lat: 51.507446, Lng: -0.127765, SpreadKm: 12, Count: 12, Flavors: []string{"Coffee", "Live Music", "Meetups"}},
-		{City: "Reading", Country: "United Kingdom", Lat: 51.447520623597065, Lng: -0.9484581707798112, SpreadKm: 7, Count: 8, Flavors: []string{"Books", "Coffee", "Nature Walks"}},
-		{City: "Southampton", Country: "United Kingdom", Lat: 50.8944, Lng: -1.319039, SpreadKm: 7, Count: 7, Flavors: []string{"Cooking", "Gym", "Meetups"}},
-		{City: "Cambridge", Country: "United Kingdom", Lat: 52.20636959918806, Lng: 0.12123455830333363, SpreadKm: 7, Count: 7, Flavors: []string{"Books", "Cycling", "Coffee"}},
-		{City: "Birmingham", Country: "United Kingdom", Lat: 52.484548520168566, Lng: -1.896065736524295, SpreadKm: 9, Count: 6, Flavors: []string{"Art", "Live Music", "Volunteering"}},
-		{City: "Manchester", Country: "United Kingdom", Lat: 53.47181355354253, Lng: -2.1971371060319123, SpreadKm: 9, Count: 4, Flavors: []string{"Running", "Live Music", "Coffee"}},
+		{City: "Portlaoise", Country: "Ireland", Lat: 53.029160, Lng: -7.320510, SpreadKm: 5, Count: 8, Flavors: []string{"Coffee", "Fitness", "Meetings"}},
+		{City: "Carlow", Country: "Ireland", Lat: 52.840022, Lng: -6.927866, SpreadKm: 6, Count: 5, Flavors: []string{"Coffee", "Outdoors", "Fitness"}},
+		{City: "Dublin", Country: "Ireland", Lat: 53.349804, Lng: -6.260310, SpreadKm: 10, Count: 10, Flavors: []string{"Coffee", "Music", "Meetings"}},
+		{City: "Cork", Country: "Ireland", Lat: 51.896893, Lng: -8.486316, SpreadKm: 8, Count: 5, Flavors: []string{"Cooking", "Music", "Volunteering"}},
+		{City: "Galway", Country: "Ireland", Lat: 53.276685, Lng: -9.045096, SpreadKm: 8, Count: 4, Flavors: []string{"Music", "Outdoors", "Movies & TV"}},
+		{City: "London", Country: "United Kingdom", Lat: 51.507446, Lng: -0.127765, SpreadKm: 12, Count: 12, Flavors: []string{"Coffee", "Music", "Meetings"}},
+		{City: "Reading", Country: "United Kingdom", Lat: 51.447520623597065, Lng: -0.9484581707798112, SpreadKm: 7, Count: 8, Flavors: []string{"Reading", "Coffee", "Outdoors"}},
+		{City: "Southampton", Country: "United Kingdom", Lat: 50.8944, Lng: -1.319039, SpreadKm: 7, Count: 7, Flavors: []string{"Cooking", "Fitness", "Meetings"}},
+		{City: "Cambridge", Country: "United Kingdom", Lat: 52.20636959918806, Lng: 0.12123455830333363, SpreadKm: 7, Count: 7, Flavors: []string{"Reading", "Fitness", "Coffee"}},
+		{City: "Birmingham", Country: "United Kingdom", Lat: 52.484548520168566, Lng: -1.896065736524295, SpreadKm: 9, Count: 6, Flavors: []string{"Art & Creativity", "Music", "Volunteering"}},
+		{City: "Manchester", Country: "United Kingdom", Lat: 53.47181355354253, Lng: -2.1971371060319123, SpreadKm: 9, Count: 4, Flavors: []string{"Fitness", "Music", "Coffee"}},
 	}
 
 	var assignments []citySeed
@@ -1055,7 +1055,7 @@ func chooseInterests(all []string, flavors []string, count int) []string {
 
 func chooseDatingInterests(all []string, flavors []string, count int) []string {
 	preferred := append([]string{}, flavors...)
-	preferred = append(preferred, "Coffee", "Movies", "Gym", "Nature Walks", "Live Music", "Cooking", "Books", "Yoga")
+	preferred = append(preferred, "Coffee", "Movies & TV", "Fitness", "Outdoors", "Music", "Cooking", "Reading", "Mindfulness")
 	return normalizeInterestSelection(all, preferred, count)
 }
 
