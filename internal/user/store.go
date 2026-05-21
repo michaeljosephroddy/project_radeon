@@ -54,11 +54,6 @@ func (s *pgStore) GetUser(ctx context.Context, viewerID, userID uuid.UUID) (*Use
 			u.identity_verification_status,
 			u.identity_verified_at,
 			u.identity_verification_last_error,
-			u.onboarding_first_friend_user_id,
-			u.onboarding_first_group_id,
-			u.onboarding_first_post_id,
-			u.onboarding_first_meetup_id,
-			u.onboarding_first_dating_like_user_id,
 			u.city,
 			u.country,
 			u.bio,
@@ -115,7 +110,7 @@ func (s *pgStore) GetUser(ctx context.Context, viewerID, userID uuid.UUID) (*Use
 		viewerID, userID,
 	).Scan(
 		&u.ID, &u.Username, &u.AvatarURL, &u.BannerURL, &u.IsPlus, &u.SubscriptionTier, &u.SubscriptionStatus,
-		&u.OnboardingCompletedAt, &u.IdentityVerificationStatus, &u.IdentityVerifiedAt, &u.IdentityVerificationLastError, &u.OnboardingFirstFriendUserID, &u.OnboardingFirstGroupID, &u.OnboardingFirstPostID, &u.OnboardingFirstMeetupID, &u.OnboardingFirstDatingLikeUserID,
+		&u.OnboardingCompletedAt, &u.IdentityVerificationStatus, &u.IdentityVerifiedAt, &u.IdentityVerificationLastError,
 		&u.City, &u.Country, &u.Bio, &u.Interests, &u.ConnectionIntents, &u.Gender, &u.BirthDate, &u.SoberSince, &u.CreatedAt,
 		&u.FriendshipStatus, &u.FriendCount, &u.IncomingFriendRequestCt, &u.OutgoingFriendRequestCt,
 		&u.CurrentCity, &u.LocationUpdatedAt,
@@ -227,21 +222,6 @@ func (s *pgStore) CompleteOnboarding(ctx context.Context, userID uuid.UUID) erro
 		SET onboarding_completed_at = COALESCE(onboarding_completed_at, NOW())
 		WHERE id = $1`,
 		userID,
-	)
-	return err
-}
-
-func (s *pgStore) UpdateOnboardingMilestones(ctx context.Context, userID uuid.UUID, firstFriendUserID, firstGroupID, firstPostID, firstMeetupID, firstDatingLikeUserID *uuid.UUID) error {
-	_, err := s.pool.Exec(ctx,
-		`UPDATE users
-		SET
-			onboarding_first_friend_user_id = COALESCE($2, onboarding_first_friend_user_id),
-			onboarding_first_group_id = COALESCE($3, onboarding_first_group_id),
-			onboarding_first_post_id = COALESCE($4, onboarding_first_post_id),
-			onboarding_first_meetup_id = COALESCE($5, onboarding_first_meetup_id),
-			onboarding_first_dating_like_user_id = COALESCE($6, onboarding_first_dating_like_user_id)
-		WHERE id = $1`,
-		userID, firstFriendUserID, firstGroupID, firstPostID, firstMeetupID, firstDatingLikeUserID,
 	)
 	return err
 }
