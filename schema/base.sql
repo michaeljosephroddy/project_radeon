@@ -35,6 +35,8 @@ CREATE TABLE IF NOT EXISTS users (
     onboarding_first_friend_user_id UUID,
     onboarding_first_group_id UUID,
     onboarding_first_post_id UUID,
+    onboarding_first_meetup_id UUID,
+    onboarding_first_dating_like_user_id UUID,
     onboarding_owner_welcome_comment_id UUID,
     sobriety_band SMALLINT,
     profile_completeness SMALLINT NOT NULL DEFAULT 0,
@@ -460,6 +462,9 @@ ALTER TABLE users
     DROP CONSTRAINT IF EXISTS users_onboarding_first_post_id_fkey;
 
 ALTER TABLE users
+    DROP CONSTRAINT IF EXISTS users_onboarding_first_dating_like_user_id_fkey;
+
+ALTER TABLE users
     DROP CONSTRAINT IF EXISTS users_onboarding_owner_welcome_comment_id_fkey;
 
 ALTER TABLE users
@@ -473,6 +478,10 @@ ALTER TABLE users
 ALTER TABLE users
     ADD CONSTRAINT users_onboarding_first_post_id_fkey
         FOREIGN KEY (onboarding_first_post_id) REFERENCES posts(id) ON DELETE SET NULL;
+
+ALTER TABLE users
+    ADD CONSTRAINT users_onboarding_first_dating_like_user_id_fkey
+        FOREIGN KEY (onboarding_first_dating_like_user_id) REFERENCES users(id) ON DELETE SET NULL;
 
 ALTER TABLE users
     ADD CONSTRAINT users_onboarding_owner_welcome_comment_id_fkey
@@ -911,6 +920,13 @@ CREATE INDEX IF NOT EXISTS idx_meetups_event_type_starts_at
 
 CREATE INDEX IF NOT EXISTS idx_meetups_lat_lng
     ON meetups(lat, lng);
+
+ALTER TABLE users
+    DROP CONSTRAINT IF EXISTS users_onboarding_first_meetup_id_fkey;
+
+ALTER TABLE users
+    ADD CONSTRAINT users_onboarding_first_meetup_id_fkey
+        FOREIGN KEY (onboarding_first_meetup_id) REFERENCES meetups(id) ON DELETE SET NULL;
 
 CREATE TABLE IF NOT EXISTS meetup_attendees (
     meetup_id UUID NOT NULL REFERENCES meetups(id) ON DELETE CASCADE,

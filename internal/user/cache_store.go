@@ -97,8 +97,8 @@ func (s *cachedStore) CompleteOnboarding(ctx context.Context, userID uuid.UUID) 
 	return s.cache.BumpVersions(ctx, s.userVersionKey(userID))
 }
 
-func (s *cachedStore) UpdateOnboardingMilestones(ctx context.Context, userID uuid.UUID, firstFriendUserID, firstGroupID, firstPostID *uuid.UUID) error {
-	if err := s.inner.UpdateOnboardingMilestones(ctx, userID, firstFriendUserID, firstGroupID, firstPostID); err != nil {
+func (s *cachedStore) UpdateOnboardingMilestones(ctx context.Context, userID uuid.UUID, firstFriendUserID, firstGroupID, firstPostID, firstMeetupID, firstDatingLikeUserID *uuid.UUID) error {
+	if err := s.inner.UpdateOnboardingMilestones(ctx, userID, firstFriendUserID, firstGroupID, firstPostID, firstMeetupID, firstDatingLikeUserID); err != nil {
 		return err
 	}
 

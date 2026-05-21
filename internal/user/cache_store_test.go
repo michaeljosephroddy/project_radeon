@@ -62,7 +62,7 @@ func (s *stubQuerier) CompleteOnboarding(context.Context, uuid.UUID) error {
 	return nil
 }
 
-func (s *stubQuerier) UpdateOnboardingMilestones(context.Context, uuid.UUID, *uuid.UUID, *uuid.UUID, *uuid.UUID) error {
+func (s *stubQuerier) UpdateOnboardingMilestones(context.Context, uuid.UUID, *uuid.UUID, *uuid.UUID, *uuid.UUID, *uuid.UUID, *uuid.UUID) error {
 	return nil
 }
 
