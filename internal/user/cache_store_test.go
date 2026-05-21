@@ -62,10 +62,6 @@ func (s *stubQuerier) CompleteOnboarding(context.Context, uuid.UUID) error {
 	return nil
 }
 
-func (s *stubQuerier) UpdateOnboardingMilestones(context.Context, uuid.UUID, *uuid.UUID, *uuid.UUID, *uuid.UUID, *uuid.UUID, *uuid.UUID) error {
-	return nil
-}
-
 func (s *stubQuerier) DiscoverUsers(_ context.Context, params DiscoverUsersParams) ([]User, error) {
 	s.discoverUsersCalls++
 	return []User{{

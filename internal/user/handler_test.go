@@ -17,19 +17,18 @@ import (
 )
 
 type mockQuerier struct {
-	getUser                    func(ctx context.Context, viewerID, userID uuid.UUID) (*User, error)
-	usernameExistsForOthers    func(ctx context.Context, username string, userID uuid.UUID) (bool, error)
-	updateUser                 func(ctx context.Context, userID uuid.UUID, username, city, country, gender, bio *string, soberSince *time.Time, replaceSoberSince bool, birthDate *time.Time, replaceBirthDate bool, interests []string, replaceInterests bool, connectionIntents []string, replaceConnectionIntents bool, lat, lng *float64) error
-	updateOnboardingMilestones func(ctx context.Context, userID uuid.UUID, firstFriendUserID, firstGroupID, firstPostID, firstMeetupID, firstDatingLikeUserID *uuid.UUID) error
-	completeOnboarding         func(ctx context.Context, userID uuid.UUID) error
-	updateAvatarURL            func(ctx context.Context, userID uuid.UUID, avatarURL string) error
-	updateBannerURL            func(ctx context.Context, userID uuid.UUID, bannerURL string) error
-	discoverUsers              func(ctx context.Context, params DiscoverUsersParams) ([]User, error)
-	countDiscoverUsers         func(ctx context.Context, params DiscoverUsersParams) (int, error)
-	blockUser                  func(ctx context.Context, blockerID, blockedID uuid.UUID) error
-	unblockUser                func(ctx context.Context, blockerID, blockedID uuid.UUID) error
-	reportUser                 func(ctx context.Context, reporterID, reportedUserID uuid.UUID, reason string, details *string) error
-	listInterests              func(ctx context.Context) ([]string, error)
+	getUser                 func(ctx context.Context, viewerID, userID uuid.UUID) (*User, error)
+	usernameExistsForOthers func(ctx context.Context, username string, userID uuid.UUID) (bool, error)
+	updateUser              func(ctx context.Context, userID uuid.UUID, username, city, country, gender, bio *string, soberSince *time.Time, replaceSoberSince bool, birthDate *time.Time, replaceBirthDate bool, interests []string, replaceInterests bool, connectionIntents []string, replaceConnectionIntents bool, lat, lng *float64) error
+	completeOnboarding      func(ctx context.Context, userID uuid.UUID) error
+	updateAvatarURL         func(ctx context.Context, userID uuid.UUID, avatarURL string) error
+	updateBannerURL         func(ctx context.Context, userID uuid.UUID, bannerURL string) error
+	discoverUsers           func(ctx context.Context, params DiscoverUsersParams) ([]User, error)
+	countDiscoverUsers      func(ctx context.Context, params DiscoverUsersParams) (int, error)
+	blockUser               func(ctx context.Context, blockerID, blockedID uuid.UUID) error
+	unblockUser             func(ctx context.Context, blockerID, blockedID uuid.UUID) error
+	reportUser              func(ctx context.Context, reporterID, reportedUserID uuid.UUID, reason string, details *string) error
+	listInterests           func(ctx context.Context) ([]string, error)
 }
 
 func (m *mockQuerier) GetUser(ctx context.Context, viewerID, userID uuid.UUID) (*User, error) {
@@ -53,12 +52,6 @@ func (m *mockQuerier) UpdateUser(ctx context.Context, userID uuid.UUID, username
 func (m *mockQuerier) CompleteOnboarding(ctx context.Context, userID uuid.UUID) error {
 	if m.completeOnboarding != nil {
 		return m.completeOnboarding(ctx, userID)
-	}
-	return nil
-}
-func (m *mockQuerier) UpdateOnboardingMilestones(ctx context.Context, userID uuid.UUID, firstFriendUserID, firstGroupID, firstPostID, firstMeetupID, firstDatingLikeUserID *uuid.UUID) error {
-	if m.updateOnboardingMilestones != nil {
-		return m.updateOnboardingMilestones(ctx, userID, firstFriendUserID, firstGroupID, firstPostID, firstMeetupID, firstDatingLikeUserID)
 	}
 	return nil
 }
