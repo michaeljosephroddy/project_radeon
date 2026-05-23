@@ -24,12 +24,12 @@ returns real imported recovery meetings, including public online connection deta
 - [x] (2026-05-23T23:15+01:00) Created branch `feature/recovery-meeting-importer` from clean backend `main`.
 - [x] (2026-05-23T23:15+01:00) Inspected backend planning rules, migration pattern, command wiring, existing meetups/support packages, and the current snapshot shape.
 - [x] (2026-05-23T23:15+01:00) Created this ExecPlan.
-- [ ] Implement migration `082_recovery_meetings.sql` and update `schema/base.sql`.
-- [ ] Add snapshot parsing, validation, and import logic under `internal/recoverymeetings`.
-- [ ] Add command `cmd/import-recovery-meetings/main.go` with dry-run and large-drop protection.
-- [ ] Add read APIs for recovery meetings and wire them in `cmd/api/main.go`.
-- [ ] Add tests and run `go test ./...`, `go vet ./...`, and `make build`.
-- [ ] Run the importer against `/home/michaelroddy/repos/recovery-meeting-ingestion/snapshots/latest.json` and verify the API returns imported meetings.
+- [x] (2026-05-23T23:22+01:00) Implemented migration `082_recovery_meetings.sql` and updated `schema/base.sql`.
+- [x] (2026-05-23T23:26+01:00) Added snapshot parsing, validation, and import logic under `internal/recoverymeetings`.
+- [x] (2026-05-23T23:26+01:00) Added command `cmd/import-recovery-meetings/main.go` with dry-run and large-drop protection.
+- [x] (2026-05-23T23:27+01:00) Added read APIs for recovery meetings and wired them in `cmd/api/main.go`.
+- [x] (2026-05-23T23:31+01:00) Added focused parser and handler tests; ran `go test ./...`, `go vet ./...`, and `make build`.
+- [x] (2026-05-23T23:33+01:00) Ran the importer against `/home/michaelroddy/repos/recovery-meeting-ingestion/snapshots/latest.json` and verified the API returns imported meetings.
 
 ## Surprises & Discoveries
 
@@ -41,6 +41,12 @@ returns real imported recovery meetings, including public online connection deta
     Evidence: `/home/michaelroddy/repos/recovery-meeting-ingestion/snapshots/latest.json` has `schema_version: "2026-04-30"` and `5136` meetings. The ingestion-side snapshot DB row `de3e6f4b-4d52-4762-812c-287a67283559` records `blocked_by_review: 0`.
 - Observation: Shell startup in this environment prints attempts to remove `/home/guest/*` directories.
     Evidence: Several commands print `rm: cannot remove '/home/guest/Desktop': Read-only file system` before their real output. This appears unrelated to the repo and should not be treated as a project failure.
+- Observation: The Go toolchain's default build/module cache locations are read-only in this environment.
+    Evidence: `go test ./...` initially failed opening `/home/michaelroddy/.cache/go-build/...`, and `make build` initially printed a module stat cache write failure under `/home/michaelroddy/go/pkg/mod/cache`. Setting `GOCACHE=/tmp/go-build` and `GOMODCACHE=/tmp/go-mod` resolved this.
+- Observation: The reviewed snapshot has fewer occurrences than meetings.
+    Evidence: The importer reported `5136` meetings and `5117` occurrences. Some snapshot meetings have no weekly occurrence rows.
+- Observation: The committed local import contains online meeting details.
+    Evidence: Database verification counted `844` recovery meetings where `online_url` or `phone_join_info` is present.
 
 ## Decision Log
 
@@ -59,10 +65,24 @@ returns real imported recovery meetings, including public online connection deta
 - Decision: Include an authenticated read API in the backend plan, but defer the mobile app change to a separate app plan.
     Rationale: The backend import is not useful unless SoberSpace can read the imported data. The mobile app lives in a separate repository and should be switched from mocks after the backend endpoint exists and is validated.
     Date/Author: 2026-05-23 / Codex.
+- Decision: Do not make `recovery_meeting_import_runs.snapshot_sha256` unique.
+    Rationale: The feature must support rerunning the same reviewed snapshot idempotently. A unique checksum on import run metadata would reject the second run even though the meeting upserts are safe. The implementation keeps a normal index on `snapshot_sha256` for audit lookup.
+    Date/Author: 2026-05-23 / Codex.
 
 ## Outcomes & Retrospective
 
-No implementation has started. This plan records the intended backend work and awaits user approval.
+Implemented and locally validated. The backend now has dedicated recovery meeting import tables, a CLI importer, authenticated read endpoints, and tests for the parser and handler behavior.
+
+Validation results:
+
+    GOCACHE=/tmp/go-build go test ./...
+    GOCACHE=/tmp/go-build go vet ./...
+    GOCACHE=/tmp/go-build GOMODCACHE=/tmp/go-mod make build
+    GOCACHE=/tmp/go-build GOMODCACHE=/tmp/go-mod make migrate
+    GOCACHE=/tmp/go-build GOMODCACHE=/tmp/go-mod go run ./cmd/import-recovery-meetings --snapshot /home/michaelroddy/repos/recovery-meeting-ingestion/snapshots/latest.json --dry-run
+    GOCACHE=/tmp/go-build GOMODCACHE=/tmp/go-mod go run ./cmd/import-recovery-meetings --snapshot /home/michaelroddy/repos/recovery-meeting-ingestion/snapshots/latest.json
+
+The dry run and both committed imports reported `5136` meetings seen, `5136` meetings upserted, `5117` occurrences written, and no stale or inactive rows marked. Rerunning the committed import produced a second import run without duplicating meetings or failing on the checksum. A temporary authenticated API check on port `18080` returned `200` for `GET /recovery-meetings?fellowship=ca&meeting_type=online&limit=2`, with imported online meeting data in the response. The temporary test user used for that check was deleted afterward.
 
 ## Context and Orientation
 

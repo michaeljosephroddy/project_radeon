@@ -27,6 +27,7 @@ import (
 	"github.com/project_radeon/api/internal/groups"
 	"github.com/project_radeon/api/internal/meetups"
 	"github.com/project_radeon/api/internal/notifications"
+	"github.com/project_radeon/api/internal/recoverymeetings"
 	"github.com/project_radeon/api/internal/support"
 	"github.com/project_radeon/api/internal/user"
 	"github.com/project_radeon/api/pkg/cache"
@@ -110,6 +111,7 @@ func main() {
 	groupsHandler := groups.NewHandlerWithNotifier(groupsStore, notificationsService, uploader)
 	feedHandler := feed.NewHandlerWithNotifier(feedStore, notificationsService, uploader)
 	meetupsHandler := meetups.NewHandler(meetupsStore, uploader)
+	recoveryMeetingsHandler := recoverymeetings.NewHandler(recoverymeetings.NewPgStore(db))
 	supportHandler := support.NewHandlerWithChatBroadcaster(supportStore, chatsHandler, notificationsService)
 
 	r := chi.NewRouter()
@@ -257,6 +259,10 @@ func main() {
 		r.Post("/meetups/{id}/rsvp", meetupsHandler.RSVP)
 		r.Get("/meetups/{id}/attendees", meetupsHandler.GetAttendees)
 		r.Get("/meetups/{id}/waitlist", meetupsHandler.GetWaitlist)
+
+		// Recovery meetings
+		r.Get("/recovery-meetings", recoveryMeetingsHandler.ListRecoveryMeetings)
+		r.Get("/recovery-meetings/{id}", recoveryMeetingsHandler.GetRecoveryMeeting)
 
 		// Support
 		r.Post("/support/requests", supportHandler.CreateSupportRequest)
