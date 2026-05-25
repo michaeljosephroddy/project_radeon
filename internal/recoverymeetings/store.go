@@ -3,9 +3,10 @@ package recoverymeetings
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
-	"strconv"
+	"regexp"
 	"strings"
 
 	"github.com/google/uuid"
@@ -13,8 +14,12 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+var searchTokenPattern = regexp.MustCompile(`[[:alnum:]]+`)
+
 type Querier interface {
 	ListRecoveryMeetings(ctx context.Context, params ListParams) (*CursorPage[RecoveryMeeting], error)
+	ListLocationSuggestions(ctx context.Context, query, country, fellowship string, limit int) ([]LocationSuggestion, error)
+	ListCountrySuggestions(ctx context.Context, query, fellowship string, limit int) ([]CountrySuggestion, error)
 	GetRecoveryMeeting(ctx context.Context, id uuid.UUID) (*RecoveryMeeting, error)
 }
 
@@ -27,15 +32,63 @@ func NewPgStore(pool *pgxpool.Pool) Querier {
 }
 
 func (s *pgStore) ListRecoveryMeetings(ctx context.Context, params ListParams) (*CursorPage[RecoveryMeeting], error) {
-	limit := normalizeLimit(params.Limit)
-	offset := decodeOffsetCursor(params.Cursor)
+	query, args, limit := buildRecoveryMeetingListQuery(params)
 
+	rows, err := s.pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	items := []listedRecoveryMeeting{}
+	for rows.Next() {
+		var item listedRecoveryMeeting
+		meeting, err := scanRecoveryMeetingWithSort(rows, &item.Sort)
+		if err != nil {
+			return nil, err
+		}
+		meeting.Occurrences = []MeetingOccurrence{}
+		item.Meeting = *meeting
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	hasMore := len(items) > limit
+	if hasMore {
+		items = items[:limit]
+	}
+
+	meetings := make([]RecoveryMeeting, 0, len(items))
+	for _, item := range items {
+		meetings = append(meetings, item.Meeting)
+	}
+	if err := s.attachOccurrences(ctx, meetings); err != nil {
+		return nil, err
+	}
+
+	var nextCursor *string
+	if hasMore && len(items) > 0 {
+		next := encodeListCursor(items[len(items)-1].Sort)
+		nextCursor = &next
+	}
+	return &CursorPage[RecoveryMeeting]{
+		Items:      meetings,
+		Limit:      limit,
+		HasMore:    hasMore,
+		NextCursor: nextCursor,
+	}, nil
+}
+
+func buildRecoveryMeetingListQuery(params ListParams) (string, []any, int) {
+	limit := normalizeLimit(params.Limit)
+	cursor, hasCursor := decodeListCursor(params.Cursor)
 	args := []any{}
 	arg := func(value any) string {
 		args = append(args, value)
 		return fmt.Sprintf("$%d", len(args))
 	}
-
 	query := `
 		SELECT
 			rm.id,
@@ -61,8 +114,20 @@ func (s *pgStore) ListRecoveryMeetings(ctx context.Context, params ListParams) (
 			rm.language,
 			rm.accessibility_notes,
 			rm.last_verified_at,
-			rm.updated_at
+			rm.updated_at,
+			COALESCE(next_occ.day_of_week, 7)::int AS sort_day,
+			COALESCE(to_char(next_occ.start_time_local, 'HH24:MI:SS'), '') AS sort_time,
+			LOWER(rm.name) AS sort_name
 		FROM recovery_meetings rm
+		LEFT JOIN LATERAL (
+			SELECT
+				rmo.day_of_week::int AS day_of_week,
+				rmo.start_time_local
+			FROM recovery_meeting_occurrences rmo
+			WHERE rmo.recovery_meeting_id = rm.id
+			ORDER BY rmo.day_of_week ASC, rmo.start_time_local ASC, rmo.id ASC
+			LIMIT 1
+		) next_occ ON true
 		WHERE rm.status = 'active'
 	`
 	if params.Fellowship != "" {
@@ -71,8 +136,20 @@ func (s *pgStore) ListRecoveryMeetings(ctx context.Context, params ListParams) (
 	if params.Country != "" {
 		query += " AND LOWER(COALESCE(rm.country, '')) = LOWER(" + arg(params.Country) + ")"
 	}
-	if params.City != "" {
-		query += " AND LOWER(COALESCE(rm.city, '')) = LOWER(" + arg(params.City) + ")"
+	location := strings.TrimSpace(params.Location)
+	if location == "" {
+		location = strings.TrimSpace(params.City)
+	}
+	if location != "" {
+		placeholder := arg("%" + location + "%")
+		query += ` AND (
+			COALESCE(rm.city, '') ILIKE ` + placeholder + `
+			OR COALESCE(rm.region, '') ILIKE ` + placeholder + `
+			OR COALESCE(rm.venue_name, '') ILIKE ` + placeholder + `
+			OR COALESCE(rm.address_line1, '') ILIKE ` + placeholder + `
+			OR COALESCE(rm.address_line2, '') ILIKE ` + placeholder + `
+			OR COALESCE(rm.postal_code, '') ILIKE ` + placeholder + `
+		)`
 	}
 	if params.MeetingType != "" {
 		query += " AND rm.meeting_type = " + arg(params.MeetingType)
@@ -86,60 +163,127 @@ func (s *pgStore) ListRecoveryMeetings(ctx context.Context, params ListParams) (
 		)`
 	}
 	if params.Query != "" {
-		pattern := "%" + params.Query + "%"
-		placeholder := arg(pattern)
-		query += ` AND (
-			rm.name ILIKE ` + placeholder + `
-			OR COALESCE(rm.city, '') ILIKE ` + placeholder + `
-			OR COALESCE(rm.country, '') ILIKE ` + placeholder + `
-			OR COALESCE(rm.venue_name, '') ILIKE ` + placeholder + `
-			OR EXISTS (
-				SELECT 1
-				FROM unnest(rm.formats) format
-				WHERE format ILIKE ` + placeholder + `
-			)
-		)`
-	}
-	query += " ORDER BY LOWER(rm.name) ASC, rm.id ASC LIMIT " + arg(limit+1) + " OFFSET " + arg(offset)
-
-	rows, err := s.pool.Query(ctx, query, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	meetings := []RecoveryMeeting{}
-	for rows.Next() {
-		meeting, err := scanRecoveryMeeting(rows)
-		if err != nil {
-			return nil, err
+		queryFellowship, searchTerms := parseMeetingSearchQuery(params.Query)
+		if queryFellowship != "" {
+			query += " AND rm.fellowship = " + arg(queryFellowship)
 		}
-		meeting.Occurrences = []MeetingOccurrence{}
-		meetings = append(meetings, *meeting)
+		for _, term := range searchTerms {
+			placeholder := arg("%" + term + "%")
+			query += ` AND (
+					rm.name ILIKE ` + placeholder + `
+					OR rm.meeting_type::text ILIKE ` + placeholder + `
+					OR COALESCE(rm.city, '') ILIKE ` + placeholder + `
+					OR COALESCE(rm.region, '') ILIKE ` + placeholder + `
+					OR COALESCE(rm.country, '') ILIKE ` + placeholder + `
+					OR COALESCE(rm.venue_name, '') ILIKE ` + placeholder + `
+					OR COALESCE(rm.address_line1, '') ILIKE ` + placeholder + `
+					OR COALESCE(rm.address_line2, '') ILIKE ` + placeholder + `
+					OR COALESCE(rm.postal_code, '') ILIKE ` + placeholder + `
+					OR COALESCE(rm.online_url, '') ILIKE ` + placeholder + `
+					OR COALESCE(rm.phone_join_info, '') ILIKE ` + placeholder + `
+					OR COALESCE(rm.source_url, '') ILIKE ` + placeholder + `
+					OR COALESCE(rm.source_id, '') ILIKE ` + placeholder + `
+					OR COALESCE(rm.source_record_id, '') ILIKE ` + placeholder + `
+					OR EXISTS (
+						SELECT 1
+						FROM unnest(rm.formats) format
+						WHERE format ILIKE ` + placeholder + `
+					)
+				)`
+		}
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
+	if hasCursor {
+		sortDay := arg(cursor.SortDay)
+		sortTime := arg(cursor.SortTime)
+		sortName := arg(cursor.SortName)
+		id := arg(cursor.ID)
+		query += ` AND (
+			COALESCE(next_occ.day_of_week, 7)::int,
+			COALESCE(to_char(next_occ.start_time_local, 'HH24:MI:SS'), ''),
+			LOWER(rm.name),
+			rm.id
+		) > (` + sortDay + `, ` + sortTime + `, ` + sortName + `, ` + id + `)`
+	}
+	query += `
+		ORDER BY
+			COALESCE(next_occ.day_of_week, 7)::int ASC,
+			COALESCE(to_char(next_occ.start_time_local, 'HH24:MI:SS'), '') ASC,
+			LOWER(rm.name) ASC,
+			rm.id ASC
+		LIMIT ` + arg(limit+1)
+	return query, args, limit
+}
+
+func parseMeetingSearchQuery(query string) (string, []string) {
+	normalized := strings.ToLower(strings.TrimSpace(query))
+	if normalized == "" {
+		return "", nil
 	}
 
-	hasMore := len(meetings) > limit
-	if hasMore {
-		meetings = meetings[:limit]
+	fellowship := detectSearchFellowship(normalized)
+	rawTokens := searchTokenPattern.FindAllString(normalized, -1)
+	terms := make([]string, 0, len(rawTokens))
+	seen := map[string]struct{}{}
+	for _, token := range rawTokens {
+		token = strings.TrimSpace(token)
+		if len([]rune(token)) < 2 {
+			continue
+		}
+		if isFellowshipSearchToken(token, fellowship) {
+			continue
+		}
+		if _, ok := seen[token]; ok {
+			continue
+		}
+		seen[token] = struct{}{}
+		terms = append(terms, token)
 	}
-	if err := s.attachOccurrences(ctx, meetings); err != nil {
-		return nil, err
-	}
+	return fellowship, terms
+}
 
-	var nextCursor *string
-	if hasMore {
-		next := encodeOffsetCursor(offset + len(meetings))
-		nextCursor = &next
+func detectSearchFellowship(query string) string {
+	switch {
+	case containsRecoveryPhrase(query, "narcotics anonymous"), containsInitialism(query, "na"):
+		return "na"
+	case containsRecoveryPhrase(query, "cocaine anonymous"), containsInitialism(query, "ca"):
+		return "ca"
+	case containsRecoveryPhrase(query, "alcoholics anonymous"), containsInitialism(query, "aa"):
+		return "aa"
+	default:
+		return ""
 	}
-	return &CursorPage[RecoveryMeeting]{
-		Items:      meetings,
-		Limit:      limit,
-		HasMore:    hasMore,
-		NextCursor: nextCursor,
-	}, nil
+}
+
+func containsRecoveryPhrase(query, phrase string) bool {
+	return strings.Contains(query, phrase)
+}
+
+func containsInitialism(query, initialism string) bool {
+	dotted := strings.Join(strings.Split(initialism, ""), ".") + "."
+	if strings.Contains(query, dotted) {
+		return true
+	}
+	for _, token := range searchTokenPattern.FindAllString(query, -1) {
+		if token == initialism {
+			return true
+		}
+	}
+	return false
+}
+
+func isFellowshipSearchToken(token, fellowship string) bool {
+	switch token {
+	case "aa", "ca", "na":
+		return token == fellowship
+	case "alcoholics", "anonymous":
+		return fellowship == "aa"
+	case "cocaine":
+		return fellowship == "ca"
+	case "narcotics":
+		return fellowship == "na"
+	default:
+		return false
+	}
 }
 
 func (s *pgStore) GetRecoveryMeeting(ctx context.Context, id uuid.UUID) (*RecoveryMeeting, error) {
@@ -189,13 +333,149 @@ func (s *pgStore) GetRecoveryMeeting(ctx context.Context, id uuid.UUID) (*Recove
 	return &meetings[0], nil
 }
 
+func (s *pgStore) ListLocationSuggestions(ctx context.Context, query, country, fellowship string, limit int) ([]LocationSuggestion, error) {
+	query = strings.TrimSpace(query)
+	if len([]rune(query)) < 2 {
+		return []LocationSuggestion{}, nil
+	}
+	limit = normalizeSuggestionLimit(limit)
+	args := []any{}
+	arg := func(value any) string {
+		args = append(args, value)
+		return fmt.Sprintf("$%d", len(args))
+	}
+	containsPattern := "%" + query + "%"
+	prefixPattern := query + "%"
+	contains := arg(containsPattern)
+	exact := arg(query)
+	prefix := arg(prefixPattern)
+	limitArg := arg(limit)
+	sql := `
+		WITH grouped_locations AS (
+			SELECT
+				TRIM(rm.city) AS location,
+				NULLIF(TRIM(COALESCE(rm.country, '')), '') AS country,
+				COUNT(*)::int AS meeting_count
+			FROM recovery_meetings rm
+			WHERE rm.status = 'active'
+				AND TRIM(COALESCE(rm.city, '')) <> ''
+				AND (
+					rm.city ILIKE ` + contains + `
+					OR COALESCE(rm.country, '') ILIKE ` + contains + `
+					OR CONCAT_WS(', ', rm.city, rm.country) ILIKE ` + contains + `
+				)
+	`
+	if country = strings.TrimSpace(country); country != "" {
+		sql += " AND LOWER(COALESCE(rm.country, '')) = LOWER(" + arg(country) + ")"
+	}
+	if fellowship = strings.TrimSpace(strings.ToLower(fellowship)); fellowship != "" {
+		sql += " AND rm.fellowship = " + arg(fellowship)
+	}
+	sql += `
+			GROUP BY TRIM(rm.city), NULLIF(TRIM(COALESCE(rm.country, '')), '')
+		)
+		SELECT location, country, meeting_count
+		FROM grouped_locations
+		ORDER BY
+			CASE
+				WHEN LOWER(location) = LOWER(` + exact + `) THEN 0
+				WHEN LOWER(location) LIKE LOWER(` + prefix + `) THEN 1
+				ELSE 2
+			END,
+			meeting_count DESC,
+			location ASC
+		LIMIT ` + limitArg
+
+	rows, err := s.pool.Query(ctx, sql, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	suggestions := []LocationSuggestion{}
+	for rows.Next() {
+		var suggestion LocationSuggestion
+		if err := rows.Scan(&suggestion.Location, &suggestion.Country, &suggestion.MeetingCount); err != nil {
+			return nil, err
+		}
+		suggestion.Label = suggestion.Location
+		if suggestion.Country != nil && strings.TrimSpace(*suggestion.Country) != "" {
+			suggestion.Label = suggestion.Location + ", " + strings.TrimSpace(*suggestion.Country)
+		}
+		suggestions = append(suggestions, suggestion)
+	}
+	return suggestions, rows.Err()
+}
+
+func (s *pgStore) ListCountrySuggestions(ctx context.Context, query, fellowship string, limit int) ([]CountrySuggestion, error) {
+	query = strings.TrimSpace(query)
+	if len([]rune(query)) < 2 {
+		return []CountrySuggestion{}, nil
+	}
+	limit = normalizeSuggestionLimit(limit)
+	args := []any{}
+	arg := func(value any) string {
+		args = append(args, value)
+		return fmt.Sprintf("$%d", len(args))
+	}
+	containsPattern := "%" + query + "%"
+	prefixPattern := query + "%"
+	contains := arg(containsPattern)
+	exact := arg(query)
+	prefix := arg(prefixPattern)
+	limitArg := arg(limit)
+	sql := `
+		SELECT
+			TRIM(rm.country) AS country,
+			COUNT(*)::int AS meeting_count
+		FROM recovery_meetings rm
+		WHERE rm.status = 'active'
+			AND TRIM(COALESCE(rm.country, '')) <> ''
+			AND rm.country ILIKE ` + contains
+	if fellowship = strings.TrimSpace(strings.ToLower(fellowship)); fellowship != "" {
+		sql += " AND rm.fellowship = " + arg(fellowship)
+	}
+	sql += `
+		GROUP BY TRIM(rm.country)
+		ORDER BY
+			CASE
+				WHEN LOWER(TRIM(rm.country)) = LOWER(` + exact + `) THEN 0
+				WHEN LOWER(TRIM(rm.country)) LIKE LOWER(` + prefix + `) THEN 1
+				ELSE 2
+			END,
+			meeting_count DESC,
+			country ASC
+		LIMIT ` + limitArg
+
+	rows, err := s.pool.Query(ctx, sql, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	suggestions := []CountrySuggestion{}
+	for rows.Next() {
+		var suggestion CountrySuggestion
+		if err := rows.Scan(&suggestion.Country, &suggestion.MeetingCount); err != nil {
+			return nil, err
+		}
+		suggestion.Label = suggestion.Country
+		suggestions = append(suggestions, suggestion)
+	}
+	return suggestions, rows.Err()
+}
+
 type rowScanner interface {
 	Scan(dest ...any) error
 }
 
 func scanRecoveryMeeting(row rowScanner) (*RecoveryMeeting, error) {
+	return scanRecoveryMeetingWithSort(row, nil)
+}
+
+func scanRecoveryMeetingWithSort(row rowScanner, sort *listCursor) (*RecoveryMeeting, error) {
 	var meeting RecoveryMeeting
-	if err := row.Scan(
+	dest := []any{
 		&meeting.ID,
 		&meeting.Fellowship,
 		&meeting.SourceID,
@@ -220,8 +500,16 @@ func scanRecoveryMeeting(row rowScanner) (*RecoveryMeeting, error) {
 		&meeting.AccessibilityNotes,
 		&meeting.LastVerifiedAt,
 		&meeting.UpdatedAt,
-	); err != nil {
+	}
+	if sort != nil {
+		dest = append(dest, &sort.SortDay, &sort.SortTime, &sort.SortName)
+		sort.ID = meeting.ID
+	}
+	if err := row.Scan(dest...); err != nil {
 		return nil, err
+	}
+	if sort != nil {
+		sort.ID = meeting.ID
 	}
 	if meeting.Formats == nil {
 		meeting.Formats = []string{}
@@ -290,24 +578,50 @@ func normalizeLimit(limit int) int {
 	return limit
 }
 
-func encodeOffsetCursor(offset int) string {
-	return base64.RawURLEncoding.EncodeToString([]byte(strconv.Itoa(offset)))
+func normalizeSuggestionLimit(limit int) int {
+	if limit < 1 {
+		return 8
+	}
+	if limit > 15 {
+		return 15
+	}
+	return limit
 }
 
-func decodeOffsetCursor(raw string) int {
+type listedRecoveryMeeting struct {
+	Meeting RecoveryMeeting
+	Sort    listCursor
+}
+
+type listCursor struct {
+	SortDay  int       `json:"d"`
+	SortTime string    `json:"t"`
+	SortName string    `json:"n"`
+	ID       uuid.UUID `json:"id"`
+}
+
+func encodeListCursor(cursor listCursor) string {
+	data, err := json.Marshal(cursor)
+	if err != nil {
+		return ""
+	}
+	return base64.RawURLEncoding.EncodeToString(data)
+}
+
+func decodeListCursor(raw string) (listCursor, bool) {
 	if strings.TrimSpace(raw) == "" {
-		return 0
+		return listCursor{}, false
 	}
 	decoded, err := base64.RawURLEncoding.DecodeString(raw)
 	if err != nil {
-		if value, parseErr := strconv.Atoi(raw); parseErr == nil && value > 0 {
-			return value
-		}
-		return 0
+		return listCursor{}, false
 	}
-	value, err := strconv.Atoi(string(decoded))
-	if err != nil || value < 0 {
-		return 0
+	var cursor listCursor
+	if err := json.Unmarshal(decoded, &cursor); err != nil {
+		return listCursor{}, false
 	}
-	return value
+	if cursor.ID == uuid.Nil || cursor.SortDay < 0 || cursor.SortDay > 7 {
+		return listCursor{}, false
+	}
+	return cursor, true
 }

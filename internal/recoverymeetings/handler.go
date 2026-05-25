@@ -34,6 +34,45 @@ func (h *Handler) ListRecoveryMeetings(w http.ResponseWriter, r *http.Request) {
 	response.Success(w, http.StatusOK, meetings)
 }
 
+func (h *Handler) ListLocationSuggestions(w http.ResponseWriter, r *http.Request) {
+	query := strings.TrimSpace(r.URL.Query().Get("q"))
+	if len([]rune(query)) < 2 {
+		response.Success(w, http.StatusOK, []LocationSuggestion{})
+		return
+	}
+	suggestions, err := h.db.ListLocationSuggestions(
+		r.Context(),
+		query,
+		strings.TrimSpace(r.URL.Query().Get("country")),
+		strings.TrimSpace(strings.ToLower(r.URL.Query().Get("fellowship"))),
+		parseSuggestionLimit(r),
+	)
+	if err != nil {
+		response.Error(w, http.StatusInternalServerError, "could not fetch recovery meeting locations")
+		return
+	}
+	response.Success(w, http.StatusOK, suggestions)
+}
+
+func (h *Handler) ListCountrySuggestions(w http.ResponseWriter, r *http.Request) {
+	query := strings.TrimSpace(r.URL.Query().Get("q"))
+	if len([]rune(query)) < 2 {
+		response.Success(w, http.StatusOK, []CountrySuggestion{})
+		return
+	}
+	suggestions, err := h.db.ListCountrySuggestions(
+		r.Context(),
+		query,
+		strings.TrimSpace(strings.ToLower(r.URL.Query().Get("fellowship"))),
+		parseSuggestionLimit(r),
+	)
+	if err != nil {
+		response.Error(w, http.StatusInternalServerError, "could not fetch recovery meeting countries")
+		return
+	}
+	response.Success(w, http.StatusOK, suggestions)
+}
+
 func (h *Handler) GetRecoveryMeeting(w http.ResponseWriter, r *http.Request) {
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
@@ -51,6 +90,20 @@ func (h *Handler) GetRecoveryMeeting(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	response.Success(w, http.StatusOK, meeting)
+}
+
+func parseSuggestionLimit(r *http.Request) int {
+	limit := 8
+	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err == nil && parsed > 0 {
+			limit = parsed
+		}
+	}
+	if limit > 15 {
+		return 15
+	}
+	return limit
 }
 
 func parseListParams(r *http.Request) (ListParams, map[string]string) {
@@ -93,6 +146,11 @@ func parseListParams(r *http.Request) (ListParams, map[string]string) {
 	if search == "" {
 		search = strings.TrimSpace(query.Get("query"))
 	}
+	location := strings.TrimSpace(query.Get("location"))
+	city := strings.TrimSpace(query.Get("city"))
+	if location == "" {
+		location = city
+	}
 
 	if len(errs) > 0 {
 		return ListParams{}, errs
@@ -102,7 +160,8 @@ func parseListParams(r *http.Request) (ListParams, map[string]string) {
 		Query:       search,
 		Fellowship:  strings.TrimSpace(strings.ToLower(query.Get("fellowship"))),
 		Country:     strings.TrimSpace(query.Get("country")),
-		City:        strings.TrimSpace(query.Get("city")),
+		City:        city,
+		Location:    location,
 		MeetingType: meetingType,
 		DayOfWeek:   dayOfWeek,
 		Cursor:      strings.TrimSpace(query.Get("cursor")),

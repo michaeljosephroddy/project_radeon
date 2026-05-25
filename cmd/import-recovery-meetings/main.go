@@ -17,10 +17,12 @@ func main() {
 	_ = godotenv.Load()
 
 	var opts recoverymeetings.ImportOptions
+	var timeout time.Duration
 	flag.StringVar(&opts.SnapshotPath, "snapshot", "", "path to recovery meeting snapshot JSON")
 	flag.BoolVar(&opts.DryRun, "dry-run", false, "validate and count import work without committing changes")
 	flag.BoolVar(&opts.AllowEmpty, "allow-empty", false, "allow importing an empty snapshot")
 	flag.BoolVar(&opts.AllowLargeDrop, "allow-large-drop", false, "allow snapshots more than 20 percent smaller than current active data")
+	flag.DurationVar(&timeout, "timeout", 15*time.Minute, "maximum time allowed for the import")
 	flag.Parse()
 
 	if opts.SnapshotPath == "" {
@@ -28,8 +30,13 @@ func main() {
 		flag.Usage()
 		os.Exit(2)
 	}
+	if timeout <= 0 {
+		fmt.Fprintln(os.Stderr, "--timeout must be positive")
+		flag.Usage()
+		os.Exit(2)
+	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
 	pool, err := database.Connect()

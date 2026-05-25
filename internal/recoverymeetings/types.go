@@ -108,6 +108,19 @@ type MeetingOccurrence struct {
 	Timezone       string    `json:"timezone"`
 }
 
+type LocationSuggestion struct {
+	Label        string  `json:"label"`
+	Location     string  `json:"location"`
+	Country      *string `json:"country,omitempty"`
+	MeetingCount int     `json:"meeting_count"`
+}
+
+type CountrySuggestion struct {
+	Label        string `json:"label"`
+	Country      string `json:"country"`
+	MeetingCount int    `json:"meeting_count"`
+}
+
 type CursorPage[T any] struct {
 	Items      []T     `json:"items"`
 	Limit      int     `json:"limit"`
@@ -120,6 +133,7 @@ type ListParams struct {
 	Fellowship  string
 	Country     string
 	City        string
+	Location    string
 	MeetingType string
 	DayOfWeek   *int
 	Cursor      string
