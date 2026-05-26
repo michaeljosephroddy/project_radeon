@@ -437,12 +437,60 @@ func (h *Handler) UpdateMyCurrentLocation(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	if err := h.db.UpdateCurrentLocation(r.Context(), userID, input.Lat, input.Lng, input.City, input.Country); err != nil {
+	city := strings.TrimSpace(input.City)
+	country := normalizeCurrentLocationCountry(input.Country)
+	errors := map[string]string{}
+	if city == "" {
+		errors["city"] = "city is required"
+	}
+	if country == "" {
+		errors["country"] = "country is required"
+	}
+	if len(errors) > 0 {
+		response.ValidationError(w, errors)
+		return
+	}
+
+	if err := h.db.UpdateCurrentLocation(r.Context(), userID, input.Lat, input.Lng, city, country); err != nil {
 		response.Error(w, http.StatusInternalServerError, "could not update location")
 		return
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func normalizeCurrentLocationCountry(raw string) string {
+	country := strings.TrimSpace(raw)
+	if country == "" {
+		return ""
+	}
+
+	switch strings.ToUpper(country) {
+	case "AU":
+		return "Australia"
+	case "CA":
+		return "Canada"
+	case "DE":
+		return "Germany"
+	case "ES":
+		return "Spain"
+	case "FR":
+		return "France"
+	case "GB", "UK":
+		return "United Kingdom"
+	case "IE":
+		return "Ireland"
+	case "NL":
+		return "Netherlands"
+	case "NZ":
+		return "New Zealand"
+	case "PL":
+		return "Poland"
+	case "US":
+		return "United States"
+	default:
+		return country
+	}
 }
 
 func parseSoberSince(raw string) (*time.Time, error) {

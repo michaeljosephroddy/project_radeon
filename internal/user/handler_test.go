@@ -835,3 +835,47 @@ func TestUpdateMyCurrentLocationPassesTownAndCountry(t *testing.T) {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNoContent)
 	}
 }
+
+func TestUpdateMyCurrentLocationTrimsAndNormalizesCountryCode(t *testing.T) {
+	h := NewHandler(&mockQuerier{
+		updateCurrentLocation: func(_ context.Context, _ uuid.UUID, _ float64, _ float64, city, country string) error {
+			if city != "Greater London" || country != "United Kingdom" {
+				t.Fatalf("city/country = %q/%q, want Greater London/United Kingdom", city, country)
+			}
+			return nil
+		},
+	}, &mockUploader{})
+	req := withUserID(httptest.NewRequest(
+		http.MethodPatch,
+		"/users/me/location",
+		strings.NewReader(`{"lat":51.5035,"lng":-0.3322,"city":" Greater London ","country":"gb"}`),
+	), fixedUser)
+	rec := httptest.NewRecorder()
+
+	h.UpdateMyCurrentLocation(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNoContent)
+	}
+}
+
+func TestUpdateMyCurrentLocationRejectsBlankPlaceParts(t *testing.T) {
+	h := NewHandler(&mockQuerier{
+		updateCurrentLocation: func(_ context.Context, _ uuid.UUID, _ float64, _ float64, _, _ string) error {
+			t.Fatal("UpdateCurrentLocation should not be called")
+			return nil
+		},
+	}, &mockUploader{})
+	req := withUserID(httptest.NewRequest(
+		http.MethodPatch,
+		"/users/me/location",
+		strings.NewReader(`{"lat":51.5035,"lng":-0.3322,"city":"Greater London","country":" "}`),
+	), fixedUser)
+	rec := httptest.NewRecorder()
+
+	h.UpdateMyCurrentLocation(rec, req)
+
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnprocessableEntity)
+	}
+}
