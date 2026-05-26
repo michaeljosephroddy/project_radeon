@@ -1378,8 +1378,10 @@ CREATE TABLE IF NOT EXISTS recovery_meetings (
     address_line2 TEXT,
     city TEXT,
     region TEXT,
+    region_code TEXT,
     postal_code TEXT,
     country TEXT,
+    country_code TEXT,
     latitude DOUBLE PRECISION,
     longitude DOUBLE PRECISION,
     is_approximate_location BOOLEAN NOT NULL DEFAULT FALSE,
@@ -1411,6 +1413,14 @@ CREATE INDEX IF NOT EXISTS idx_recovery_meetings_country_city
 CREATE INDEX IF NOT EXISTS idx_recovery_meetings_active_country_region_city
     ON recovery_meetings(country, region, city)
     WHERE status = 'active';
+
+CREATE INDEX IF NOT EXISTS idx_recovery_meetings_active_country_code_region_code_city
+    ON recovery_meetings(country_code, region_code, city)
+    WHERE status = 'active';
+
+CREATE INDEX IF NOT EXISTS idx_recovery_meetings_active_region_code
+    ON recovery_meetings(region_code)
+    WHERE status = 'active' AND region_code IS NOT NULL;
 
 CREATE INDEX IF NOT EXISTS idx_recovery_meetings_meeting_type
     ON recovery_meetings(meeting_type);
