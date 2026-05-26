@@ -27,6 +27,12 @@ func TestParseSnapshotBytesPreservesOnlineCredentials(t *testing.T) {
 	if got := meeting.Occurrences[0].Timezone; got != "Europe/Dublin" {
 		t.Fatalf("timezone = %q", got)
 	}
+	if meeting.CountryCode == nil || *meeting.CountryCode != "IE" {
+		t.Fatalf("country_code = %#v", meeting.CountryCode)
+	}
+	if meeting.RegionCode == nil || *meeting.RegionCode != "L" {
+		t.Fatalf("region_code = %#v", meeting.RegionCode)
+	}
 }
 
 func TestParseSnapshotBytesRejectsInvalidOccurrenceTime(t *testing.T) {
@@ -74,6 +80,7 @@ func validMeetingJSON(sourceRecordField string) string {
 		"address_line2":null,
 		"city":"Dublin",
 		"country":"IE",
+		"country_code":"IE",
 		"fellowship":"ca",
 		"formats":["Open","Discussion"],
 		"is_approximate_location":false,
@@ -87,7 +94,8 @@ func validMeetingJSON(sourceRecordField string) string {
 		"online_url":"https://zoom.example/j/123456789",
 		"phone_join_info":"Meeting ID: 123 456 789 Passcode: sober",
 		"postal_code":null,
-		"region":null,
+		"region":"Leinster",
+		"region_code":"L",
 		"source_id":"ca-ie-feed",
 		` + sourceRecordField + `,
 		"source_url":"https://example.org/meetings.json",

@@ -27,6 +27,7 @@ type SnapshotMeeting struct {
 	AddressLine2       *string              `json:"address_line2"`
 	City               *string              `json:"city"`
 	Country            *string              `json:"country"`
+	CountryCode        *string              `json:"country_code"`
 	Fellowship         string               `json:"fellowship"`
 	Formats            []string             `json:"formats"`
 	IsApproximate      bool                 `json:"is_approximate_location"`
@@ -41,6 +42,7 @@ type SnapshotMeeting struct {
 	PhoneJoinInfo      *string              `json:"phone_join_info"`
 	PostalCode         *string              `json:"postal_code"`
 	Region             *string              `json:"region"`
+	RegionCode         *string              `json:"region_code"`
 	SourceID           string               `json:"source_id"`
 	SourceRecordID     string               `json:"source_record_id"`
 	SourceURL          string               `json:"source_url"`
@@ -85,8 +87,10 @@ type RecoveryMeeting struct {
 	AddressLine2          *string             `json:"address_line2,omitempty"`
 	City                  *string             `json:"city,omitempty"`
 	Region                *string             `json:"region,omitempty"`
+	RegionCode            *string             `json:"region_code,omitempty"`
 	PostalCode            *string             `json:"postal_code,omitempty"`
 	Country               *string             `json:"country,omitempty"`
+	CountryCode           *string             `json:"country_code,omitempty"`
 	Latitude              *float64            `json:"latitude,omitempty"`
 	Longitude             *float64            `json:"longitude,omitempty"`
 	IsApproximateLocation bool                `json:"is_approximate_location"`
@@ -112,20 +116,25 @@ type LocationSuggestion struct {
 	Label        string  `json:"label"`
 	Location     string  `json:"location"`
 	Region       *string `json:"region,omitempty"`
+	RegionCode   *string `json:"region_code,omitempty"`
 	Country      *string `json:"country,omitempty"`
+	CountryCode  *string `json:"country_code,omitempty"`
 	MeetingCount int     `json:"meeting_count"`
 }
 
 type RegionSuggestion struct {
 	Label        string `json:"label"`
 	Region       string `json:"region"`
+	RegionCode   string `json:"region_code,omitempty"`
 	Country      string `json:"country"`
+	CountryCode  string `json:"country_code,omitempty"`
 	MeetingCount int    `json:"meeting_count"`
 }
 
 type CountrySuggestion struct {
 	Label        string `json:"label"`
 	Country      string `json:"country"`
+	CountryCode  string `json:"country_code,omitempty"`
 	MeetingCount int    `json:"meeting_count"`
 }
 

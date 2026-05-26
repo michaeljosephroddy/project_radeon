@@ -24,7 +24,9 @@ func TestBuildRecoveryMeetingListQueryUsesStructuredLocation(t *testing.T) {
 		t.Fatalf("query still uses exact city filtering:\n%s", query)
 	}
 	for _, fragment := range []string{
+		"LOWER(COALESCE(rm.country_code, '')) = LOWER",
 		"LOWER(COALESCE(rm.region, '')) = LOWER",
+		"LOWER(COALESCE(rm.region_code, '')) = LOWER",
 		"COALESCE(rm.city, '') ILIKE",
 		"COALESCE(rm.city, '') || ', ' || COALESCE(rm.region, '') ILIKE",
 	} {
@@ -93,6 +95,8 @@ func TestBuildRecoveryMeetingListQuerySearchesLocationDetails(t *testing.T) {
 		"COALESCE(rm.address_line1, '') ILIKE",
 		"COALESCE(rm.address_line2, '') ILIKE",
 		"COALESCE(rm.postal_code, '') ILIKE",
+		"COALESCE(rm.country_code, '') ILIKE",
+		"COALESCE(rm.region_code, '') ILIKE",
 		"FROM unnest(rm.formats)",
 	} {
 		if !strings.Contains(query, fragment) {

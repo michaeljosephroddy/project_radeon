@@ -116,8 +116,10 @@ func ImportSnapshot(ctx context.Context, pool *pgxpool.Pool, opts ImportOptions)
 				address_line2,
 				city,
 				region,
+				region_code,
 				postal_code,
 				country,
+				country_code,
 				latitude,
 				longitude,
 				is_approximate_location,
@@ -136,7 +138,7 @@ func ImportSnapshot(ctx context.Context, pool *pgxpool.Pool, opts ImportOptions)
 			VALUES (
 				$1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
 				$11, $12, $13, $14, $15, $16, $17, $18, $19,
-				$20, $21, 'active', 0, NOW(), $22, $23, NOW()
+				$20, $21, $22, $23, 'active', 0, NOW(), $24, $25, NOW()
 			)
 			ON CONFLICT (fellowship, source_id, source_record_id)
 			DO UPDATE SET
@@ -148,8 +150,10 @@ func ImportSnapshot(ctx context.Context, pool *pgxpool.Pool, opts ImportOptions)
 				address_line2 = EXCLUDED.address_line2,
 				city = EXCLUDED.city,
 				region = EXCLUDED.region,
+				region_code = EXCLUDED.region_code,
 				postal_code = EXCLUDED.postal_code,
 				country = EXCLUDED.country,
+				country_code = EXCLUDED.country_code,
 				latitude = EXCLUDED.latitude,
 				longitude = EXCLUDED.longitude,
 				is_approximate_location = EXCLUDED.is_approximate_location,
@@ -177,8 +181,10 @@ func ImportSnapshot(ctx context.Context, pool *pgxpool.Pool, opts ImportOptions)
 			cleanStringPtr(meeting.AddressLine2),
 			cleanStringPtr(meeting.City),
 			cleanStringPtr(meeting.Region),
+			cleanStringPtr(meeting.RegionCode),
 			cleanStringPtr(meeting.PostalCode),
 			cleanStringPtr(meeting.Country),
+			cleanStringPtr(meeting.CountryCode),
 			meeting.Latitude,
 			meeting.Longitude,
 			meeting.IsApproximate,

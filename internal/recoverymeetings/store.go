@@ -117,8 +117,10 @@ func buildRecoveryMeetingListQuery(params ListParams) (string, []any, int) {
 			rm.address_line2,
 			rm.city,
 			rm.region,
+			rm.region_code,
 			rm.postal_code,
 			rm.country,
+			rm.country_code,
 			rm.latitude,
 			rm.longitude,
 			rm.is_approximate_location,
@@ -149,10 +151,12 @@ func buildRecoveryMeetingListQuery(params ListParams) (string, []any, int) {
 		query += " AND rm.fellowship = " + arg(params.Fellowship)
 	}
 	if params.Country != "" {
-		query += " AND LOWER(COALESCE(rm.country, '')) = LOWER(" + arg(params.Country) + ")"
+		country := arg(params.Country)
+		query += " AND (LOWER(COALESCE(rm.country, '')) = LOWER(" + country + ") OR LOWER(COALESCE(rm.country_code, '')) = LOWER(" + country + "))"
 	}
 	if params.Region != "" {
-		query += " AND LOWER(COALESCE(rm.region, '')) = LOWER(" + arg(params.Region) + ")"
+		region := arg(params.Region)
+		query += " AND (LOWER(COALESCE(rm.region, '')) = LOWER(" + region + ") OR LOWER(COALESCE(rm.region_code, '')) = LOWER(" + region + "))"
 	}
 	if location != "" {
 		placeholder := arg("%" + location + "%")
@@ -184,7 +188,9 @@ func buildRecoveryMeetingListQuery(params ListParams) (string, []any, int) {
 					OR rm.meeting_type::text ILIKE ` + placeholder + `
 					OR COALESCE(rm.city, '') ILIKE ` + placeholder + `
 					OR COALESCE(rm.region, '') ILIKE ` + placeholder + `
+					OR COALESCE(rm.region_code, '') ILIKE ` + placeholder + `
 					OR COALESCE(rm.country, '') ILIKE ` + placeholder + `
+					OR COALESCE(rm.country_code, '') ILIKE ` + placeholder + `
 					OR COALESCE(rm.venue_name, '') ILIKE ` + placeholder + `
 					OR COALESCE(rm.address_line1, '') ILIKE ` + placeholder + `
 					OR COALESCE(rm.address_line2, '') ILIKE ` + placeholder + `
@@ -314,8 +320,10 @@ func (s *pgStore) GetRecoveryMeeting(ctx context.Context, id uuid.UUID) (*Recove
 			rm.address_line2,
 			rm.city,
 			rm.region,
+			rm.region_code,
 			rm.postal_code,
 			rm.country,
+			rm.country_code,
 			rm.latitude,
 			rm.longitude,
 			rm.is_approximate_location,
@@ -372,27 +380,38 @@ func (s *pgStore) ListLocationSuggestions(ctx context.Context, query, country, r
 			SELECT
 				TRIM(rm.city) AS location,
 				NULLIF(TRIM(COALESCE(rm.region, '')), '') AS region,
+				NULLIF(TRIM(COALESCE(rm.region_code, '')), '') AS region_code,
 				NULLIF(TRIM(COALESCE(rm.country, '')), '') AS country,
+				NULLIF(TRIM(COALESCE(rm.country_code, '')), '') AS country_code,
 				COUNT(*)::int AS meeting_count
 			FROM recovery_meetings rm
 			WHERE rm.status = 'active'
 				AND TRIM(COALESCE(rm.city, '')) <> ''
-				AND LOWER(COALESCE(rm.country, '')) = LOWER(` + arg(country) + `)
+				AND (
+					LOWER(COALESCE(rm.country, '')) = LOWER(` + arg(country) + `)
+					OR LOWER(COALESCE(rm.country_code, '')) = LOWER(` + arg(country) + `)
+				)
 				AND (
 					rm.city ILIKE ` + contains + `
 					OR CONCAT_WS(', ', rm.city, rm.region) ILIKE ` + contains + `
 				)
 	`
 	if region = strings.TrimSpace(region); region != "" {
-		sql += " AND LOWER(COALESCE(rm.region, '')) = LOWER(" + arg(region) + ")"
+		regionArg := arg(region)
+		sql += " AND (LOWER(COALESCE(rm.region, '')) = LOWER(" + regionArg + ") OR LOWER(COALESCE(rm.region_code, '')) = LOWER(" + regionArg + "))"
 	}
 	if fellowship = strings.TrimSpace(strings.ToLower(fellowship)); fellowship != "" {
 		sql += " AND rm.fellowship = " + arg(fellowship)
 	}
 	sql += `
-			GROUP BY TRIM(rm.city), NULLIF(TRIM(COALESCE(rm.region, '')), ''), NULLIF(TRIM(COALESCE(rm.country, '')), '')
+			GROUP BY
+				TRIM(rm.city),
+				NULLIF(TRIM(COALESCE(rm.region, '')), ''),
+				NULLIF(TRIM(COALESCE(rm.region_code, '')), ''),
+				NULLIF(TRIM(COALESCE(rm.country, '')), ''),
+				NULLIF(TRIM(COALESCE(rm.country_code, '')), '')
 		)
-		SELECT location, region, country, meeting_count
+		SELECT location, region, region_code, country, country_code, meeting_count
 		FROM grouped_locations
 		ORDER BY
 			CASE
@@ -413,7 +432,14 @@ func (s *pgStore) ListLocationSuggestions(ctx context.Context, query, country, r
 	suggestions := []LocationSuggestion{}
 	for rows.Next() {
 		var suggestion LocationSuggestion
-		if err := rows.Scan(&suggestion.Location, &suggestion.Region, &suggestion.Country, &suggestion.MeetingCount); err != nil {
+		if err := rows.Scan(
+			&suggestion.Location,
+			&suggestion.Region,
+			&suggestion.RegionCode,
+			&suggestion.Country,
+			&suggestion.CountryCode,
+			&suggestion.MeetingCount,
+		); err != nil {
 			return nil, err
 		}
 		suggestion.Label = suggestion.Location
@@ -449,22 +475,36 @@ func (s *pgStore) ListRegionSuggestions(ctx context.Context, query, country, fel
 	sql := `
 		SELECT
 			TRIM(rm.region) AS region,
+			COALESCE(NULLIF(TRIM(rm.region_code), ''), '') AS region_code,
 			TRIM(rm.country) AS country,
+			COALESCE(NULLIF(TRIM(rm.country_code), ''), '') AS country_code,
 			COUNT(*)::int AS meeting_count
 		FROM recovery_meetings rm
 		WHERE rm.status = 'active'
 			AND TRIM(COALESCE(rm.region, '')) <> ''
-			AND LOWER(COALESCE(rm.country, '')) = LOWER(` + arg(country) + `)
-			AND rm.region ILIKE ` + contains
+			AND (
+				LOWER(COALESCE(rm.country, '')) = LOWER(` + arg(country) + `)
+				OR LOWER(COALESCE(rm.country_code, '')) = LOWER(` + arg(country) + `)
+			)
+			AND (
+				rm.region ILIKE ` + contains + `
+				OR rm.region_code ILIKE ` + contains + `
+			)`
 	if fellowship = strings.TrimSpace(strings.ToLower(fellowship)); fellowship != "" {
 		sql += " AND rm.fellowship = " + arg(fellowship)
 	}
 	sql += `
-		GROUP BY TRIM(rm.region), TRIM(rm.country)
+		GROUP BY
+			TRIM(rm.region),
+			COALESCE(NULLIF(TRIM(rm.region_code), ''), ''),
+			TRIM(rm.country),
+			COALESCE(NULLIF(TRIM(rm.country_code), ''), '')
 		ORDER BY
 			CASE
 				WHEN LOWER(TRIM(rm.region)) = LOWER(` + exact + `) THEN 0
+				WHEN LOWER(TRIM(rm.region_code)) = LOWER(` + exact + `) THEN 0
 				WHEN LOWER(TRIM(rm.region)) LIKE LOWER(` + prefix + `) THEN 1
+				WHEN LOWER(TRIM(rm.region_code)) LIKE LOWER(` + prefix + `) THEN 1
 				ELSE 2
 			END,
 			meeting_count DESC,
@@ -480,7 +520,13 @@ func (s *pgStore) ListRegionSuggestions(ctx context.Context, query, country, fel
 	suggestions := []RegionSuggestion{}
 	for rows.Next() {
 		var suggestion RegionSuggestion
-		if err := rows.Scan(&suggestion.Region, &suggestion.Country, &suggestion.MeetingCount); err != nil {
+		if err := rows.Scan(
+			&suggestion.Region,
+			&suggestion.RegionCode,
+			&suggestion.Country,
+			&suggestion.CountryCode,
+			&suggestion.MeetingCount,
+		); err != nil {
 			return nil, err
 		}
 		suggestion.Label = suggestion.Region
@@ -512,20 +558,26 @@ func (s *pgStore) ListCountrySuggestions(ctx context.Context, query, fellowship 
 	sql := `
 		SELECT
 			TRIM(rm.country) AS country,
+			COALESCE(NULLIF(TRIM(rm.country_code), ''), '') AS country_code,
 			COUNT(*)::int AS meeting_count
 		FROM recovery_meetings rm
 		WHERE rm.status = 'active'
 			AND TRIM(COALESCE(rm.country, '')) <> ''
-			AND rm.country ILIKE ` + contains
+			AND (
+				rm.country ILIKE ` + contains + `
+				OR rm.country_code ILIKE ` + contains + `
+			)`
 	if fellowship = strings.TrimSpace(strings.ToLower(fellowship)); fellowship != "" {
 		sql += " AND rm.fellowship = " + arg(fellowship)
 	}
 	sql += `
-		GROUP BY TRIM(rm.country)
+		GROUP BY TRIM(rm.country), COALESCE(NULLIF(TRIM(rm.country_code), ''), '')
 		ORDER BY
 			CASE
 				WHEN LOWER(TRIM(rm.country)) = LOWER(` + exact + `) THEN 0
+				WHEN LOWER(TRIM(rm.country_code)) = LOWER(` + exact + `) THEN 0
 				WHEN LOWER(TRIM(rm.country)) LIKE LOWER(` + prefix + `) THEN 1
+				WHEN LOWER(TRIM(rm.country_code)) LIKE LOWER(` + prefix + `) THEN 1
 				ELSE 2
 			END,
 			meeting_count DESC,
@@ -541,7 +593,7 @@ func (s *pgStore) ListCountrySuggestions(ctx context.Context, query, fellowship 
 	suggestions := []CountrySuggestion{}
 	for rows.Next() {
 		var suggestion CountrySuggestion
-		if err := rows.Scan(&suggestion.Country, &suggestion.MeetingCount); err != nil {
+		if err := rows.Scan(&suggestion.Country, &suggestion.CountryCode, &suggestion.MeetingCount); err != nil {
 			return nil, err
 		}
 		suggestion.Label = suggestion.Country
@@ -573,8 +625,10 @@ func scanRecoveryMeetingWithSort(row rowScanner, sort *listCursor) (*RecoveryMee
 		&meeting.AddressLine2,
 		&meeting.City,
 		&meeting.Region,
+		&meeting.RegionCode,
 		&meeting.PostalCode,
 		&meeting.Country,
+		&meeting.CountryCode,
 		&meeting.Latitude,
 		&meeting.Longitude,
 		&meeting.IsApproximateLocation,
