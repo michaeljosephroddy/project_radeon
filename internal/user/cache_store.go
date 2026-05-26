@@ -77,8 +77,8 @@ func (s *cachedStore) UpdateUser(ctx context.Context, userID uuid.UUID, username
 	)
 }
 
-func (s *cachedStore) UpdateCurrentLocation(ctx context.Context, userID uuid.UUID, lat, lng float64, city string) error {
-	if err := s.inner.UpdateCurrentLocation(ctx, userID, lat, lng, city); err != nil {
+func (s *cachedStore) UpdateCurrentLocation(ctx context.Context, userID uuid.UUID, lat, lng float64, city, country string) error {
+	if err := s.inner.UpdateCurrentLocation(ctx, userID, lat, lng, city, country); err != nil {
 		return err
 	}
 

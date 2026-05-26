@@ -54,7 +54,7 @@ func (s *stubQuerier) UpdateBannerURL(context.Context, uuid.UUID, string) error 
 	return nil
 }
 
-func (s *stubQuerier) UpdateCurrentLocation(context.Context, uuid.UUID, float64, float64, string) error {
+func (s *stubQuerier) UpdateCurrentLocation(context.Context, uuid.UUID, float64, float64, string, string) error {
 	return nil
 }
 

@@ -73,7 +73,7 @@ type Querier interface {
 	CompleteOnboarding(ctx context.Context, userID uuid.UUID) error
 	UpdateAvatarURL(ctx context.Context, userID uuid.UUID, avatarURL string) error
 	UpdateBannerURL(ctx context.Context, userID uuid.UUID, bannerURL string) error
-	UpdateCurrentLocation(ctx context.Context, userID uuid.UUID, lat, lng float64, city string) error
+	UpdateCurrentLocation(ctx context.Context, userID uuid.UUID, lat, lng float64, city, country string) error
 	DiscoverUsers(ctx context.Context, params DiscoverUsersParams) ([]User, error)
 	CountDiscoverUsers(ctx context.Context, params DiscoverUsersParams) (int, error)
 	ListInterests(ctx context.Context) ([]string, error)
@@ -118,6 +118,7 @@ type User struct {
 	IncomingFriendRequestCt       int        `json:"incoming_friend_request_count"`
 	OutgoingFriendRequestCt       int        `json:"outgoing_friend_request_count"`
 	CurrentCity                   *string    `json:"current_city,omitempty"`
+	CurrentCountry                *string    `json:"current_country,omitempty"`
 	LocationUpdatedAt             *time.Time `json:"location_updated_at,omitempty"`
 }
 
@@ -421,21 +422,22 @@ func (h *Handler) ListInterests(w http.ResponseWriter, r *http.Request) {
 	response.Success(w, http.StatusOK, map[string][]string{"items": interests})
 }
 
-// UpdateMyCurrentLocation silently records the caller's live GPS position and reverse-geocoded city.
+// UpdateMyCurrentLocation silently records the caller's live GPS position and reverse-geocoded place.
 func (h *Handler) UpdateMyCurrentLocation(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.CurrentUserID(r)
 
 	var input struct {
-		Lat  float64 `json:"lat"`
-		Lng  float64 `json:"lng"`
-		City string  `json:"city"`
+		Lat     float64 `json:"lat"`
+		Lng     float64 `json:"lng"`
+		City    string  `json:"city"`
+		Country string  `json:"country"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 		response.Error(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 
-	if err := h.db.UpdateCurrentLocation(r.Context(), userID, input.Lat, input.Lng, input.City); err != nil {
+	if err := h.db.UpdateCurrentLocation(r.Context(), userID, input.Lat, input.Lng, input.City, input.Country); err != nil {
 		response.Error(w, http.StatusInternalServerError, "could not update location")
 		return
 	}
