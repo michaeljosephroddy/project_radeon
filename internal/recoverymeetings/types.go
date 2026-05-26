@@ -138,6 +138,34 @@ type CountrySuggestion struct {
 	MeetingCount int    `json:"meeting_count"`
 }
 
+type FilterOptionLevel string
+
+const (
+	FilterOptionLevelCountry  FilterOptionLevel = "country"
+	FilterOptionLevelRegion   FilterOptionLevel = "region"
+	FilterOptionLevelLocality FilterOptionLevel = "locality"
+)
+
+type FilterOption struct {
+	Label        string  `json:"label"`
+	Level        string  `json:"level"`
+	Country      *string `json:"country,omitempty"`
+	CountryCode  *string `json:"country_code,omitempty"`
+	Region       *string `json:"region,omitempty"`
+	RegionCode   *string `json:"region_code,omitempty"`
+	Locality     *string `json:"locality,omitempty"`
+	MeetingCount int     `json:"meeting_count"`
+}
+
+type FilterOptionsParams struct {
+	Level       FilterOptionLevel
+	Query       string
+	Fellowships []string
+	Country     string
+	Region      string
+	Limit       int
+}
+
 type CursorPage[T any] struct {
 	Items      []T     `json:"items"`
 	Limit      int     `json:"limit"`
@@ -147,7 +175,7 @@ type CursorPage[T any] struct {
 
 type ListParams struct {
 	Query       string
-	Fellowship  string
+	Fellowships []string
 	Country     string
 	Region      string
 	City        string

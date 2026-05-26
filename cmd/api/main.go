@@ -261,6 +261,7 @@ func main() {
 		r.Get("/meetups/{id}/waitlist", meetupsHandler.GetWaitlist)
 
 		// Recovery meetings
+		r.Get("/recovery-meetings/filter-options", recoveryMeetingsHandler.ListFilterOptions)
 		r.Get("/recovery-meetings/locations", recoveryMeetingsHandler.ListLocationSuggestions)
 		r.Get("/recovery-meetings/regions", recoveryMeetingsHandler.ListRegionSuggestions)
 		r.Get("/recovery-meetings/countries", recoveryMeetingsHandler.ListCountrySuggestions)
