@@ -19,8 +19,8 @@ func TestBuildRecoveryMeetingListQueryUsesForgivingLocation(t *testing.T) {
 	if limit != 25 {
 		t.Fatalf("limit = %d, want 25", limit)
 	}
-	if strings.Contains(query, "LOWER(COALESCE(rm.city, '')) = LOWER") {
-		t.Fatalf("query still uses exact city matching:\n%s", query)
+	if strings.Contains(query, "AND LOWER(COALESCE(rm.city, '')) = LOWER") {
+		t.Fatalf("query still uses exact city filtering:\n%s", query)
 	}
 	for _, fragment := range []string{
 		"COALESCE(rm.city, '') ILIKE",
@@ -39,6 +39,27 @@ func TestBuildRecoveryMeetingListQueryUsesForgivingLocation(t *testing.T) {
 	}
 	if strings.Contains(query, " OFFSET ") {
 		t.Fatalf("query should use keyset pagination, not offset:\n%s", query)
+	}
+}
+
+func TestBuildRecoveryMeetingListQueryRanksExactLocationBeforeFuzzyMatches(t *testing.T) {
+	query, args, _ := buildRecoveryMeetingListQuery(ListParams{Location: "London"})
+
+	for _, fragment := range []string{
+		"AS sort_location_rank",
+		"WHEN LOWER(COALESCE(rm.city, '')) = LOWER(",
+		"WHEN LOWER(COALESCE(rm.region, '')) = LOWER(",
+		"sort_location_rank ASC",
+	} {
+		if !strings.Contains(query, fragment) {
+			t.Fatalf("query missing exact-location ranking fragment %q:\n%s", fragment, query)
+		}
+	}
+	if !containsArg(args, "London") {
+		t.Fatalf("args missing exact location value: %#v", args)
+	}
+	if !containsArg(args, "%London%") {
+		t.Fatalf("args missing fuzzy location pattern: %#v", args)
 	}
 }
 
@@ -99,17 +120,18 @@ func TestParseMeetingSearchQueryHandlesDottedFellowship(t *testing.T) {
 func TestBuildRecoveryMeetingListQueryAppliesKeysetCursor(t *testing.T) {
 	id := uuid.New()
 	cursor := encodeListCursor(listCursor{
-		SortDay:  4,
-		SortTime: "20:00:00",
-		SortName: "c.a. carlow",
-		ID:       id,
+		SortLocationRank: 2,
+		SortDay:          4,
+		SortTime:         "20:00:00",
+		SortName:         "c.a. carlow",
+		ID:               id,
 	})
 	query, args, _ := buildRecoveryMeetingListQuery(ListParams{Cursor: cursor})
 
 	if !strings.Contains(query, ") > (") {
 		t.Fatalf("query missing keyset comparison:\n%s", query)
 	}
-	if !containsArg(args, 4) || !containsArg(args, "20:00:00") || !containsArg(args, "c.a. carlow") || !containsArg(args, id) {
+	if !containsArg(args, 2) || !containsArg(args, 4) || !containsArg(args, "20:00:00") || !containsArg(args, "c.a. carlow") || !containsArg(args, id) {
 		t.Fatalf("args missing cursor values: %#v", args)
 	}
 }

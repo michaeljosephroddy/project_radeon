@@ -89,6 +89,19 @@ func buildRecoveryMeetingListQuery(params ListParams) (string, []any, int) {
 		args = append(args, value)
 		return fmt.Sprintf("$%d", len(args))
 	}
+	location := strings.TrimSpace(params.Location)
+	if location == "" {
+		location = strings.TrimSpace(params.City)
+	}
+	sortLocationRank := "0"
+	if location != "" {
+		exactLocation := arg(location)
+		sortLocationRank = `CASE
+				WHEN LOWER(COALESCE(rm.city, '')) = LOWER(` + exactLocation + `) THEN 0
+				WHEN LOWER(COALESCE(rm.region, '')) = LOWER(` + exactLocation + `) THEN 1
+				ELSE 2
+			END`
+	}
 	query := `
 		SELECT
 			rm.id,
@@ -115,6 +128,7 @@ func buildRecoveryMeetingListQuery(params ListParams) (string, []any, int) {
 			rm.accessibility_notes,
 			rm.last_verified_at,
 			rm.updated_at,
+			` + sortLocationRank + ` AS sort_location_rank,
 			COALESCE(next_occ.day_of_week, 7)::int AS sort_day,
 			COALESCE(to_char(next_occ.start_time_local, 'HH24:MI:SS'), '') AS sort_time,
 			LOWER(rm.name) AS sort_name
@@ -135,10 +149,6 @@ func buildRecoveryMeetingListQuery(params ListParams) (string, []any, int) {
 	}
 	if params.Country != "" {
 		query += " AND LOWER(COALESCE(rm.country, '')) = LOWER(" + arg(params.Country) + ")"
-	}
-	location := strings.TrimSpace(params.Location)
-	if location == "" {
-		location = strings.TrimSpace(params.City)
 	}
 	if location != "" {
 		placeholder := arg("%" + location + "%")
@@ -193,19 +203,22 @@ func buildRecoveryMeetingListQuery(params ListParams) (string, []any, int) {
 		}
 	}
 	if hasCursor {
+		cursorSortLocationRank := arg(cursor.SortLocationRank)
 		sortDay := arg(cursor.SortDay)
 		sortTime := arg(cursor.SortTime)
 		sortName := arg(cursor.SortName)
 		id := arg(cursor.ID)
 		query += ` AND (
+			` + sortLocationRank + `,
 			COALESCE(next_occ.day_of_week, 7)::int,
 			COALESCE(to_char(next_occ.start_time_local, 'HH24:MI:SS'), ''),
 			LOWER(rm.name),
 			rm.id
-		) > (` + sortDay + `, ` + sortTime + `, ` + sortName + `, ` + id + `)`
+		) > (` + cursorSortLocationRank + `, ` + sortDay + `, ` + sortTime + `, ` + sortName + `, ` + id + `)`
 	}
 	query += `
 		ORDER BY
+			sort_location_rank ASC,
 			COALESCE(next_occ.day_of_week, 7)::int ASC,
 			COALESCE(to_char(next_occ.start_time_local, 'HH24:MI:SS'), '') ASC,
 			LOWER(rm.name) ASC,
@@ -502,7 +515,7 @@ func scanRecoveryMeetingWithSort(row rowScanner, sort *listCursor) (*RecoveryMee
 		&meeting.UpdatedAt,
 	}
 	if sort != nil {
-		dest = append(dest, &sort.SortDay, &sort.SortTime, &sort.SortName)
+		dest = append(dest, &sort.SortLocationRank, &sort.SortDay, &sort.SortTime, &sort.SortName)
 		sort.ID = meeting.ID
 	}
 	if err := row.Scan(dest...); err != nil {
@@ -594,10 +607,11 @@ type listedRecoveryMeeting struct {
 }
 
 type listCursor struct {
-	SortDay  int       `json:"d"`
-	SortTime string    `json:"t"`
-	SortName string    `json:"n"`
-	ID       uuid.UUID `json:"id"`
+	SortLocationRank int       `json:"lr"`
+	SortDay          int       `json:"d"`
+	SortTime         string    `json:"t"`
+	SortName         string    `json:"n"`
+	ID               uuid.UUID `json:"id"`
 }
 
 func encodeListCursor(cursor listCursor) string {
@@ -620,7 +634,7 @@ func decodeListCursor(raw string) (listCursor, bool) {
 	if err := json.Unmarshal(decoded, &cursor); err != nil {
 		return listCursor{}, false
 	}
-	if cursor.ID == uuid.Nil || cursor.SortDay < 0 || cursor.SortDay > 7 {
+	if cursor.ID == uuid.Nil || cursor.SortLocationRank < 0 || cursor.SortLocationRank > 2 || cursor.SortDay < 0 || cursor.SortDay > 7 {
 		return listCursor{}, false
 	}
 	return cursor, true

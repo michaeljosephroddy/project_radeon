@@ -77,6 +77,7 @@ func (s *pgStore) GetUser(ctx context.Context, viewerID, userID uuid.UUID) (*Use
 			ic.cnt AS incoming_friend_request_count,
 			oc.cnt AS outgoing_friend_request_count,
 			u.current_city,
+			u.current_country,
 			u.location_updated_at
 		FROM users u
 		LEFT JOIN friendships f
@@ -113,7 +114,7 @@ func (s *pgStore) GetUser(ctx context.Context, viewerID, userID uuid.UUID) (*Use
 		&u.OnboardingCompletedAt, &u.IdentityVerificationStatus, &u.IdentityVerifiedAt, &u.IdentityVerificationLastError,
 		&u.City, &u.Country, &u.Bio, &u.Interests, &u.ConnectionIntents, &u.Gender, &u.BirthDate, &u.SoberSince, &u.CreatedAt,
 		&u.FriendshipStatus, &u.FriendCount, &u.IncomingFriendRequestCt, &u.OutgoingFriendRequestCt,
-		&u.CurrentCity, &u.LocationUpdatedAt,
+		&u.CurrentCity, &u.CurrentCountry, &u.LocationUpdatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
@@ -200,18 +201,19 @@ func (s *pgStore) UpdateUser(ctx context.Context, userID uuid.UUID, username, ci
 	return tx.Commit(ctx)
 }
 
-func (s *pgStore) UpdateCurrentLocation(ctx context.Context, userID uuid.UUID, lat, lng float64, city string) error {
+func (s *pgStore) UpdateCurrentLocation(ctx context.Context, userID uuid.UUID, lat, lng float64, city, country string) error {
 	_, err := s.pool.Exec(ctx,
 		`UPDATE users
-		SET
-			current_lat = $2,
-			current_lng = $3,
-			current_city = $4,
-			location_updated_at = NOW(),
-			discover_lat = $2,
-			discover_lng = $3
-		WHERE id = $1`,
-		userID, lat, lng, city,
+			SET
+				current_lat = $2,
+				current_lng = $3,
+				current_city = $4,
+				current_country = $5,
+				location_updated_at = NOW(),
+				discover_lat = $2,
+				discover_lng = $3
+			WHERE id = $1`,
+		userID, lat, lng, city, country,
 	)
 	return err
 }

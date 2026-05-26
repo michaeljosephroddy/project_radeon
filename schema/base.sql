@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS users (
     current_lat DOUBLE PRECISION,
     current_lng DOUBLE PRECISION,
     current_city TEXT,
+    current_country TEXT,
     location_updated_at TIMESTAMPTZ,
     discover_lat DOUBLE PRECISION,
     discover_lng DOUBLE PRECISION,

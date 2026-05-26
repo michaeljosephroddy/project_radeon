@@ -29,6 +29,7 @@ type mockQuerier struct {
 	unblockUser             func(ctx context.Context, blockerID, blockedID uuid.UUID) error
 	reportUser              func(ctx context.Context, reporterID, reportedUserID uuid.UUID, reason string, details *string) error
 	listInterests           func(ctx context.Context) ([]string, error)
+	updateCurrentLocation   func(ctx context.Context, userID uuid.UUID, lat, lng float64, city, country string) error
 }
 
 func (m *mockQuerier) GetUser(ctx context.Context, viewerID, userID uuid.UUID) (*User, error) {
@@ -109,7 +110,10 @@ func (m *mockQuerier) ListInterests(ctx context.Context) ([]string, error) {
 	return []string{"Coffee", "Hiking", "Meditation"}, nil
 }
 
-func (m *mockQuerier) UpdateCurrentLocation(ctx context.Context, userID uuid.UUID, lat, lng float64, city string) error {
+func (m *mockQuerier) UpdateCurrentLocation(ctx context.Context, userID uuid.UUID, lat, lng float64, city, country string) error {
+	if m.updateCurrentLocation != nil {
+		return m.updateCurrentLocation(ctx, userID, lat, lng, city, country)
+	}
 	return nil
 }
 
@@ -800,5 +804,34 @@ func TestDiscoverPreviewKeepsExactMatchesExact(t *testing.T) {
 	}
 	if len(body.Data.RelaxedFilters) != 0 {
 		t.Fatalf("relaxed_filters = %v, want empty", body.Data.RelaxedFilters)
+	}
+}
+
+func TestUpdateMyCurrentLocationPassesTownAndCountry(t *testing.T) {
+	h := NewHandler(&mockQuerier{
+		updateCurrentLocation: func(_ context.Context, userID uuid.UUID, lat, lng float64, city, country string) error {
+			if userID != fixedUser {
+				t.Fatalf("userID = %s, want %s", userID, fixedUser)
+			}
+			if lat != 51.5074 || lng != -0.1278 {
+				t.Fatalf("lat/lng = %f/%f, want London coords", lat, lng)
+			}
+			if city != "London" || country != "United Kingdom" {
+				t.Fatalf("city/country = %q/%q, want London/United Kingdom", city, country)
+			}
+			return nil
+		},
+	}, &mockUploader{})
+	req := withUserID(httptest.NewRequest(
+		http.MethodPatch,
+		"/users/me/location",
+		strings.NewReader(`{"lat":51.5074,"lng":-0.1278,"city":"London","country":"United Kingdom"}`),
+	), fixedUser)
+	rec := httptest.NewRecorder()
+
+	h.UpdateMyCurrentLocation(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNoContent)
 	}
 }
