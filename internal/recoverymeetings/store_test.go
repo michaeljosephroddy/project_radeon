@@ -9,7 +9,7 @@ import (
 
 func TestBuildRecoveryMeetingListQueryUsesStructuredLocation(t *testing.T) {
 	query, args, limit := buildRecoveryMeetingListQuery(ListParams{
-		Fellowship:  "ca",
+		Fellowships: []string{"ca"},
 		Country:     "Ireland",
 		Region:      "Laois",
 		Location:    "Carlow",
@@ -23,12 +23,15 @@ func TestBuildRecoveryMeetingListQueryUsesStructuredLocation(t *testing.T) {
 	if strings.Contains(query, "AND LOWER(COALESCE(rm.city, '')) = LOWER") {
 		t.Fatalf("query still uses exact city filtering:\n%s", query)
 	}
+	if !strings.Contains(query, "rm.fellowship = ANY(") {
+		t.Fatalf("query missing multi-fellowship predicate:\n%s", query)
+	}
 	for _, fragment := range []string{
 		"LOWER(COALESCE(rm.country_code, '')) = LOWER",
-		"LOWER(COALESCE(rm.region, '')) = LOWER",
+		"WHEN TRIM(COALESCE(rm.region, '')) <> '' THEN TRIM(rm.region)",
 		"LOWER(COALESCE(rm.region_code, '')) = LOWER",
-		"COALESCE(rm.city, '') ILIKE",
-		"COALESCE(rm.city, '') || ', ' || COALESCE(rm.region, '') ILIKE",
+		"ELSE TRIM(COALESCE(rm.city, '')) END ILIKE",
+		"|| ', ' || CASE WHEN TRIM(COALESCE(rm.region, '')) <> ''",
 	} {
 		if !strings.Contains(query, fragment) {
 			t.Fatalf("query missing %q:\n%s", fragment, query)
@@ -49,6 +52,9 @@ func TestBuildRecoveryMeetingListQueryUsesStructuredLocation(t *testing.T) {
 	if !containsArg(args, "Laois") {
 		t.Fatalf("args missing region value: %#v", args)
 	}
+	if !containsStringSliceArg(args, []string{"ca"}) {
+		t.Fatalf("args missing fellowship slice: %#v", args)
+	}
 	if strings.Contains(query, " OFFSET ") {
 		t.Fatalf("query should use keyset pagination, not offset:\n%s", query)
 	}
@@ -59,8 +65,8 @@ func TestBuildRecoveryMeetingListQueryRanksExactLocationBeforeFuzzyMatches(t *te
 
 	for _, fragment := range []string{
 		"AS sort_location_rank",
-		"WHEN LOWER(COALESCE(rm.city, '')) = LOWER(",
-		"WHEN LOWER(COALESCE(rm.region, '')) = LOWER(",
+		"WHEN LOWER(CASE WHEN",
+		"WHEN TRIM(COALESCE(rm.region, '')) <> '' THEN TRIM(rm.region)",
 		"sort_location_rank ASC",
 	} {
 		if !strings.Contains(query, fragment) {
@@ -78,11 +84,32 @@ func TestBuildRecoveryMeetingListQueryRanksExactLocationBeforeFuzzyMatches(t *te
 func TestBuildRecoveryMeetingListQueryFallsBackFromCityToLocation(t *testing.T) {
 	query, args, _ := buildRecoveryMeetingListQuery(ListParams{City: "Carlow"})
 
-	if !strings.Contains(query, "COALESCE(rm.city, '') ILIKE") {
+	if !strings.Contains(query, "ELSE TRIM(COALESCE(rm.city, '')) END ILIKE") {
 		t.Fatalf("query missing location predicate:\n%s", query)
 	}
 	if !containsArg(args, "%Carlow%") {
 		t.Fatalf("args missing legacy city pattern: %#v", args)
+	}
+}
+
+func TestBuildRecoveryMeetingListQueryDerivesAdminAreaFromMisfiledCity(t *testing.T) {
+	query, args, _ := buildRecoveryMeetingListQuery(ListParams{
+		Country:  "Ireland",
+		Region:   "Dublin",
+		Location: "Dublin",
+	})
+
+	for _, fragment := range []string{
+		"^(co\\.?|county|state|province|prov\\.?|region|prefecture|department)\\s+",
+		"regexp_replace(regexp_replace(TRIM(COALESCE(rm.city, ''))",
+		"\\s+(north|south|east|west)$",
+	} {
+		if !strings.Contains(query, fragment) {
+			t.Fatalf("query missing admin-area normalization fragment %q:\n%s", fragment, query)
+		}
+	}
+	if !containsArg(args, "Dublin") || !containsArg(args, "%Dublin%") {
+		t.Fatalf("args missing Dublin filters: %#v", args)
 	}
 }
 
@@ -108,16 +135,36 @@ func TestBuildRecoveryMeetingListQuerySearchesLocationDetails(t *testing.T) {
 func TestBuildRecoveryMeetingListQueryTokenizesSearchAndDetectsFellowship(t *testing.T) {
 	query, args, _ := buildRecoveryMeetingListQuery(ListParams{Query: "na portlaoise ireland"})
 
-	if !strings.Contains(query, "rm.fellowship = ") {
+	if !strings.Contains(query, "rm.fellowship = ANY(") {
 		t.Fatalf("query missing fellowship predicate:\n%s", query)
 	}
-	for _, want := range []any{"na", "%portlaoise%", "%ireland%"} {
+	for _, want := range []any{"%portlaoise%", "%ireland%"} {
 		if !containsArg(args, want) {
 			t.Fatalf("args missing %q: %#v", want, args)
 		}
 	}
+	if !containsStringSliceArg(args, []string{"na"}) {
+		t.Fatalf("args missing search fellowship slice: %#v", args)
+	}
 	if containsArg(args, "%na%") {
 		t.Fatalf("fellowship token should not be treated as a generic search term: %#v", args)
+	}
+}
+
+func TestBuildRecoveryMeetingListQueryCombinesExplicitAndSearchFellowships(t *testing.T) {
+	query, args, _ := buildRecoveryMeetingListQuery(ListParams{
+		Fellowships: []string{"aa", "ca"},
+		Query:       "na london",
+	})
+
+	if !strings.Contains(query, "rm.fellowship = ANY(") {
+		t.Fatalf("query missing fellowship predicate:\n%s", query)
+	}
+	if strings.Contains(query, "rm.fellowship = $") {
+		t.Fatalf("query should not add a conflicting exact fellowship predicate:\n%s", query)
+	}
+	if !containsStringSliceArg(args, []string{"aa", "ca", "na"}) {
+		t.Fatalf("args missing combined fellowship slice: %#v", args)
 	}
 }
 
@@ -153,6 +200,26 @@ func TestBuildRecoveryMeetingListQueryAppliesKeysetCursor(t *testing.T) {
 func containsArg(args []any, want any) bool {
 	for _, arg := range args {
 		if arg == want {
+			return true
+		}
+	}
+	return false
+}
+
+func containsStringSliceArg(args []any, want []string) bool {
+	for _, arg := range args {
+		values, ok := arg.([]string)
+		if !ok || len(values) != len(want) {
+			continue
+		}
+		matches := true
+		for index, value := range values {
+			if value != want[index] {
+				matches = false
+				break
+			}
+		}
+		if matches {
 			return true
 		}
 	}

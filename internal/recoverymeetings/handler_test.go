@@ -14,10 +14,18 @@ import (
 
 type mockRecoveryQuerier struct {
 	list                    func(ctx context.Context, params ListParams) (*CursorPage[RecoveryMeeting], error)
+	listFilterOptions       func(ctx context.Context, params FilterOptionsParams) ([]FilterOption, error)
 	listLocationSuggestions func(ctx context.Context, query, country, region, fellowship string, limit int) ([]LocationSuggestion, error)
 	listRegionSuggestions   func(ctx context.Context, query, country, fellowship string, limit int) ([]RegionSuggestion, error)
 	listCountrySuggestions  func(ctx context.Context, query, fellowship string, limit int) ([]CountrySuggestion, error)
 	get                     func(ctx context.Context, id uuid.UUID) (*RecoveryMeeting, error)
+}
+
+func (m *mockRecoveryQuerier) ListFilterOptions(ctx context.Context, params FilterOptionsParams) ([]FilterOption, error) {
+	if m.listFilterOptions != nil {
+		return m.listFilterOptions(ctx, params)
+	}
+	return []FilterOption{}, nil
 }
 
 func (m *mockRecoveryQuerier) ListRecoveryMeetings(ctx context.Context, params ListParams) (*CursorPage[RecoveryMeeting], error) {
@@ -147,6 +155,75 @@ func TestListCountrySuggestionsSuccess(t *testing.T) {
 	}
 }
 
+func TestListFilterOptionsParsesParams(t *testing.T) {
+	var seen FilterOptionsParams
+	h := NewHandler(&mockRecoveryQuerier{
+		listFilterOptions: func(_ context.Context, params FilterOptionsParams) ([]FilterOption, error) {
+			seen = params
+			country := "Ireland"
+			return []FilterOption{{
+				Label:        "Dublin, Ireland",
+				Level:        string(FilterOptionLevelRegion),
+				Country:      &country,
+				Region:       stringPointer("Dublin"),
+				MeetingCount: 52,
+			}}, nil
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/recovery-meetings/filter-options?level=region&q=Dub&country=Ireland&fellowship=AA,ca&fellowship=na&limit=99", nil)
+	rec := httptest.NewRecorder()
+	h.ListFilterOptions(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if seen.Level != FilterOptionLevelRegion || seen.Query != "Dub" || seen.Country != "Ireland" || seen.Limit != 15 {
+		t.Fatalf("params = %#v", seen)
+	}
+	if !sameStrings(seen.Fellowships, []string{"aa", "ca", "na"}) {
+		t.Fatalf("fellowships = %#v", seen.Fellowships)
+	}
+}
+
+func TestListFilterOptionsRejectsInvalidParams(t *testing.T) {
+	h := NewHandler(&mockRecoveryQuerier{
+		listFilterOptions: func(context.Context, FilterOptionsParams) ([]FilterOption, error) {
+			t.Fatal("ListFilterOptions should not be called")
+			return nil, nil
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/recovery-meetings/filter-options?level=planet&q=Ear&fellowship=bad", nil)
+	rec := httptest.NewRecorder()
+	h.ListFilterOptions(rec, req)
+
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestListFilterOptionsShortOrMissingParentSkipsStore(t *testing.T) {
+	h := NewHandler(&mockRecoveryQuerier{
+		listFilterOptions: func(context.Context, FilterOptionsParams) ([]FilterOption, error) {
+			t.Fatal("ListFilterOptions should not be called")
+			return nil, nil
+		},
+	})
+
+	for _, url := range []string{
+		"/recovery-meetings/filter-options?level=country&q=I",
+		"/recovery-meetings/filter-options?level=region&q=Dub",
+		"/recovery-meetings/filter-options?level=locality&q=Dub",
+	} {
+		rec := httptest.NewRecorder()
+		h.ListFilterOptions(rec, httptest.NewRequest(http.MethodGet, url, nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s status = %d, body = %s", url, rec.Code, rec.Body.String())
+		}
+	}
+}
+
 func TestListRecoveryMeetingsPassesFiltersAndReturnsCredentials(t *testing.T) {
 	meetingID := uuid.New()
 	onlineURL := "https://zoom.example/j/123456789"
@@ -187,7 +264,7 @@ func TestListRecoveryMeetingsPassesFiltersAndReturnsCredentials(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
 	}
-	if seen.Fellowship != "ca" || seen.MeetingType != "online" || seen.Country != "Ireland" || seen.Region != "Leinster" || seen.City != "Dublin" || seen.Location != "Dublin" || seen.Query != "zoom" || seen.Limit != 5 {
+	if !sameStrings(seen.Fellowships, []string{"ca"}) || seen.MeetingType != "online" || seen.Country != "Ireland" || seen.Region != "Leinster" || seen.City != "Dublin" || seen.Location != "Dublin" || seen.Query != "zoom" || seen.Limit != 5 {
 		t.Fatalf("params = %#v", seen)
 	}
 	if seen.DayOfWeek == nil || *seen.DayOfWeek != 1 {
@@ -209,6 +286,44 @@ func TestListRecoveryMeetingsPassesFiltersAndReturnsCredentials(t *testing.T) {
 	}
 	if got.PhoneJoinInfo == nil || *got.PhoneJoinInfo != phoneJoinInfo {
 		t.Fatalf("phone_join_info = %#v", got.PhoneJoinInfo)
+	}
+}
+
+func TestListRecoveryMeetingsParsesMultipleFellowships(t *testing.T) {
+	var seen ListParams
+	h := NewHandler(&mockRecoveryQuerier{
+		list: func(_ context.Context, params ListParams) (*CursorPage[RecoveryMeeting], error) {
+			seen = params
+			return &CursorPage[RecoveryMeeting]{Items: []RecoveryMeeting{}, Limit: params.Limit}, nil
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/recovery-meetings?fellowship=AA,ca&fellowship=na&fellowship=aa&limit=5", nil)
+	rec := httptest.NewRecorder()
+	h.ListRecoveryMeetings(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if !sameStrings(seen.Fellowships, []string{"aa", "ca", "na"}) {
+		t.Fatalf("fellowships = %#v", seen.Fellowships)
+	}
+}
+
+func TestListRecoveryMeetingsRejectsInvalidFellowship(t *testing.T) {
+	h := NewHandler(&mockRecoveryQuerier{
+		list: func(context.Context, ListParams) (*CursorPage[RecoveryMeeting], error) {
+			t.Fatal("ListRecoveryMeetings should not be called")
+			return nil, nil
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/recovery-meetings?fellowship=aa,smart", nil)
+	rec := httptest.NewRecorder()
+	h.ListRecoveryMeetings(rec, req)
+
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
 	}
 }
 
@@ -254,6 +369,22 @@ func TestListRecoveryMeetingsRejectsInvalidFilters(t *testing.T) {
 			t.Fatalf("missing validation error for %s: %#v", field, body.Errors)
 		}
 	}
+}
+
+func sameStrings(a []string, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for index, value := range a {
+		if value != b[index] {
+			return false
+		}
+	}
+	return true
+}
+
+func stringPointer(value string) *string {
+	return &value
 }
 
 func TestGetRecoveryMeetingNotFound(t *testing.T) {

@@ -16,8 +16,31 @@ import (
 
 var searchTokenPattern = regexp.MustCompile(`[[:alnum:]]+`)
 
+func recoveryMeetingAdminAreaFromCityExpr(alias string) string {
+	city := "TRIM(COALESCE(" + alias + ".city, ''))"
+	return "regexp_replace(regexp_replace(" + city + ", '^(co\\.?|county|state|province|prov\\.?|region|prefecture|department)\\s+(of\\s+)?', '', 'i'), '\\s+(north|south|east|west)$', '', 'i')"
+}
+
+func recoveryMeetingHasAdminAreaInCityExpr(alias string) string {
+	return "(TRIM(COALESCE(" + alias + ".region, '')) = '' AND TRIM(COALESCE(" + alias + ".city, '')) ~* '^(co\\.?|county|state|province|prov\\.?|region|prefecture|department)\\s+')"
+}
+
+func recoveryMeetingLocationExpr(alias string) string {
+	return "CASE WHEN " + recoveryMeetingHasAdminAreaInCityExpr(alias) +
+		" THEN " + recoveryMeetingAdminAreaFromCityExpr(alias) +
+		" ELSE TRIM(COALESCE(" + alias + ".city, '')) END"
+}
+
+func recoveryMeetingRegionExpr(alias string) string {
+	return "CASE" +
+		" WHEN TRIM(COALESCE(" + alias + ".region, '')) <> '' THEN TRIM(" + alias + ".region)" +
+		" WHEN " + recoveryMeetingHasAdminAreaInCityExpr(alias) + " THEN " + recoveryMeetingAdminAreaFromCityExpr(alias) +
+		" ELSE '' END"
+}
+
 type Querier interface {
 	ListRecoveryMeetings(ctx context.Context, params ListParams) (*CursorPage[RecoveryMeeting], error)
+	ListFilterOptions(ctx context.Context, params FilterOptionsParams) ([]FilterOption, error)
 	ListLocationSuggestions(ctx context.Context, query, country, region, fellowship string, limit int) ([]LocationSuggestion, error)
 	ListRegionSuggestions(ctx context.Context, query, country, fellowship string, limit int) ([]RegionSuggestion, error)
 	ListCountrySuggestions(ctx context.Context, query, fellowship string, limit int) ([]CountrySuggestion, error)
@@ -94,12 +117,14 @@ func buildRecoveryMeetingListQuery(params ListParams) (string, []any, int) {
 	if location == "" {
 		location = strings.TrimSpace(params.City)
 	}
+	locationExpr := recoveryMeetingLocationExpr("rm")
+	regionExpr := recoveryMeetingRegionExpr("rm")
 	sortLocationRank := "0"
 	if location != "" {
 		exactLocation := arg(location)
 		sortLocationRank = `CASE
-				WHEN LOWER(COALESCE(rm.city, '')) = LOWER(` + exactLocation + `) THEN 0
-				WHEN LOWER(COALESCE(rm.region, '')) = LOWER(` + exactLocation + `) THEN 1
+				WHEN LOWER(` + locationExpr + `) = LOWER(` + exactLocation + `) THEN 0
+				WHEN LOWER(` + regionExpr + `) = LOWER(` + exactLocation + `) THEN 1
 				ELSE 2
 			END`
 	}
@@ -147,8 +172,17 @@ func buildRecoveryMeetingListQuery(params ListParams) (string, []any, int) {
 		) next_occ ON true
 		WHERE rm.status = 'active'
 	`
-	if params.Fellowship != "" {
-		query += " AND rm.fellowship = " + arg(params.Fellowship)
+	queryFellowship := ""
+	searchTerms := []string(nil)
+	if params.Query != "" {
+		queryFellowship, searchTerms = parseMeetingSearchQuery(params.Query)
+	}
+	effectiveFellowships := append([]string{}, params.Fellowships...)
+	if queryFellowship != "" && !hasFellowshipFilter(effectiveFellowships, queryFellowship) {
+		effectiveFellowships = append(effectiveFellowships, queryFellowship)
+	}
+	if len(effectiveFellowships) > 0 {
+		query += " AND rm.fellowship = ANY(" + arg(effectiveFellowships) + ")"
 	}
 	if params.Country != "" {
 		country := arg(params.Country)
@@ -156,13 +190,13 @@ func buildRecoveryMeetingListQuery(params ListParams) (string, []any, int) {
 	}
 	if params.Region != "" {
 		region := arg(params.Region)
-		query += " AND (LOWER(COALESCE(rm.region, '')) = LOWER(" + region + ") OR LOWER(COALESCE(rm.region_code, '')) = LOWER(" + region + "))"
+		query += " AND (LOWER(" + regionExpr + ") = LOWER(" + region + ") OR LOWER(COALESCE(rm.region_code, '')) = LOWER(" + region + "))"
 	}
 	if location != "" {
 		placeholder := arg("%" + location + "%")
 		query += ` AND (
-			COALESCE(rm.city, '') ILIKE ` + placeholder + `
-			OR COALESCE(rm.city, '') || ', ' || COALESCE(rm.region, '') ILIKE ` + placeholder + `
+			` + locationExpr + ` ILIKE ` + placeholder + `
+			OR ` + locationExpr + ` || ', ' || ` + regionExpr + ` ILIKE ` + placeholder + `
 		)`
 	}
 	if params.MeetingType != "" {
@@ -177,10 +211,6 @@ func buildRecoveryMeetingListQuery(params ListParams) (string, []any, int) {
 		)`
 	}
 	if params.Query != "" {
-		queryFellowship, searchTerms := parseMeetingSearchQuery(params.Query)
-		if queryFellowship != "" {
-			query += " AND rm.fellowship = " + arg(queryFellowship)
-		}
 		for _, term := range searchTerms {
 			placeholder := arg("%" + term + "%")
 			query += ` AND (
@@ -188,6 +218,8 @@ func buildRecoveryMeetingListQuery(params ListParams) (string, []any, int) {
 					OR rm.meeting_type::text ILIKE ` + placeholder + `
 					OR COALESCE(rm.city, '') ILIKE ` + placeholder + `
 					OR COALESCE(rm.region, '') ILIKE ` + placeholder + `
+					OR ` + locationExpr + ` ILIKE ` + placeholder + `
+					OR ` + regionExpr + ` ILIKE ` + placeholder + `
 					OR COALESCE(rm.region_code, '') ILIKE ` + placeholder + `
 					OR COALESCE(rm.country, '') ILIKE ` + placeholder + `
 					OR COALESCE(rm.country_code, '') ILIKE ` + placeholder + `
@@ -231,6 +263,261 @@ func buildRecoveryMeetingListQuery(params ListParams) (string, []any, int) {
 			rm.id ASC
 		LIMIT ` + arg(limit+1)
 	return query, args, limit
+}
+
+func hasFellowshipFilter(fellowships []string, fellowship string) bool {
+	for _, item := range fellowships {
+		if item == fellowship {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeFilterOptionLimit(limit int) int {
+	if limit <= 0 {
+		return 10
+	}
+	if limit > 15 {
+		return 15
+	}
+	return limit
+}
+
+func stringPtrFromTrimmed(value string) *string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return nil
+	}
+	return &trimmed
+}
+
+func formatFilterOptionLabel(parts ...string) string {
+	values := make([]string, 0, len(parts))
+	seen := map[string]struct{}{}
+	for _, part := range parts {
+		trimmed := strings.TrimSpace(part)
+		if trimmed == "" {
+			continue
+		}
+		key := strings.ToLower(trimmed)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		values = append(values, trimmed)
+	}
+	return strings.Join(values, ", ")
+}
+
+func (s *pgStore) ListFilterOptions(ctx context.Context, params FilterOptionsParams) ([]FilterOption, error) {
+	queryText := strings.TrimSpace(params.Query)
+	if len([]rune(queryText)) < 2 {
+		return []FilterOption{}, nil
+	}
+	limit := normalizeFilterOptionLimit(params.Limit)
+	args := []any{}
+	arg := func(value any) string {
+		args = append(args, value)
+		return fmt.Sprintf("$%d", len(args))
+	}
+	contains := arg("%" + queryText + "%")
+	exact := arg(queryText)
+	prefix := arg(queryText + "%")
+	limitArg := arg(limit)
+
+	baseWhere := " WHERE 1 = 1"
+	if len(params.Fellowships) > 0 {
+		baseWhere += " AND fellowship = ANY(" + arg(params.Fellowships) + ")"
+	}
+
+	switch params.Level {
+	case FilterOptionLevelCountry:
+		sql := `
+			SELECT
+				country,
+				COALESCE(country_code, '') AS country_code,
+				COUNT(*)::int AS meeting_count
+			FROM recovery_meeting_filter_places
+		` + baseWhere + `
+				AND country IS NOT NULL
+				AND (
+					country ILIKE ` + contains + `
+					OR COALESCE(country_code, '') ILIKE ` + contains + `
+				)
+			GROUP BY country, COALESCE(country_code, '')
+			ORDER BY
+				CASE
+					WHEN LOWER(country) = LOWER(` + exact + `) THEN 0
+					WHEN LOWER(COALESCE(country_code, '')) = LOWER(` + exact + `) THEN 0
+					WHEN LOWER(country) LIKE LOWER(` + prefix + `) THEN 1
+					WHEN LOWER(COALESCE(country_code, '')) LIKE LOWER(` + prefix + `) THEN 1
+					ELSE 2
+				END,
+				meeting_count DESC,
+				country ASC
+			LIMIT ` + limitArg
+		rows, err := s.pool.Query(ctx, sql, args...)
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+		options := []FilterOption{}
+		for rows.Next() {
+			var country string
+			var countryCode string
+			var meetingCount int
+			if err := rows.Scan(&country, &countryCode, &meetingCount); err != nil {
+				return nil, err
+			}
+			options = append(options, FilterOption{
+				Label:        country,
+				Level:        string(FilterOptionLevelCountry),
+				Country:      stringPtrFromTrimmed(country),
+				CountryCode:  stringPtrFromTrimmed(countryCode),
+				MeetingCount: meetingCount,
+			})
+		}
+		return options, rows.Err()
+	case FilterOptionLevelRegion:
+		country := strings.TrimSpace(params.Country)
+		if country == "" {
+			return []FilterOption{}, nil
+		}
+		countryArg := arg(country)
+		sql := `
+			SELECT
+				region,
+				COALESCE(region_code, '') AS region_code,
+				COALESCE(country, '') AS country,
+				COALESCE(country_code, '') AS country_code,
+				COUNT(*)::int AS meeting_count
+			FROM recovery_meeting_filter_places
+		` + baseWhere + `
+				AND region IS NOT NULL
+				AND (
+					LOWER(COALESCE(country, '')) = LOWER(` + countryArg + `)
+					OR LOWER(COALESCE(country_code, '')) = LOWER(` + countryArg + `)
+				)
+				AND (
+					region ILIKE ` + contains + `
+					OR COALESCE(region_code, '') ILIKE ` + contains + `
+				)
+			GROUP BY region, COALESCE(region_code, ''), COALESCE(country, ''), COALESCE(country_code, '')
+			ORDER BY
+				CASE
+					WHEN LOWER(region) = LOWER(` + exact + `) THEN 0
+					WHEN LOWER(COALESCE(region_code, '')) = LOWER(` + exact + `) THEN 0
+					WHEN LOWER(region) LIKE LOWER(` + prefix + `) THEN 1
+					WHEN LOWER(COALESCE(region_code, '')) LIKE LOWER(` + prefix + `) THEN 1
+					ELSE 2
+				END,
+				meeting_count DESC,
+				region ASC
+			LIMIT ` + limitArg
+		rows, err := s.pool.Query(ctx, sql, args...)
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+		options := []FilterOption{}
+		for rows.Next() {
+			var region string
+			var regionCode string
+			var rowCountry string
+			var countryCode string
+			var meetingCount int
+			if err := rows.Scan(&region, &regionCode, &rowCountry, &countryCode, &meetingCount); err != nil {
+				return nil, err
+			}
+			options = append(options, FilterOption{
+				Label:        formatFilterOptionLabel(region, rowCountry),
+				Level:        string(FilterOptionLevelRegion),
+				Country:      stringPtrFromTrimmed(rowCountry),
+				CountryCode:  stringPtrFromTrimmed(countryCode),
+				Region:       stringPtrFromTrimmed(region),
+				RegionCode:   stringPtrFromTrimmed(regionCode),
+				MeetingCount: meetingCount,
+			})
+		}
+		return options, rows.Err()
+	case FilterOptionLevelLocality:
+		country := strings.TrimSpace(params.Country)
+		if country == "" {
+			return []FilterOption{}, nil
+		}
+		countryArg := arg(country)
+		sql := `
+			SELECT
+				locality,
+				COALESCE(region, '') AS region,
+				COALESCE(region_code, '') AS region_code,
+				COALESCE(country, '') AS country,
+				COALESCE(country_code, '') AS country_code,
+				COUNT(*)::int AS meeting_count
+			FROM recovery_meeting_filter_places
+		` + baseWhere + `
+				AND locality IS NOT NULL
+				AND (
+					LOWER(COALESCE(country, '')) = LOWER(` + countryArg + `)
+					OR LOWER(COALESCE(country_code, '')) = LOWER(` + countryArg + `)
+				)
+				AND (
+					locality ILIKE ` + contains + `
+					OR search_text ILIKE ` + contains + `
+				)
+		`
+		if region := strings.TrimSpace(params.Region); region != "" {
+			regionArg := arg(region)
+			sql += `
+				AND (
+					LOWER(COALESCE(region, '')) = LOWER(` + regionArg + `)
+					OR LOWER(COALESCE(region_code, '')) = LOWER(` + regionArg + `)
+				)
+			`
+		}
+		sql += `
+			GROUP BY locality, COALESCE(region, ''), COALESCE(region_code, ''), COALESCE(country, ''), COALESCE(country_code, '')
+			ORDER BY
+				CASE
+					WHEN LOWER(locality) = LOWER(` + exact + `) THEN 0
+					WHEN LOWER(locality) LIKE LOWER(` + prefix + `) THEN 1
+					ELSE 2
+				END,
+				meeting_count DESC,
+				locality ASC
+			LIMIT ` + limitArg
+		rows, err := s.pool.Query(ctx, sql, args...)
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+		options := []FilterOption{}
+		for rows.Next() {
+			var locality string
+			var region string
+			var regionCode string
+			var rowCountry string
+			var countryCode string
+			var meetingCount int
+			if err := rows.Scan(&locality, &region, &regionCode, &rowCountry, &countryCode, &meetingCount); err != nil {
+				return nil, err
+			}
+			options = append(options, FilterOption{
+				Label:        formatFilterOptionLabel(locality, region, rowCountry),
+				Level:        string(FilterOptionLevelLocality),
+				Country:      stringPtrFromTrimmed(rowCountry),
+				CountryCode:  stringPtrFromTrimmed(countryCode),
+				Region:       stringPtrFromTrimmed(region),
+				RegionCode:   stringPtrFromTrimmed(regionCode),
+				Locality:     stringPtrFromTrimmed(locality),
+				MeetingCount: meetingCount,
+			})
+		}
+		return options, rows.Err()
+	default:
+		return []FilterOption{}, nil
+	}
 }
 
 func parseMeetingSearchQuery(query string) (string, []string) {
@@ -375,38 +662,40 @@ func (s *pgStore) ListLocationSuggestions(ctx context.Context, query, country, r
 	exact := arg(query)
 	prefix := arg(prefixPattern)
 	limitArg := arg(limit)
+	locationExpr := recoveryMeetingLocationExpr("rm")
+	regionExpr := recoveryMeetingRegionExpr("rm")
 	sql := `
 		WITH grouped_locations AS (
 			SELECT
-				TRIM(rm.city) AS location,
-				NULLIF(TRIM(COALESCE(rm.region, '')), '') AS region,
+				` + locationExpr + ` AS location,
+				NULLIF(` + regionExpr + `, '') AS region,
 				NULLIF(TRIM(COALESCE(rm.region_code, '')), '') AS region_code,
 				NULLIF(TRIM(COALESCE(rm.country, '')), '') AS country,
 				NULLIF(TRIM(COALESCE(rm.country_code, '')), '') AS country_code,
 				COUNT(*)::int AS meeting_count
 			FROM recovery_meetings rm
 			WHERE rm.status = 'active'
-				AND TRIM(COALESCE(rm.city, '')) <> ''
+				AND ` + locationExpr + ` <> ''
 				AND (
 					LOWER(COALESCE(rm.country, '')) = LOWER(` + arg(country) + `)
 					OR LOWER(COALESCE(rm.country_code, '')) = LOWER(` + arg(country) + `)
 				)
 				AND (
-					rm.city ILIKE ` + contains + `
-					OR CONCAT_WS(', ', rm.city, rm.region) ILIKE ` + contains + `
+					` + locationExpr + ` ILIKE ` + contains + `
+					OR CONCAT_WS(', ', ` + locationExpr + `, ` + regionExpr + `) ILIKE ` + contains + `
 				)
 	`
 	if region = strings.TrimSpace(region); region != "" {
 		regionArg := arg(region)
-		sql += " AND (LOWER(COALESCE(rm.region, '')) = LOWER(" + regionArg + ") OR LOWER(COALESCE(rm.region_code, '')) = LOWER(" + regionArg + "))"
+		sql += " AND (LOWER(" + regionExpr + ") = LOWER(" + regionArg + ") OR LOWER(COALESCE(rm.region_code, '')) = LOWER(" + regionArg + "))"
 	}
 	if fellowship = strings.TrimSpace(strings.ToLower(fellowship)); fellowship != "" {
 		sql += " AND rm.fellowship = " + arg(fellowship)
 	}
 	sql += `
 			GROUP BY
-				TRIM(rm.city),
-				NULLIF(TRIM(COALESCE(rm.region, '')), ''),
+				` + locationExpr + `,
+				NULLIF(` + regionExpr + `, ''),
 				NULLIF(TRIM(COALESCE(rm.region_code, '')), ''),
 				NULLIF(TRIM(COALESCE(rm.country, '')), ''),
 				NULLIF(TRIM(COALESCE(rm.country_code, '')), '')
@@ -472,22 +761,24 @@ func (s *pgStore) ListRegionSuggestions(ctx context.Context, query, country, fel
 	exact := arg(query)
 	prefix := arg(prefixPattern)
 	limitArg := arg(limit)
+	regionExpr := recoveryMeetingRegionExpr("rm")
+	regionCodeExpr := "COALESCE(NULLIF(TRIM(rm.region_code), ''), '')"
 	sql := `
 		SELECT
-			TRIM(rm.region) AS region,
-			COALESCE(NULLIF(TRIM(rm.region_code), ''), '') AS region_code,
+			` + regionExpr + ` AS region,
+			` + regionCodeExpr + ` AS region_code,
 			TRIM(rm.country) AS country,
 			COALESCE(NULLIF(TRIM(rm.country_code), ''), '') AS country_code,
 			COUNT(*)::int AS meeting_count
 		FROM recovery_meetings rm
 		WHERE rm.status = 'active'
-			AND TRIM(COALESCE(rm.region, '')) <> ''
+			AND ` + regionExpr + ` <> ''
 			AND (
 				LOWER(COALESCE(rm.country, '')) = LOWER(` + arg(country) + `)
 				OR LOWER(COALESCE(rm.country_code, '')) = LOWER(` + arg(country) + `)
 			)
 			AND (
-				rm.region ILIKE ` + contains + `
+				` + regionExpr + ` ILIKE ` + contains + `
 				OR rm.region_code ILIKE ` + contains + `
 			)`
 	if fellowship = strings.TrimSpace(strings.ToLower(fellowship)); fellowship != "" {
@@ -495,16 +786,16 @@ func (s *pgStore) ListRegionSuggestions(ctx context.Context, query, country, fel
 	}
 	sql += `
 		GROUP BY
-			TRIM(rm.region),
-			COALESCE(NULLIF(TRIM(rm.region_code), ''), ''),
+			` + regionExpr + `,
+			` + regionCodeExpr + `,
 			TRIM(rm.country),
 			COALESCE(NULLIF(TRIM(rm.country_code), ''), '')
 		ORDER BY
 			CASE
-				WHEN LOWER(TRIM(rm.region)) = LOWER(` + exact + `) THEN 0
-				WHEN LOWER(TRIM(rm.region_code)) = LOWER(` + exact + `) THEN 0
-				WHEN LOWER(TRIM(rm.region)) LIKE LOWER(` + prefix + `) THEN 1
-				WHEN LOWER(TRIM(rm.region_code)) LIKE LOWER(` + prefix + `) THEN 1
+				WHEN LOWER(` + regionExpr + `) = LOWER(` + exact + `) THEN 0
+				WHEN LOWER(` + regionCodeExpr + `) = LOWER(` + exact + `) THEN 0
+				WHEN LOWER(` + regionExpr + `) LIKE LOWER(` + prefix + `) THEN 1
+				WHEN LOWER(` + regionCodeExpr + `) LIKE LOWER(` + prefix + `) THEN 1
 				ELSE 2
 			END,
 			meeting_count DESC,
@@ -555,10 +846,11 @@ func (s *pgStore) ListCountrySuggestions(ctx context.Context, query, fellowship 
 	exact := arg(query)
 	prefix := arg(prefixPattern)
 	limitArg := arg(limit)
+	countryCodeExpr := "COALESCE(NULLIF(TRIM(rm.country_code), ''), '')"
 	sql := `
 		SELECT
 			TRIM(rm.country) AS country,
-			COALESCE(NULLIF(TRIM(rm.country_code), ''), '') AS country_code,
+			` + countryCodeExpr + ` AS country_code,
 			COUNT(*)::int AS meeting_count
 		FROM recovery_meetings rm
 		WHERE rm.status = 'active'
@@ -571,13 +863,13 @@ func (s *pgStore) ListCountrySuggestions(ctx context.Context, query, fellowship 
 		sql += " AND rm.fellowship = " + arg(fellowship)
 	}
 	sql += `
-		GROUP BY TRIM(rm.country), COALESCE(NULLIF(TRIM(rm.country_code), ''), '')
+		GROUP BY TRIM(rm.country), ` + countryCodeExpr + `
 		ORDER BY
 			CASE
 				WHEN LOWER(TRIM(rm.country)) = LOWER(` + exact + `) THEN 0
-				WHEN LOWER(TRIM(rm.country_code)) = LOWER(` + exact + `) THEN 0
+				WHEN LOWER(` + countryCodeExpr + `) = LOWER(` + exact + `) THEN 0
 				WHEN LOWER(TRIM(rm.country)) LIKE LOWER(` + prefix + `) THEN 1
-				WHEN LOWER(TRIM(rm.country_code)) LIKE LOWER(` + prefix + `) THEN 1
+				WHEN LOWER(` + countryCodeExpr + `) LIKE LOWER(` + prefix + `) THEN 1
 				ELSE 2
 			END,
 			meeting_count DESC,

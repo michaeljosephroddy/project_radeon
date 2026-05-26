@@ -15,6 +15,12 @@ type Handler struct {
 	db Querier
 }
 
+var validFellowships = map[string]struct{}{
+	"aa": {},
+	"ca": {},
+	"na": {},
+}
+
 func NewHandler(db Querier) *Handler {
 	return &Handler{db: db}
 }
@@ -32,6 +38,28 @@ func (h *Handler) ListRecoveryMeetings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	response.Success(w, http.StatusOK, meetings)
+}
+
+func (h *Handler) ListFilterOptions(w http.ResponseWriter, r *http.Request) {
+	params, errs := parseFilterOptionsParams(r)
+	if len(errs) > 0 {
+		response.ValidationError(w, errs)
+		return
+	}
+	if len([]rune(params.Query)) < 2 {
+		response.Success(w, http.StatusOK, []FilterOption{})
+		return
+	}
+	if (params.Level == FilterOptionLevelRegion || params.Level == FilterOptionLevelLocality) && params.Country == "" {
+		response.Success(w, http.StatusOK, []FilterOption{})
+		return
+	}
+	options, err := h.db.ListFilterOptions(r.Context(), params)
+	if err != nil {
+		response.Error(w, http.StatusInternalServerError, "could not fetch recovery meeting filter options")
+		return
+	}
+	response.Success(w, http.StatusOK, options)
 }
 
 func (h *Handler) ListLocationSuggestions(w http.ResponseWriter, r *http.Request) {
@@ -133,6 +161,46 @@ func parseSuggestionLimit(r *http.Request) int {
 	return limit
 }
 
+func parseFilterOptionLimit(r *http.Request) int {
+	limit := 10
+	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err == nil && parsed > 0 {
+			limit = parsed
+		}
+	}
+	if limit > 15 {
+		return 15
+	}
+	return limit
+}
+
+func parseFilterOptionsParams(r *http.Request) (FilterOptionsParams, map[string]string) {
+	query := r.URL.Query()
+	errs := map[string]string{}
+	level := FilterOptionLevel(strings.TrimSpace(strings.ToLower(query.Get("level"))))
+	switch level {
+	case FilterOptionLevelCountry, FilterOptionLevelRegion, FilterOptionLevelLocality:
+	default:
+		errs["level"] = "invalid"
+	}
+	fellowships, fellowshipErr := parseFellowshipFilters(query["fellowship"])
+	if fellowshipErr != "" {
+		errs["fellowship"] = fellowshipErr
+	}
+	if len(errs) > 0 {
+		return FilterOptionsParams{}, errs
+	}
+	return FilterOptionsParams{
+		Level:       level,
+		Query:       strings.TrimSpace(query.Get("q")),
+		Fellowships: fellowships,
+		Country:     strings.TrimSpace(query.Get("country")),
+		Region:      strings.TrimSpace(query.Get("region")),
+		Limit:       parseFilterOptionLimit(r),
+	}, nil
+}
+
 func parseListParams(r *http.Request) (ListParams, map[string]string) {
 	query := r.URL.Query()
 	errs := map[string]string{}
@@ -168,6 +236,10 @@ func parseListParams(r *http.Request) (ListParams, map[string]string) {
 			errs["meeting_type"] = "invalid"
 		}
 	}
+	fellowships, fellowshipErr := parseFellowshipFilters(query["fellowship"])
+	if fellowshipErr != "" {
+		errs["fellowship"] = fellowshipErr
+	}
 
 	search := strings.TrimSpace(query.Get("q"))
 	if search == "" {
@@ -185,7 +257,7 @@ func parseListParams(r *http.Request) (ListParams, map[string]string) {
 
 	return ListParams{
 		Query:       search,
-		Fellowship:  strings.TrimSpace(strings.ToLower(query.Get("fellowship"))),
+		Fellowships: fellowships,
 		Country:     strings.TrimSpace(query.Get("country")),
 		Region:      strings.TrimSpace(query.Get("region")),
 		City:        city,
@@ -195,4 +267,26 @@ func parseListParams(r *http.Request) (ListParams, map[string]string) {
 		Cursor:      strings.TrimSpace(query.Get("cursor")),
 		Limit:       limit,
 	}, nil
+}
+
+func parseFellowshipFilters(rawValues []string) ([]string, string) {
+	fellowships := []string{}
+	seen := map[string]struct{}{}
+	for _, rawValue := range rawValues {
+		for _, part := range strings.Split(rawValue, ",") {
+			fellowship := strings.TrimSpace(strings.ToLower(part))
+			if fellowship == "" {
+				continue
+			}
+			if _, ok := validFellowships[fellowship]; !ok {
+				return nil, "invalid"
+			}
+			if _, ok := seen[fellowship]; ok {
+				continue
+			}
+			seen[fellowship] = struct{}{}
+			fellowships = append(fellowships, fellowship)
+		}
+	}
+	return fellowships, ""
 }
