@@ -38,7 +38,7 @@ func TestPgStoreRecoveryMeetingSuggestionsFindCarlowAndIreland(t *testing.T) {
 	pool := recoveryMeetingTestPool(t)
 	store := NewPgStore(pool)
 
-	locations, err := store.ListLocationSuggestions(context.Background(), "Carl", "Ireland", "ca", 8)
+	locations, err := store.ListLocationSuggestions(context.Background(), "Carl", "Ireland", "", "ca", 8)
 	if err != nil {
 		t.Fatalf("list location suggestions: %v", err)
 	}

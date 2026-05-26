@@ -14,7 +14,8 @@ import (
 
 type mockRecoveryQuerier struct {
 	list                    func(ctx context.Context, params ListParams) (*CursorPage[RecoveryMeeting], error)
-	listLocationSuggestions func(ctx context.Context, query, country, fellowship string, limit int) ([]LocationSuggestion, error)
+	listLocationSuggestions func(ctx context.Context, query, country, region, fellowship string, limit int) ([]LocationSuggestion, error)
+	listRegionSuggestions   func(ctx context.Context, query, country, fellowship string, limit int) ([]RegionSuggestion, error)
 	listCountrySuggestions  func(ctx context.Context, query, fellowship string, limit int) ([]CountrySuggestion, error)
 	get                     func(ctx context.Context, id uuid.UUID) (*RecoveryMeeting, error)
 }
@@ -26,11 +27,18 @@ func (m *mockRecoveryQuerier) ListRecoveryMeetings(ctx context.Context, params L
 	return &CursorPage[RecoveryMeeting]{Items: []RecoveryMeeting{}, Limit: params.Limit}, nil
 }
 
-func (m *mockRecoveryQuerier) ListLocationSuggestions(ctx context.Context, query, country, fellowship string, limit int) ([]LocationSuggestion, error) {
+func (m *mockRecoveryQuerier) ListLocationSuggestions(ctx context.Context, query, country, region, fellowship string, limit int) ([]LocationSuggestion, error) {
 	if m.listLocationSuggestions != nil {
-		return m.listLocationSuggestions(ctx, query, country, fellowship, limit)
+		return m.listLocationSuggestions(ctx, query, country, region, fellowship, limit)
 	}
 	return []LocationSuggestion{}, nil
+}
+
+func (m *mockRecoveryQuerier) ListRegionSuggestions(ctx context.Context, query, country, fellowship string, limit int) ([]RegionSuggestion, error) {
+	if m.listRegionSuggestions != nil {
+		return m.listRegionSuggestions(ctx, query, country, fellowship, limit)
+	}
+	return []RegionSuggestion{}, nil
 }
 
 func (m *mockRecoveryQuerier) ListCountrySuggestions(ctx context.Context, query, fellowship string, limit int) ([]CountrySuggestion, error) {
@@ -49,16 +57,17 @@ func (m *mockRecoveryQuerier) GetRecoveryMeeting(ctx context.Context, id uuid.UU
 
 func TestListLocationSuggestionsSuccess(t *testing.T) {
 	h := NewHandler(&mockRecoveryQuerier{
-		listLocationSuggestions: func(_ context.Context, query, country, fellowship string, limit int) ([]LocationSuggestion, error) {
-			if query != "Carl" || country != "Ireland" || fellowship != "ca" || limit != 8 {
-				t.Fatalf("query = %q country = %q fellowship = %q limit = %d", query, country, fellowship, limit)
+		listLocationSuggestions: func(_ context.Context, query, country, region, fellowship string, limit int) ([]LocationSuggestion, error) {
+			if query != "Port" || country != "Ireland" || region != "Laois" || fellowship != "ca" || limit != 8 {
+				t.Fatalf("query = %q country = %q region = %q fellowship = %q limit = %d", query, country, region, fellowship, limit)
 			}
 			countryValue := "Ireland"
-			return []LocationSuggestion{{Label: "Co. Carlow, Ireland", Location: "Co. Carlow", Country: &countryValue, MeetingCount: 2}}, nil
+			regionValue := "Laois"
+			return []LocationSuggestion{{Label: "Portlaoise, Laois, Ireland", Location: "Portlaoise", Region: &regionValue, Country: &countryValue, MeetingCount: 2}}, nil
 		},
 	})
 	rec := httptest.NewRecorder()
-	h.ListLocationSuggestions(rec, httptest.NewRequest(http.MethodGet, "/recovery-meetings/locations?q=Carl&country=Ireland&fellowship=CA", nil))
+	h.ListLocationSuggestions(rec, httptest.NewRequest(http.MethodGet, "/recovery-meetings/locations?q=Port&country=Ireland&region=Laois&fellowship=CA", nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
 	}
@@ -66,13 +75,57 @@ func TestListLocationSuggestionsSuccess(t *testing.T) {
 
 func TestListLocationSuggestionsRequiresTwoCharacters(t *testing.T) {
 	h := NewHandler(&mockRecoveryQuerier{
-		listLocationSuggestions: func(context.Context, string, string, string, int) ([]LocationSuggestion, error) {
+		listLocationSuggestions: func(context.Context, string, string, string, string, int) ([]LocationSuggestion, error) {
 			t.Fatal("expected short query to skip store lookup")
 			return nil, nil
 		},
 	})
 	rec := httptest.NewRecorder()
 	h.ListLocationSuggestions(rec, httptest.NewRequest(http.MethodGet, "/recovery-meetings/locations?q=C", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestListLocationSuggestionsRequiresCountry(t *testing.T) {
+	h := NewHandler(&mockRecoveryQuerier{
+		listLocationSuggestions: func(context.Context, string, string, string, string, int) ([]LocationSuggestion, error) {
+			t.Fatal("expected missing country to skip store lookup")
+			return nil, nil
+		},
+	})
+	rec := httptest.NewRecorder()
+	h.ListLocationSuggestions(rec, httptest.NewRequest(http.MethodGet, "/recovery-meetings/locations?q=Port", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestListRegionSuggestionsSuccess(t *testing.T) {
+	h := NewHandler(&mockRecoveryQuerier{
+		listRegionSuggestions: func(_ context.Context, query, country, fellowship string, limit int) ([]RegionSuggestion, error) {
+			if query != "Lai" || country != "Ireland" || fellowship != "ca" || limit != 8 {
+				t.Fatalf("query = %q country = %q fellowship = %q limit = %d", query, country, fellowship, limit)
+			}
+			return []RegionSuggestion{{Label: "Laois, Ireland", Region: "Laois", Country: "Ireland", MeetingCount: 12}}, nil
+		},
+	})
+	rec := httptest.NewRecorder()
+	h.ListRegionSuggestions(rec, httptest.NewRequest(http.MethodGet, "/recovery-meetings/regions?q=Lai&country=Ireland&fellowship=CA", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestListRegionSuggestionsRequiresCountry(t *testing.T) {
+	h := NewHandler(&mockRecoveryQuerier{
+		listRegionSuggestions: func(context.Context, string, string, string, int) ([]RegionSuggestion, error) {
+			t.Fatal("expected missing country to skip store lookup")
+			return nil, nil
+		},
+	})
+	rec := httptest.NewRecorder()
+	h.ListRegionSuggestions(rec, httptest.NewRequest(http.MethodGet, "/recovery-meetings/regions?q=Lai", nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
 	}
@@ -127,14 +180,14 @@ func TestListRecoveryMeetingsPassesFiltersAndReturnsCredentials(t *testing.T) {
 		},
 	})
 
-	req := httptest.NewRequest(http.MethodGet, "/recovery-meetings?fellowship=CA&meeting_type=online&city=Dublin&day_of_week=1&limit=5&q=zoom", nil)
+	req := httptest.NewRequest(http.MethodGet, "/recovery-meetings?fellowship=CA&meeting_type=online&country=Ireland&region=Leinster&city=Dublin&day_of_week=1&limit=5&q=zoom", nil)
 	rec := httptest.NewRecorder()
 	h.ListRecoveryMeetings(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
 	}
-	if seen.Fellowship != "ca" || seen.MeetingType != "online" || seen.City != "Dublin" || seen.Location != "Dublin" || seen.Query != "zoom" || seen.Limit != 5 {
+	if seen.Fellowship != "ca" || seen.MeetingType != "online" || seen.Country != "Ireland" || seen.Region != "Leinster" || seen.City != "Dublin" || seen.Location != "Dublin" || seen.Query != "zoom" || seen.Limit != 5 {
 		t.Fatalf("params = %#v", seen)
 	}
 	if seen.DayOfWeek == nil || *seen.DayOfWeek != 1 {
