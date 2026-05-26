@@ -18,7 +18,8 @@ var searchTokenPattern = regexp.MustCompile(`[[:alnum:]]+`)
 
 type Querier interface {
 	ListRecoveryMeetings(ctx context.Context, params ListParams) (*CursorPage[RecoveryMeeting], error)
-	ListLocationSuggestions(ctx context.Context, query, country, fellowship string, limit int) ([]LocationSuggestion, error)
+	ListLocationSuggestions(ctx context.Context, query, country, region, fellowship string, limit int) ([]LocationSuggestion, error)
+	ListRegionSuggestions(ctx context.Context, query, country, fellowship string, limit int) ([]RegionSuggestion, error)
 	ListCountrySuggestions(ctx context.Context, query, fellowship string, limit int) ([]CountrySuggestion, error)
 	GetRecoveryMeeting(ctx context.Context, id uuid.UUID) (*RecoveryMeeting, error)
 }
@@ -150,15 +151,14 @@ func buildRecoveryMeetingListQuery(params ListParams) (string, []any, int) {
 	if params.Country != "" {
 		query += " AND LOWER(COALESCE(rm.country, '')) = LOWER(" + arg(params.Country) + ")"
 	}
+	if params.Region != "" {
+		query += " AND LOWER(COALESCE(rm.region, '')) = LOWER(" + arg(params.Region) + ")"
+	}
 	if location != "" {
 		placeholder := arg("%" + location + "%")
 		query += ` AND (
 			COALESCE(rm.city, '') ILIKE ` + placeholder + `
-			OR COALESCE(rm.region, '') ILIKE ` + placeholder + `
-			OR COALESCE(rm.venue_name, '') ILIKE ` + placeholder + `
-			OR COALESCE(rm.address_line1, '') ILIKE ` + placeholder + `
-			OR COALESCE(rm.address_line2, '') ILIKE ` + placeholder + `
-			OR COALESCE(rm.postal_code, '') ILIKE ` + placeholder + `
+			OR COALESCE(rm.city, '') || ', ' || COALESCE(rm.region, '') ILIKE ` + placeholder + `
 		)`
 	}
 	if params.MeetingType != "" {
@@ -346,9 +346,13 @@ func (s *pgStore) GetRecoveryMeeting(ctx context.Context, id uuid.UUID) (*Recove
 	return &meetings[0], nil
 }
 
-func (s *pgStore) ListLocationSuggestions(ctx context.Context, query, country, fellowship string, limit int) ([]LocationSuggestion, error) {
+func (s *pgStore) ListLocationSuggestions(ctx context.Context, query, country, region, fellowship string, limit int) ([]LocationSuggestion, error) {
 	query = strings.TrimSpace(query)
 	if len([]rune(query)) < 2 {
+		return []LocationSuggestion{}, nil
+	}
+	country = strings.TrimSpace(country)
+	if country == "" {
 		return []LocationSuggestion{}, nil
 	}
 	limit = normalizeSuggestionLimit(limit)
@@ -367,27 +371,28 @@ func (s *pgStore) ListLocationSuggestions(ctx context.Context, query, country, f
 		WITH grouped_locations AS (
 			SELECT
 				TRIM(rm.city) AS location,
+				NULLIF(TRIM(COALESCE(rm.region, '')), '') AS region,
 				NULLIF(TRIM(COALESCE(rm.country, '')), '') AS country,
 				COUNT(*)::int AS meeting_count
 			FROM recovery_meetings rm
 			WHERE rm.status = 'active'
 				AND TRIM(COALESCE(rm.city, '')) <> ''
+				AND LOWER(COALESCE(rm.country, '')) = LOWER(` + arg(country) + `)
 				AND (
 					rm.city ILIKE ` + contains + `
-					OR COALESCE(rm.country, '') ILIKE ` + contains + `
-					OR CONCAT_WS(', ', rm.city, rm.country) ILIKE ` + contains + `
+					OR CONCAT_WS(', ', rm.city, rm.region) ILIKE ` + contains + `
 				)
 	`
-	if country = strings.TrimSpace(country); country != "" {
-		sql += " AND LOWER(COALESCE(rm.country, '')) = LOWER(" + arg(country) + ")"
+	if region = strings.TrimSpace(region); region != "" {
+		sql += " AND LOWER(COALESCE(rm.region, '')) = LOWER(" + arg(region) + ")"
 	}
 	if fellowship = strings.TrimSpace(strings.ToLower(fellowship)); fellowship != "" {
 		sql += " AND rm.fellowship = " + arg(fellowship)
 	}
 	sql += `
-			GROUP BY TRIM(rm.city), NULLIF(TRIM(COALESCE(rm.country, '')), '')
+			GROUP BY TRIM(rm.city), NULLIF(TRIM(COALESCE(rm.region, '')), ''), NULLIF(TRIM(COALESCE(rm.country, '')), '')
 		)
-		SELECT location, country, meeting_count
+		SELECT location, region, country, meeting_count
 		FROM grouped_locations
 		ORDER BY
 			CASE
@@ -408,12 +413,79 @@ func (s *pgStore) ListLocationSuggestions(ctx context.Context, query, country, f
 	suggestions := []LocationSuggestion{}
 	for rows.Next() {
 		var suggestion LocationSuggestion
-		if err := rows.Scan(&suggestion.Location, &suggestion.Country, &suggestion.MeetingCount); err != nil {
+		if err := rows.Scan(&suggestion.Location, &suggestion.Region, &suggestion.Country, &suggestion.MeetingCount); err != nil {
 			return nil, err
 		}
 		suggestion.Label = suggestion.Location
+		if suggestion.Region != nil && strings.TrimSpace(*suggestion.Region) != "" {
+			suggestion.Label += ", " + strings.TrimSpace(*suggestion.Region)
+		}
 		if suggestion.Country != nil && strings.TrimSpace(*suggestion.Country) != "" {
-			suggestion.Label = suggestion.Location + ", " + strings.TrimSpace(*suggestion.Country)
+			suggestion.Label += ", " + strings.TrimSpace(*suggestion.Country)
+		}
+		suggestions = append(suggestions, suggestion)
+	}
+	return suggestions, rows.Err()
+}
+
+func (s *pgStore) ListRegionSuggestions(ctx context.Context, query, country, fellowship string, limit int) ([]RegionSuggestion, error) {
+	query = strings.TrimSpace(query)
+	country = strings.TrimSpace(country)
+	if len([]rune(query)) < 2 || country == "" {
+		return []RegionSuggestion{}, nil
+	}
+	limit = normalizeSuggestionLimit(limit)
+	args := []any{}
+	arg := func(value any) string {
+		args = append(args, value)
+		return fmt.Sprintf("$%d", len(args))
+	}
+	containsPattern := "%" + query + "%"
+	prefixPattern := query + "%"
+	contains := arg(containsPattern)
+	exact := arg(query)
+	prefix := arg(prefixPattern)
+	limitArg := arg(limit)
+	sql := `
+		SELECT
+			TRIM(rm.region) AS region,
+			TRIM(rm.country) AS country,
+			COUNT(*)::int AS meeting_count
+		FROM recovery_meetings rm
+		WHERE rm.status = 'active'
+			AND TRIM(COALESCE(rm.region, '')) <> ''
+			AND LOWER(COALESCE(rm.country, '')) = LOWER(` + arg(country) + `)
+			AND rm.region ILIKE ` + contains
+	if fellowship = strings.TrimSpace(strings.ToLower(fellowship)); fellowship != "" {
+		sql += " AND rm.fellowship = " + arg(fellowship)
+	}
+	sql += `
+		GROUP BY TRIM(rm.region), TRIM(rm.country)
+		ORDER BY
+			CASE
+				WHEN LOWER(TRIM(rm.region)) = LOWER(` + exact + `) THEN 0
+				WHEN LOWER(TRIM(rm.region)) LIKE LOWER(` + prefix + `) THEN 1
+				ELSE 2
+			END,
+			meeting_count DESC,
+			region ASC
+		LIMIT ` + limitArg
+
+	rows, err := s.pool.Query(ctx, sql, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	suggestions := []RegionSuggestion{}
+	for rows.Next() {
+		var suggestion RegionSuggestion
+		if err := rows.Scan(&suggestion.Region, &suggestion.Country, &suggestion.MeetingCount); err != nil {
+			return nil, err
+		}
+		suggestion.Label = suggestion.Region
+		if strings.TrimSpace(suggestion.Country) != "" {
+			suggestion.Label += ", " + strings.TrimSpace(suggestion.Country)
 		}
 		suggestions = append(suggestions, suggestion)
 	}

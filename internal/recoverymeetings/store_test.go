@@ -7,10 +7,11 @@ import (
 	"github.com/google/uuid"
 )
 
-func TestBuildRecoveryMeetingListQueryUsesForgivingLocation(t *testing.T) {
+func TestBuildRecoveryMeetingListQueryUsesStructuredLocation(t *testing.T) {
 	query, args, limit := buildRecoveryMeetingListQuery(ListParams{
 		Fellowship:  "ca",
 		Country:     "Ireland",
+		Region:      "Laois",
 		Location:    "Carlow",
 		MeetingType: "in_person",
 		Limit:       25,
@@ -23,19 +24,28 @@ func TestBuildRecoveryMeetingListQueryUsesForgivingLocation(t *testing.T) {
 		t.Fatalf("query still uses exact city filtering:\n%s", query)
 	}
 	for _, fragment := range []string{
+		"LOWER(COALESCE(rm.region, '')) = LOWER",
 		"COALESCE(rm.city, '') ILIKE",
-		"COALESCE(rm.region, '') ILIKE",
-		"COALESCE(rm.venue_name, '') ILIKE",
-		"COALESCE(rm.address_line1, '') ILIKE",
-		"COALESCE(rm.address_line2, '') ILIKE",
-		"COALESCE(rm.postal_code, '') ILIKE",
+		"COALESCE(rm.city, '') || ', ' || COALESCE(rm.region, '') ILIKE",
 	} {
 		if !strings.Contains(query, fragment) {
 			t.Fatalf("query missing %q:\n%s", fragment, query)
 		}
 	}
+	for _, fragment := range []string{
+		"COALESCE(rm.venue_name, '') ILIKE",
+		"COALESCE(rm.address_line1, '') ILIKE",
+		"COALESCE(rm.postal_code, '') ILIKE",
+	} {
+		if strings.Contains(query, fragment) {
+			t.Fatalf("structured location filter should not search %q:\n%s", fragment, query)
+		}
+	}
 	if !containsArg(args, "%Carlow%") {
 		t.Fatalf("args missing location pattern: %#v", args)
+	}
+	if !containsArg(args, "Laois") {
+		t.Fatalf("args missing region value: %#v", args)
 	}
 	if strings.Contains(query, " OFFSET ") {
 		t.Fatalf("query should use keyset pagination, not offset:\n%s", query)

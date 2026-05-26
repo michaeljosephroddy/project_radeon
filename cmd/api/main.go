@@ -262,6 +262,7 @@ func main() {
 
 		// Recovery meetings
 		r.Get("/recovery-meetings/locations", recoveryMeetingsHandler.ListLocationSuggestions)
+		r.Get("/recovery-meetings/regions", recoveryMeetingsHandler.ListRegionSuggestions)
 		r.Get("/recovery-meetings/countries", recoveryMeetingsHandler.ListCountrySuggestions)
 		r.Get("/recovery-meetings", recoveryMeetingsHandler.ListRecoveryMeetings)
 		r.Get("/recovery-meetings/{id}", recoveryMeetingsHandler.GetRecoveryMeeting)

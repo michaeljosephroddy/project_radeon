@@ -36,19 +36,46 @@ func (h *Handler) ListRecoveryMeetings(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) ListLocationSuggestions(w http.ResponseWriter, r *http.Request) {
 	query := strings.TrimSpace(r.URL.Query().Get("q"))
+	country := strings.TrimSpace(r.URL.Query().Get("country"))
 	if len([]rune(query)) < 2 {
+		response.Success(w, http.StatusOK, []LocationSuggestion{})
+		return
+	}
+	if country == "" {
 		response.Success(w, http.StatusOK, []LocationSuggestion{})
 		return
 	}
 	suggestions, err := h.db.ListLocationSuggestions(
 		r.Context(),
 		query,
-		strings.TrimSpace(r.URL.Query().Get("country")),
+		country,
+		strings.TrimSpace(r.URL.Query().Get("region")),
 		strings.TrimSpace(strings.ToLower(r.URL.Query().Get("fellowship"))),
 		parseSuggestionLimit(r),
 	)
 	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "could not fetch recovery meeting locations")
+		return
+	}
+	response.Success(w, http.StatusOK, suggestions)
+}
+
+func (h *Handler) ListRegionSuggestions(w http.ResponseWriter, r *http.Request) {
+	query := strings.TrimSpace(r.URL.Query().Get("q"))
+	country := strings.TrimSpace(r.URL.Query().Get("country"))
+	if len([]rune(query)) < 2 || country == "" {
+		response.Success(w, http.StatusOK, []RegionSuggestion{})
+		return
+	}
+	suggestions, err := h.db.ListRegionSuggestions(
+		r.Context(),
+		query,
+		country,
+		strings.TrimSpace(strings.ToLower(r.URL.Query().Get("fellowship"))),
+		parseSuggestionLimit(r),
+	)
+	if err != nil {
+		response.Error(w, http.StatusInternalServerError, "could not fetch recovery meeting regions")
 		return
 	}
 	response.Success(w, http.StatusOK, suggestions)
@@ -160,6 +187,7 @@ func parseListParams(r *http.Request) (ListParams, map[string]string) {
 		Query:       search,
 		Fellowship:  strings.TrimSpace(strings.ToLower(query.Get("fellowship"))),
 		Country:     strings.TrimSpace(query.Get("country")),
+		Region:      strings.TrimSpace(query.Get("region")),
 		City:        city,
 		Location:    location,
 		MeetingType: meetingType,

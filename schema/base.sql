@@ -1408,6 +1408,10 @@ CREATE INDEX IF NOT EXISTS idx_recovery_meetings_fellowship
 CREATE INDEX IF NOT EXISTS idx_recovery_meetings_country_city
     ON recovery_meetings(country, city);
 
+CREATE INDEX IF NOT EXISTS idx_recovery_meetings_active_country_region_city
+    ON recovery_meetings(country, region, city)
+    WHERE status = 'active';
+
 CREATE INDEX IF NOT EXISTS idx_recovery_meetings_meeting_type
     ON recovery_meetings(meeting_type);
 

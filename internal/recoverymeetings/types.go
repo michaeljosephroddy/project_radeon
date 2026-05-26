@@ -111,8 +111,16 @@ type MeetingOccurrence struct {
 type LocationSuggestion struct {
 	Label        string  `json:"label"`
 	Location     string  `json:"location"`
+	Region       *string `json:"region,omitempty"`
 	Country      *string `json:"country,omitempty"`
 	MeetingCount int     `json:"meeting_count"`
+}
+
+type RegionSuggestion struct {
+	Label        string `json:"label"`
+	Region       string `json:"region"`
+	Country      string `json:"country"`
+	MeetingCount int    `json:"meeting_count"`
 }
 
 type CountrySuggestion struct {
@@ -132,6 +140,7 @@ type ListParams struct {
 	Query       string
 	Fellowship  string
 	Country     string
+	Region      string
 	City        string
 	Location    string
 	MeetingType string
