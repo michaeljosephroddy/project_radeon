@@ -925,33 +925,6 @@
           }
         },
         {
-          "name": "Upload Banner",
-          "request": {
-            "method": "POST",
-            "url": {
-              "raw": "{{base_url}}/users/me/banner",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "users",
-                "me",
-                "banner"
-              ]
-            },
-            "body": {
-              "mode": "formdata",
-              "formdata": [
-                {
-                  "key": "banner",
-                  "type": "file",
-                  "src": ""
-                }
-              ]
-            }
-          }
-        },
-        {
           "name": "Get Discover Preview",
           "request": {
             "method": "GET",

@@ -22,7 +22,6 @@ type mockQuerier struct {
 	updateUser              func(ctx context.Context, userID uuid.UUID, username, city, country, gender, bio *string, soberSince *time.Time, replaceSoberSince bool, birthDate *time.Time, replaceBirthDate bool, interests []string, replaceInterests bool, connectionIntents []string, replaceConnectionIntents bool, lat, lng *float64) error
 	completeOnboarding      func(ctx context.Context, userID uuid.UUID) error
 	updateAvatarURL         func(ctx context.Context, userID uuid.UUID, avatarURL string) error
-	updateBannerURL         func(ctx context.Context, userID uuid.UUID, bannerURL string) error
 	deleteCurrentUser       func(ctx context.Context, userID uuid.UUID) error
 	discoverUsers           func(ctx context.Context, params DiscoverUsersParams) ([]User, error)
 	countDiscoverUsers      func(ctx context.Context, params DiscoverUsersParams) (int, error)
@@ -60,12 +59,6 @@ func (m *mockQuerier) CompleteOnboarding(ctx context.Context, userID uuid.UUID) 
 func (m *mockQuerier) UpdateAvatarURL(ctx context.Context, userID uuid.UUID, avatarURL string) error {
 	if m.updateAvatarURL != nil {
 		return m.updateAvatarURL(ctx, userID, avatarURL)
-	}
-	return nil
-}
-func (m *mockQuerier) UpdateBannerURL(ctx context.Context, userID uuid.UUID, bannerURL string) error {
-	if m.updateBannerURL != nil {
-		return m.updateBannerURL(ctx, userID, bannerURL)
 	}
 	return nil
 }
