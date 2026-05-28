@@ -47,14 +47,13 @@ type Handler struct {
 }
 
 type SupportChatContext struct {
-	SupportRequestID  uuid.UUID  `json:"support_request_id"`
-	RequestType       string     `json:"request_type"`
-	RequestMessage    *string    `json:"request_message,omitempty"`
-	RequesterID       uuid.UUID  `json:"requester_id"`
-	RequesterUsername string     `json:"requester_username"`
-	LatestOfferType   *string    `json:"latest_offer_type,omitempty"`
-	Status            string     `json:"status"`
-	AwaitingUserID    *uuid.UUID `json:"awaiting_user_id,omitempty"`
+	SupportRequestID  uuid.UUID `json:"support_request_id"`
+	RequestType       string    `json:"request_type"`
+	RequestMessage    *string   `json:"request_message,omitempty"`
+	RequesterID       uuid.UUID `json:"requester_id"`
+	RequesterUsername string    `json:"requester_username"`
+	LatestOfferType   *string   `json:"latest_offer_type,omitempty"`
+	Status            string    `json:"status"`
 }
 
 type Chat struct {

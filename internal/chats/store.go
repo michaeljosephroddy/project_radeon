@@ -42,8 +42,7 @@ const chatSelectColumns = `SELECT
 				WHEN ch.status = 'active' THEN 'accepted'
 				WHEN ch.status = 'declined' THEN 'declined'
 				ELSE ch.status
-			END AS support_status,
-			NULL::uuid AS awaiting_user_id`
+			END AS support_status`
 
 // NewPgStore wraps a pgxpool.Pool as the production Querier implementation.
 func NewPgStore(pool *pgxpool.Pool) Querier {
@@ -199,8 +198,7 @@ func (s *pgStore) GetChatSummaries(ctx context.Context, chatID uuid.UUID, userID
 				WHEN ch.status = 'active' THEN 'accepted'
 				WHEN ch.status = 'declined' THEN 'declined'
 				ELSE ch.status
-			END AS support_status,
-			NULL::uuid AS awaiting_user_id
+			END AS support_status
 		FROM chats ch
 		JOIN chat_members cm
 			ON cm.chat_id = ch.id
@@ -246,7 +244,6 @@ func (s *pgStore) GetChatSummaries(ctx context.Context, chatID uuid.UUID, userID
 		var requesterUsername *string
 		var latestOfferType *string
 		var supportStatus *string
-		var awaitingUserID *uuid.UUID
 		if err := rows.Scan(
 			&viewerID,
 			&ch.ID,
@@ -266,7 +263,6 @@ func (s *pgStore) GetChatSummaries(ctx context.Context, chatID uuid.UUID, userID
 			&requesterUsername,
 			&latestOfferType,
 			&supportStatus,
-			&awaitingUserID,
 		); err != nil {
 			return nil, err
 		}
@@ -279,7 +275,6 @@ func (s *pgStore) GetChatSummaries(ctx context.Context, chatID uuid.UUID, userID
 				RequesterUsername: *requesterUsername,
 				LatestOfferType:   latestOfferType,
 				Status:            *supportStatus,
-				AwaitingUserID:    awaitingUserID,
 			}
 		}
 		summary := ch
@@ -299,7 +294,6 @@ func scanChats(rows pgx.Rows) ([]Chat, error) {
 		var requesterUsername *string
 		var latestOfferType *string
 		var supportStatus *string
-		var awaitingUserID *uuid.UUID
 		if err := rows.Scan(
 			&ch.ID,
 			&ch.IsGroup,
@@ -318,7 +312,6 @@ func scanChats(rows pgx.Rows) ([]Chat, error) {
 			&requesterUsername,
 			&latestOfferType,
 			&supportStatus,
-			&awaitingUserID,
 		); err != nil {
 			return nil, err
 		}
@@ -331,7 +324,6 @@ func scanChats(rows pgx.Rows) ([]Chat, error) {
 				RequesterUsername: *requesterUsername,
 				LatestOfferType:   latestOfferType,
 				Status:            *supportStatus,
-				AwaitingUserID:    awaitingUserID,
 			}
 		}
 		chats = append(chats, ch)
