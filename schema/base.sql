@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS users (
     sobriety_band SMALLINT,
     profile_completeness SMALLINT NOT NULL DEFAULT 0,
     last_active_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    deleted_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     CONSTRAINT users_username_format_chk CHECK (username ~ '^[a-z0-9._]{3,20}$'),
     CONSTRAINT users_subscription_tier_chk CHECK (subscription_tier IN ('free', 'plus')),
@@ -91,6 +92,9 @@ CREATE INDEX IF NOT EXISTS idx_users_identity_verification_status
 CREATE INDEX IF NOT EXISTS idx_users_identity_verification_session_id
     ON users(identity_verification_session_id)
     WHERE identity_verification_session_id IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_users_deleted_at
+    ON users(deleted_at);
 
 CREATE TABLE IF NOT EXISTS interests (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

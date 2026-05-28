@@ -27,8 +27,8 @@ func (s *pgStore) ListUserPosts(ctx context.Context, userID uuid.UUID, before *t
 		`SELECT
 			p.id,
 			p.user_id,
-			u.username,
-			u.avatar_url,
+			CASE WHEN u.deleted_at IS NULL THEN u.username ELSE 'Deleted user' END AS username,
+			CASE WHEN u.deleted_at IS NULL THEN u.avatar_url ELSE NULL END AS avatar_url,
 			COALESCE(p.body, ''),
 			p.source_type,
 			p.source_id,
@@ -143,8 +143,8 @@ func (s *pgStore) ListReactions(ctx context.Context, postID uuid.UUID, limit, of
 		`SELECT
 			pr.id,
 			pr.user_id,
-			u.username,
-			u.avatar_url,
+			CASE WHEN u.deleted_at IS NULL THEN u.username ELSE 'Deleted user' END AS username,
+			CASE WHEN u.deleted_at IS NULL THEN u.avatar_url ELSE NULL END AS avatar_url,
 			pr.type
 		FROM post_reactions pr
 		JOIN users u ON u.id = pr.user_id
@@ -208,7 +208,8 @@ func (s *pgStore) ResolveMentionUsers(ctx context.Context, userIDs []uuid.UUID) 
 	rows, err := s.pool.Query(ctx,
 		`SELECT id, username
 		FROM users
-		WHERE id = ANY($1::uuid[])`,
+		WHERE id = ANY($1::uuid[])
+			AND deleted_at IS NULL`,
 		userIDs,
 	)
 	if err != nil {
@@ -260,7 +261,9 @@ func (s *pgStore) AddComment(ctx context.Context, postID, userID uuid.UUID, body
 	}
 
 	if err := tx.QueryRow(ctx,
-		`SELECT u.username, u.avatar_url
+		`SELECT
+			CASE WHEN u.deleted_at IS NULL THEN u.username ELSE 'Deleted user' END AS username,
+			CASE WHEN u.deleted_at IS NULL THEN u.avatar_url ELSE NULL END AS avatar_url
 		FROM users u
 		WHERE u.id = $1`,
 		userID,
@@ -282,8 +285,8 @@ func (s *pgStore) ListComments(ctx context.Context, postID uuid.UUID, after *tim
 		`SELECT
 			c.id,
 			c.user_id,
-			u.username,
-			u.avatar_url,
+			CASE WHEN u.deleted_at IS NULL THEN u.username ELSE 'Deleted user' END AS username,
+			CASE WHEN u.deleted_at IS NULL THEN u.avatar_url ELSE NULL END AS avatar_url,
 			c.body,
 			c.created_at
 		FROM comments c
@@ -464,6 +467,7 @@ func (s *pgStore) attachCommentMentions(ctx context.Context, comments []Comment)
 		FROM comment_mentions cm
 		JOIN users u ON u.id = cm.user_id
 		WHERE cm.comment_id = ANY($1::uuid[])
+			AND u.deleted_at IS NULL
 		ORDER BY cm.comment_id ASC, u.username ASC`,
 		commentIDs,
 	)

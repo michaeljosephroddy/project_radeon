@@ -74,6 +74,7 @@ type Querier interface {
 	UpdateAvatarURL(ctx context.Context, userID uuid.UUID, avatarURL string) error
 	UpdateBannerURL(ctx context.Context, userID uuid.UUID, bannerURL string) error
 	UpdateCurrentLocation(ctx context.Context, userID uuid.UUID, lat, lng float64, city, country string) error
+	DeleteCurrentUser(ctx context.Context, userID uuid.UUID) error
 	DiscoverUsers(ctx context.Context, params DiscoverUsersParams) ([]User, error)
 	CountDiscoverUsers(ctx context.Context, params DiscoverUsersParams) (int, error)
 	ListInterests(ctx context.Context) ([]string, error)
@@ -336,6 +337,16 @@ func (h *Handler) UpdateMe(w http.ResponseWriter, r *http.Request) {
 
 	user, _ := h.db.GetUser(r.Context(), userID, userID)
 	response.Success(w, http.StatusOK, user)
+}
+
+// DeleteMe anonymizes and deactivates the authenticated user's account.
+func (h *Handler) DeleteMe(w http.ResponseWriter, r *http.Request) {
+	userID := middleware.CurrentUserID(r)
+	if err := h.db.DeleteCurrentUser(r.Context(), userID); err != nil {
+		response.Error(w, http.StatusInternalServerError, "could not delete account")
+		return
+	}
+	response.Success(w, http.StatusOK, nil)
 }
 
 func (h *Handler) BlockUser(w http.ResponseWriter, r *http.Request) {

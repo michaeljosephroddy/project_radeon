@@ -188,8 +188,8 @@ func (s *pgStore) listFeedPostRows(ctx context.Context, viewerID uuid.UUID, befo
 		SELECT
 			p.id,
 			p.user_id,
-			u.username,
-			u.avatar_url,
+			CASE WHEN u.deleted_at IS NULL THEN u.username ELSE 'Deleted user' END AS username,
+			CASE WHEN u.deleted_at IS NULL THEN u.avatar_url ELSE NULL END AS avatar_url,
 			COALESCE(p.body, ''),
 			p.source_type,
 			p.source_id,
@@ -292,14 +292,14 @@ func (s *pgStore) listFeedReshareRows(ctx context.Context, viewerID uuid.UUID, b
 		SELECT
 			ps.id,
 			ps.user_id,
-			su.username,
-			su.avatar_url,
+			CASE WHEN su.deleted_at IS NULL THEN su.username ELSE 'Deleted user' END AS share_username,
+			CASE WHEN su.deleted_at IS NULL THEN su.avatar_url ELSE NULL END AS share_avatar_url,
 			COALESCE(ps.commentary, ''),
 			ps.created_at,
 			p.id,
 			p.user_id,
-			ou.username,
-			ou.avatar_url,
+			CASE WHEN ou.deleted_at IS NULL THEN ou.username ELSE 'Deleted user' END AS original_username,
+			CASE WHEN ou.deleted_at IS NULL THEN ou.avatar_url ELSE NULL END AS original_avatar_url,
 			COALESCE(p.body, ''),
 			p.created_at,
 			COALESCE(opqf.total_comment_count, 0) AS original_comment_count,
@@ -788,8 +788,16 @@ func (s *pgStore) ListHiddenFeedItems(ctx context.Context, userID uuid.UUID, bef
 			fh.item_kind,
 			fh.hidden_at,
 			CASE WHEN fh.item_kind = 'post' THEN p.user_id ELSE ps.user_id END AS author_id,
-			CASE WHEN fh.item_kind = 'post' THEN pu.username ELSE su.username END AS author_username,
-			CASE WHEN fh.item_kind = 'post' THEN pu.avatar_url ELSE su.avatar_url END AS author_avatar_url,
+			CASE
+				WHEN fh.item_kind = 'post' AND pu.deleted_at IS NULL THEN pu.username
+				WHEN fh.item_kind = 'reshare' AND su.deleted_at IS NULL THEN su.username
+				ELSE 'Deleted user'
+			END AS author_username,
+			CASE
+				WHEN fh.item_kind = 'post' AND pu.deleted_at IS NULL THEN pu.avatar_url
+				WHEN fh.item_kind = 'reshare' AND su.deleted_at IS NULL THEN su.avatar_url
+				ELSE NULL
+			END AS author_avatar_url,
 			CASE WHEN fh.item_kind = 'post' THEN COALESCE(p.body, '') ELSE COALESCE(ps.commentary, '') END AS item_body,
 			CASE WHEN fh.item_kind = 'post' THEN p.created_at ELSE ps.created_at END AS item_created_at,
 			CASE WHEN fh.item_kind = 'post' THEN COALESCE(pqf.total_like_count, 0) ELSE COALESCE(sqf.total_like_count, 0) END AS like_count,
@@ -797,8 +805,8 @@ func (s *pgStore) ListHiddenFeedItems(ctx context.Context, userID uuid.UUID, bef
 			CASE WHEN fh.item_kind = 'post' THEN COALESCE(pqf.total_share_count, 0) ELSE 0 END AS share_count,
 			p.id AS original_post_id,
 			p.user_id AS original_author_id,
-			pu.username AS original_author_username,
-			pu.avatar_url AS original_author_avatar_url,
+			CASE WHEN pu.deleted_at IS NULL THEN pu.username ELSE 'Deleted user' END AS original_author_username,
+			CASE WHEN pu.deleted_at IS NULL THEN pu.avatar_url ELSE NULL END AS original_author_avatar_url,
 			COALESCE(p.body, '') AS original_body,
 			p.created_at AS original_created_at,
 			COALESCE(opqf.total_like_count, COALESCE(pqf.total_like_count, 0), 0) AS original_like_count,

@@ -106,7 +106,9 @@ func (s *pgStore) addShareComment(ctx context.Context, shareID, userID uuid.UUID
 	}
 
 	if err := tx.QueryRow(ctx,
-		`SELECT u.username, u.avatar_url
+		`SELECT
+			CASE WHEN u.deleted_at IS NULL THEN u.username ELSE 'Deleted user' END AS username,
+			CASE WHEN u.deleted_at IS NULL THEN u.avatar_url ELSE NULL END AS avatar_url
 		FROM users u
 		WHERE u.id = $1`,
 		userID,
@@ -128,8 +130,8 @@ func (s *pgStore) listShareComments(ctx context.Context, shareID uuid.UUID, afte
 		`SELECT
 			c.id,
 			c.user_id,
-			u.username,
-			u.avatar_url,
+			CASE WHEN u.deleted_at IS NULL THEN u.username ELSE 'Deleted user' END AS username,
+			CASE WHEN u.deleted_at IS NULL THEN u.avatar_url ELSE NULL END AS avatar_url,
 			c.body,
 			c.created_at
 		FROM share_comments c
@@ -179,6 +181,7 @@ func (s *pgStore) attachShareCommentMentions(ctx context.Context, comments []Com
 		FROM share_comment_mentions scm
 		JOIN users u ON u.id = scm.user_id
 		WHERE scm.share_comment_id = ANY($1::uuid[])
+			AND u.deleted_at IS NULL
 		ORDER BY scm.share_comment_id ASC, u.username ASC`,
 		commentIDs,
 	)

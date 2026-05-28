@@ -23,6 +23,7 @@ type mockQuerier struct {
 	completeOnboarding      func(ctx context.Context, userID uuid.UUID) error
 	updateAvatarURL         func(ctx context.Context, userID uuid.UUID, avatarURL string) error
 	updateBannerURL         func(ctx context.Context, userID uuid.UUID, bannerURL string) error
+	deleteCurrentUser       func(ctx context.Context, userID uuid.UUID) error
 	discoverUsers           func(ctx context.Context, params DiscoverUsersParams) ([]User, error)
 	countDiscoverUsers      func(ctx context.Context, params DiscoverUsersParams) (int, error)
 	blockUser               func(ctx context.Context, blockerID, blockedID uuid.UUID) error
@@ -65,6 +66,12 @@ func (m *mockQuerier) UpdateAvatarURL(ctx context.Context, userID uuid.UUID, ava
 func (m *mockQuerier) UpdateBannerURL(ctx context.Context, userID uuid.UUID, bannerURL string) error {
 	if m.updateBannerURL != nil {
 		return m.updateBannerURL(ctx, userID, bannerURL)
+	}
+	return nil
+}
+func (m *mockQuerier) DeleteCurrentUser(ctx context.Context, userID uuid.UUID) error {
+	if m.deleteCurrentUser != nil {
+		return m.deleteCurrentUser(ctx, userID)
 	}
 	return nil
 }
@@ -475,6 +482,43 @@ func TestListInterestsSuccess(t *testing.T) {
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+}
+
+func TestDeleteMeSuccess(t *testing.T) {
+	var gotUserID uuid.UUID
+	h := NewHandler(&mockQuerier{
+		deleteCurrentUser: func(_ context.Context, userID uuid.UUID) error {
+			gotUserID = userID
+			return nil
+		},
+	}, &mockUploader{})
+	req := withUserID(httptest.NewRequest(http.MethodDelete, "/users/me", nil), fixedUser)
+	rec := httptest.NewRecorder()
+
+	h.DeleteMe(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if gotUserID != fixedUser {
+		t.Fatalf("userID = %s, want %s", gotUserID, fixedUser)
+	}
+}
+
+func TestDeleteMeDBError(t *testing.T) {
+	h := NewHandler(&mockQuerier{
+		deleteCurrentUser: func(_ context.Context, _ uuid.UUID) error {
+			return errors.New("db error")
+		},
+	}, &mockUploader{})
+	req := withUserID(httptest.NewRequest(http.MethodDelete, "/users/me", nil), fixedUser)
+	rec := httptest.NewRecorder()
+
+	h.DeleteMe(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusInternalServerError)
 	}
 }
 

@@ -89,6 +89,18 @@ func (s *cachedStore) UpdateCurrentLocation(ctx context.Context, userID uuid.UUI
 	)
 }
 
+func (s *cachedStore) DeleteCurrentUser(ctx context.Context, userID uuid.UUID) error {
+	if err := s.inner.DeleteCurrentUser(ctx, userID); err != nil {
+		return err
+	}
+
+	return s.cache.BumpVersions(ctx,
+		s.userVersionKey(userID),
+		s.discoverViewerVersionKey(userID),
+		s.discoverGlobalVersionKey(),
+	)
+}
+
 func (s *cachedStore) CompleteOnboarding(ctx context.Context, userID uuid.UUID) error {
 	if err := s.inner.CompleteOnboarding(ctx, userID); err != nil {
 		return err

@@ -107,7 +107,9 @@ func (s *pgStore) loadDatingViewerFeatures(ctx context.Context, userID uuid.UUID
 	err := s.pool.QueryRow(ctx,
 		`SELECT sobriety_band
 		FROM users
-		WHERE id = $1 AND connection_intents @> ARRAY['dating']::text[]`,
+		WHERE id = $1
+			AND deleted_at IS NULL
+			AND connection_intents @> ARRAY['dating']::text[]`,
 		userID,
 	).Scan(&viewer.SobrietyBand)
 	return viewer, err
@@ -366,6 +368,7 @@ func (s *pgStore) ListMatches(ctx context.Context, userID uuid.UUID, before *str
 	rows, err := s.pool.Query(ctx, datingMatchSelectSQL+`
 		WHERE dm.status = 'active'
 			AND (dm.user_a_id = $1 OR dm.user_b_id = $1)
+			AND u.deleted_at IS NULL
 			AND ($2::timestamptz IS NULL OR dm.matched_at < $2)
 		ORDER BY dm.matched_at DESC, dm.id DESC
 		LIMIT $3`,
@@ -435,7 +438,9 @@ func (s *pgStore) userHasDating(ctx context.Context, userID uuid.UUID) (bool, er
 	err := s.pool.QueryRow(ctx,
 		`SELECT EXISTS(
 			SELECT 1 FROM users
-			WHERE id = $1 AND connection_intents @> ARRAY['dating']::text[]
+			WHERE id = $1
+				AND deleted_at IS NULL
+				AND connection_intents @> ARRAY['dating']::text[]
 		)`,
 		userID,
 	).Scan(&ok)
@@ -446,8 +451,8 @@ func validateDatingPair(ctx context.Context, q querier, actorID, targetID uuid.U
 	var actorDating, targetDating, blocked, acceptedFriends bool
 	err := q.QueryRow(ctx,
 		`SELECT
-			EXISTS(SELECT 1 FROM users WHERE id = $1 AND connection_intents @> ARRAY['dating']::text[]),
-			EXISTS(SELECT 1 FROM users WHERE id = $2 AND connection_intents @> ARRAY['dating']::text[]),
+			EXISTS(SELECT 1 FROM users WHERE id = $1 AND deleted_at IS NULL AND connection_intents @> ARRAY['dating']::text[]),
+			EXISTS(SELECT 1 FROM users WHERE id = $2 AND deleted_at IS NULL AND connection_intents @> ARRAY['dating']::text[]),
 			EXISTS(
 				SELECT 1 FROM user_blocks
 				WHERE (blocker_id = $1 AND blocked_id = $2)
@@ -724,6 +729,7 @@ const datingRecentImpressionSuppressionSQL = `
 
 const datingDiscoverWhereSQL = `
 		WHERE u.id != $1
+			AND u.deleted_at IS NULL
 			AND u.connection_intents @> ARRAY['dating']::text[]
 			AND NOT EXISTS (
 				SELECT 1 FROM user_blocks ub
@@ -792,6 +798,7 @@ const datingLikesSelectSQL = `SELECT
 const datingLikesWhereSQL = `
 		WHERE da.target_id = $1
 			AND da.action = 'like'
+			AND u.deleted_at IS NULL
 			AND u.connection_intents @> ARRAY['dating']::text[]
 			AND NOT EXISTS (
 				SELECT 1 FROM dating_actions viewer_action
@@ -834,7 +841,8 @@ const datingMatchSelectSQL = `SELECT
 func loadDatingMatch(ctx context.Context, q querier, userID, matchID uuid.UUID) (*DatingMatch, error) {
 	rows, err := q.Query(ctx, datingMatchSelectSQL+`
 		WHERE dm.id = $2
-			AND (dm.user_a_id = $1 OR dm.user_b_id = $1)`,
+			AND (dm.user_a_id = $1 OR dm.user_b_id = $1)
+			AND u.deleted_at IS NULL`,
 		userID, matchID,
 	)
 	if err != nil {
