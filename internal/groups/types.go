@@ -200,7 +200,7 @@ type GroupSupportRequest struct {
 	HasOffered          bool                  `json:"has_offered"`
 	HasReplied          bool                  `json:"has_replied"`
 	AlreadyChatting     bool                  `json:"already_chatting"`
-	ExistingChatID      *uuid.UUID            `json:"existing_chat_id,omitempty"`
+	ExistingChatID      *uuid.UUID            `json:"-"`
 	IsOwnRequest        bool                  `json:"is_own_request"`
 }
 
