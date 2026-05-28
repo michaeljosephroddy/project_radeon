@@ -40,7 +40,6 @@ const chatSelectColumns = `SELECT
 			CASE
 				WHEN sr.id IS NULL THEN NULL
 				WHEN ch.status = 'active' THEN 'accepted'
-				WHEN ch.status = 'declined' THEN 'declined'
 				ELSE ch.status
 			END AS support_status`
 
@@ -89,7 +88,7 @@ func (s *pgStore) ListChats(ctx context.Context, userID uuid.UUID, query string,
 		) latest_support ON true
 		WHERE (
 				ch.status = 'active'
-				OR (ch.status IN ('declined', 'closed') AND ch.support_request_id IS NOT NULL)
+				OR (ch.status = 'closed' AND ch.support_request_id IS NOT NULL)
 			)
 			AND (
 				$2 = ''
@@ -196,7 +195,6 @@ func (s *pgStore) GetChatSummaries(ctx context.Context, chatID uuid.UUID, userID
 			CASE
 				WHEN sr.id IS NULL THEN NULL
 				WHEN ch.status = 'active' THEN 'accepted'
-				WHEN ch.status = 'declined' THEN 'declined'
 				ELSE ch.status
 			END AS support_status
 		FROM chats ch
