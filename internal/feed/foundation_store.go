@@ -91,6 +91,70 @@ func (s *pgStore) MuteFeedAuthor(ctx context.Context, userID, authorID uuid.UUID
 	return err
 }
 
+func (s *pgStore) UnmuteFeedAuthor(ctx context.Context, userID, authorID uuid.UUID) error {
+	_, err := s.pool.Exec(ctx,
+		`DELETE FROM feed_muted_authors
+		WHERE user_id = $1 AND author_id = $2`,
+		userID, authorID,
+	)
+	return err
+}
+
+func (s *pgStore) ListMutedFeedAuthors(ctx context.Context, userID uuid.UUID, before *MutedFeedAuthorsCursor, limit int) ([]MutedFeedAuthor, error) {
+	var beforeAt *time.Time
+	var beforeID *uuid.UUID
+	if before != nil {
+		normalized := before.MutedAt.UTC()
+		beforeAt = &normalized
+		beforeID = &before.AuthorID
+	}
+
+	rows, err := s.pool.Query(ctx,
+		`SELECT
+			fma.author_id,
+			fma.muted_at,
+			u.id,
+			u.username,
+			u.avatar_url,
+			u.city,
+			u.country
+		FROM feed_muted_authors fma
+		JOIN users u ON u.id = fma.author_id
+		WHERE fma.user_id = $1
+			AND u.deleted_at IS NULL
+			AND (
+				$2::timestamptz IS NULL
+				OR fma.muted_at < $2
+				OR (fma.muted_at = $2 AND fma.author_id < $3::uuid)
+			)
+		ORDER BY fma.muted_at DESC, fma.author_id DESC
+		LIMIT $4`,
+		userID, beforeAt, beforeID, limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	authors := []MutedFeedAuthor{}
+	for rows.Next() {
+		var item MutedFeedAuthor
+		if err := rows.Scan(
+			&item.AuthorID,
+			&item.MutedAt,
+			&item.Author.ID,
+			&item.Author.Username,
+			&item.Author.AvatarURL,
+			&item.Author.City,
+			&item.Author.Country,
+		); err != nil {
+			return nil, err
+		}
+		authors = append(authors, item)
+	}
+	return authors, rows.Err()
+}
+
 func (s *pgStore) LogFeedImpressions(ctx context.Context, userID uuid.UUID, impressions []FeedImpressionInput) error {
 	if len(impressions) == 0 {
 		return nil

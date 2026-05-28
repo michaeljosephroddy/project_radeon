@@ -70,6 +70,10 @@ func (s *cachedStore) ListHiddenFeedItems(ctx context.Context, userID uuid.UUID,
 	return s.inner.ListHiddenFeedItems(ctx, userID, before, limit)
 }
 
+func (s *cachedStore) ListMutedFeedAuthors(ctx context.Context, userID uuid.UUID, before *MutedFeedAuthorsCursor, limit int) ([]MutedFeedAuthor, error) {
+	return s.inner.ListMutedFeedAuthors(ctx, userID, before, limit)
+}
+
 func (s *cachedStore) ListUserPosts(ctx context.Context, userID uuid.UUID, before *time.Time, limit int) ([]Post, error) {
 	version, err := s.cache.GetVersion(ctx, s.userPostsVersionKey(userID))
 	if err != nil {
@@ -175,6 +179,14 @@ func (s *cachedStore) UnhideFeedItem(ctx context.Context, userID, itemID uuid.UU
 
 func (s *cachedStore) MuteFeedAuthor(ctx context.Context, userID, authorID uuid.UUID) error {
 	if err := s.inner.MuteFeedAuthor(ctx, userID, authorID); err != nil {
+		return err
+	}
+	_ = s.cache.BumpVersions(ctx, s.viewerFeedVersionKey(userID))
+	return nil
+}
+
+func (s *cachedStore) UnmuteFeedAuthor(ctx context.Context, userID, authorID uuid.UUID) error {
+	if err := s.inner.UnmuteFeedAuthor(ctx, userID, authorID); err != nil {
 		return err
 	}
 	_ = s.cache.BumpVersions(ctx, s.viewerFeedVersionKey(userID))

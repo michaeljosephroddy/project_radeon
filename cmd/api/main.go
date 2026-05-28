@@ -165,7 +165,9 @@ func main() {
 		r.Get("/feed/items/{id}/comments", feedHandler.GetFeedItemComments)
 		r.Post("/feed/items/{id}/hide", feedHandler.HideFeedItem)
 		r.Delete("/feed/items/{id}/hide", feedHandler.UnhideFeedItem)
+		r.Get("/feed/authors/muted", feedHandler.ListMutedFeedAuthors)
 		r.Post("/feed/authors/{id}/mute", feedHandler.MuteFeedAuthor)
+		r.Delete("/feed/authors/{id}/mute", feedHandler.UnmuteFeedAuthor)
 		r.Post("/feed/impressions", feedHandler.LogFeedImpressions)
 		r.Post("/feed/events", feedHandler.LogFeedEvents)
 

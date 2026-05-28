@@ -179,6 +179,20 @@ type HiddenFeedItem struct {
 	Item     FeedItem     `json:"item"`
 }
 
+type MutedFeedAuthorProfile struct {
+	ID        uuid.UUID `json:"id"`
+	Username  string    `json:"username"`
+	AvatarURL *string   `json:"avatar_url"`
+	City      *string   `json:"city"`
+	Country   *string   `json:"country"`
+}
+
+type MutedFeedAuthor struct {
+	AuthorID uuid.UUID              `json:"author_id"`
+	MutedAt  time.Time              `json:"muted_at"`
+	Author   MutedFeedAuthorProfile `json:"author"`
+}
+
 func sanitizeCommentary(value string) string {
 	return strings.TrimSpace(value)
 }

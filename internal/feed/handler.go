@@ -3,6 +3,7 @@ package feed
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"net/http"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -35,6 +37,8 @@ type Querier interface {
 	UnhideFeedItem(ctx context.Context, userID, itemID uuid.UUID, itemKind FeedItemKind) error
 	ListHiddenFeedItems(ctx context.Context, userID uuid.UUID, before *time.Time, limit int) ([]HiddenFeedItem, error)
 	MuteFeedAuthor(ctx context.Context, userID, authorID uuid.UUID) error
+	UnmuteFeedAuthor(ctx context.Context, userID, authorID uuid.UUID) error
+	ListMutedFeedAuthors(ctx context.Context, userID uuid.UUID, before *MutedFeedAuthorsCursor, limit int) ([]MutedFeedAuthor, error)
 	LogFeedImpressions(ctx context.Context, userID uuid.UUID, impressions []FeedImpressionInput) error
 	LogFeedEvents(ctx context.Context, userID uuid.UUID, events []FeedEventInput) error
 	ListReactions(ctx context.Context, postID uuid.UUID, limit, offset int) ([]Reaction, error)
@@ -59,6 +63,11 @@ type Handler struct {
 	db       Querier
 	notifier MentionNotifier
 	uploader Uploader
+}
+
+type MutedFeedAuthorsCursor struct {
+	MutedAt  time.Time
+	AuthorID uuid.UUID
 }
 
 // NewHandler builds a feed handler. Pass feed.NewPgStore(pool) for production.
@@ -535,6 +544,110 @@ func (h *Handler) MuteFeedAuthor(w http.ResponseWriter, r *http.Request) {
 	}
 
 	response.Success(w, http.StatusOK, map[string]bool{"muted": true})
+}
+
+func (h *Handler) UnmuteFeedAuthor(w http.ResponseWriter, r *http.Request) {
+	userID := middleware.CurrentUserID(r)
+	authorID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		response.Error(w, http.StatusBadRequest, "invalid author id")
+		return
+	}
+
+	if err := h.db.UnmuteFeedAuthor(r.Context(), userID, authorID); err != nil {
+		response.Error(w, http.StatusInternalServerError, "could not unmute author")
+		return
+	}
+
+	response.Success(w, http.StatusOK, map[string]bool{"muted": false})
+}
+
+func (h *Handler) ListMutedFeedAuthors(w http.ResponseWriter, r *http.Request) {
+	userID := middleware.CurrentUserID(r)
+	query := r.URL.Query()
+	limit := parseMutedFeedAuthorsLimit(query.Get("limit"), 25)
+	if limit > 50 {
+		limit = 50
+	}
+
+	var before *MutedFeedAuthorsCursor
+	if raw := strings.TrimSpace(query.Get("before")); raw != "" {
+		parsed, err := decodeMutedFeedAuthorsCursor(raw)
+		if err != nil {
+			response.Error(w, http.StatusBadRequest, "before must be a valid cursor")
+			return
+		}
+		before = parsed
+	}
+
+	items, err := h.db.ListMutedFeedAuthors(r.Context(), userID, before, limit+1)
+	if err != nil {
+		response.Error(w, http.StatusInternalServerError, "could not fetch muted authors")
+		return
+	}
+
+	hasMore := len(items) > limit
+	if hasMore {
+		items = items[:limit]
+	}
+
+	var nextCursor *string
+	if hasMore && len(items) > 0 {
+		cursor := encodeMutedFeedAuthorsCursor(items[len(items)-1])
+		nextCursor = &cursor
+	}
+
+	response.Success(w, http.StatusOK, pagination.CursorResponse[MutedFeedAuthor]{
+		Items:      items,
+		Limit:      limit,
+		HasMore:    hasMore,
+		NextCursor: nextCursor,
+	})
+}
+
+func encodeMutedFeedAuthorsCursor(item MutedFeedAuthor) string {
+	payload := struct {
+		MutedAt  string `json:"muted_at"`
+		AuthorID string `json:"author_id"`
+	}{
+		MutedAt:  item.MutedAt.UTC().Format(time.RFC3339Nano),
+		AuthorID: item.AuthorID.String(),
+	}
+	data, _ := json.Marshal(payload)
+	return base64.RawURLEncoding.EncodeToString(data)
+}
+
+func decodeMutedFeedAuthorsCursor(raw string) (*MutedFeedAuthorsCursor, error) {
+	data, err := base64.RawURLEncoding.DecodeString(raw)
+	if err != nil {
+		return nil, err
+	}
+
+	var payload struct {
+		MutedAt  string `json:"muted_at"`
+		AuthorID string `json:"author_id"`
+	}
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return nil, err
+	}
+
+	mutedAt, err := time.Parse(time.RFC3339Nano, payload.MutedAt)
+	if err != nil {
+		return nil, err
+	}
+	authorID, err := uuid.Parse(payload.AuthorID)
+	if err != nil {
+		return nil, err
+	}
+	return &MutedFeedAuthorsCursor{MutedAt: mutedAt, AuthorID: authorID}, nil
+}
+
+func parseMutedFeedAuthorsLimit(raw string, fallback int) int {
+	value, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || value < 1 {
+		return fallback
+	}
+	return value
 }
 
 // LogFeedImpressions records items that were actually visible in the feed UI.

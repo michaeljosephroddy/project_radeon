@@ -31,6 +31,8 @@ type mockQuerier struct {
 	hideFeedItem           func(ctx context.Context, userID, itemID uuid.UUID, itemKind FeedItemKind) error
 	unhideFeedItem         func(ctx context.Context, userID, itemID uuid.UUID, itemKind FeedItemKind) error
 	muteFeedAuthor         func(ctx context.Context, userID, authorID uuid.UUID) error
+	unmuteFeedAuthor       func(ctx context.Context, userID, authorID uuid.UUID) error
+	listMutedFeedAuthors   func(ctx context.Context, userID uuid.UUID, before *MutedFeedAuthorsCursor, limit int) ([]MutedFeedAuthor, error)
 	logFeedImpressions     func(ctx context.Context, userID uuid.UUID, impressions []FeedImpressionInput) error
 	logFeedEvents          func(ctx context.Context, userID uuid.UUID, events []FeedEventInput) error
 	listReactions          func(ctx context.Context, postID uuid.UUID, limit, offset int) ([]Reaction, error)
@@ -96,6 +98,18 @@ func (m *mockQuerier) MuteFeedAuthor(ctx context.Context, userID, authorID uuid.
 		return m.muteFeedAuthor(ctx, userID, authorID)
 	}
 	return nil
+}
+func (m *mockQuerier) UnmuteFeedAuthor(ctx context.Context, userID, authorID uuid.UUID) error {
+	if m.unmuteFeedAuthor != nil {
+		return m.unmuteFeedAuthor(ctx, userID, authorID)
+	}
+	return nil
+}
+func (m *mockQuerier) ListMutedFeedAuthors(ctx context.Context, userID uuid.UUID, before *MutedFeedAuthorsCursor, limit int) ([]MutedFeedAuthor, error) {
+	if m.listMutedFeedAuthors != nil {
+		return m.listMutedFeedAuthors(ctx, userID, before, limit)
+	}
+	return nil, nil
 }
 func (m *mockQuerier) LogFeedImpressions(ctx context.Context, userID uuid.UUID, impressions []FeedImpressionInput) error {
 	if m.logFeedImpressions != nil {
@@ -170,8 +184,9 @@ func (m *mockUploader) Upload(ctx context.Context, key, contentType string, body
 }
 
 var (
-	fixedUser = uuid.MustParse("00000000-0000-0000-0000-000000000001")
-	fixedPost = uuid.MustParse("00000000-0000-0000-0000-000000000002")
+	fixedUser   = uuid.MustParse("00000000-0000-0000-0000-000000000001")
+	fixedPost   = uuid.MustParse("00000000-0000-0000-0000-000000000002")
+	fixedAuthor = uuid.MustParse("00000000-0000-0000-0000-000000000005")
 )
 
 func withUserID(r *http.Request, id uuid.UUID) *http.Request {
@@ -549,6 +564,115 @@ func TestMuteFeedAuthorSuccess(t *testing.T) {
 	}
 	if gotAuthorID != fixedPost {
 		t.Fatalf("authorID = %s, want %s", gotAuthorID, fixedPost)
+	}
+}
+
+func TestUnmuteFeedAuthorSuccess(t *testing.T) {
+	var gotAuthorID uuid.UUID
+	h := NewHandler(&mockQuerier{
+		unmuteFeedAuthor: func(_ context.Context, userID, authorID uuid.UUID) error {
+			if userID != fixedUser {
+				t.Fatalf("userID = %s, want %s", userID, fixedUser)
+			}
+			gotAuthorID = authorID
+			return nil
+		},
+	}, &mockUploader{})
+	req := httptest.NewRequest(http.MethodDelete, "/feed/authors/mute", nil)
+	req = withUserID(req, fixedUser)
+	req = withURLParam(req, "id", fixedPost.String())
+	rec := httptest.NewRecorder()
+
+	h.UnmuteFeedAuthor(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if gotAuthorID != fixedPost {
+		t.Fatalf("authorID = %s, want %s", gotAuthorID, fixedPost)
+	}
+}
+
+func TestListMutedFeedAuthorsSuccessPaginates(t *testing.T) {
+	mutedAt := time.Date(2026, 5, 28, 12, 0, 0, 0, time.UTC)
+	secondAuthorID := uuid.MustParse("00000000-0000-0000-0000-000000000003")
+	thirdAuthorID := uuid.MustParse("00000000-0000-0000-0000-000000000004")
+	h := NewHandler(&mockQuerier{
+		listMutedFeedAuthors: func(_ context.Context, userID uuid.UUID, before *MutedFeedAuthorsCursor, limit int) ([]MutedFeedAuthor, error) {
+			if userID != fixedUser {
+				t.Fatalf("userID = %s, want %s", userID, fixedUser)
+			}
+			if before != nil {
+				t.Fatalf("before = %v, want nil", before)
+			}
+			if limit != 3 {
+				t.Fatalf("limit = %d, want 3", limit)
+			}
+			return []MutedFeedAuthor{
+				{AuthorID: fixedAuthor, MutedAt: mutedAt, Author: MutedFeedAuthorProfile{ID: fixedAuthor, Username: "first"}},
+				{AuthorID: secondAuthorID, MutedAt: mutedAt.Add(-time.Minute), Author: MutedFeedAuthorProfile{ID: secondAuthorID, Username: "second"}},
+				{AuthorID: thirdAuthorID, MutedAt: mutedAt.Add(-2 * time.Minute), Author: MutedFeedAuthorProfile{ID: thirdAuthorID, Username: "third"}},
+			}, nil
+		},
+	}, &mockUploader{})
+	req := withUserID(httptest.NewRequest(http.MethodGet, "/feed/authors/muted?limit=2", nil), fixedUser)
+	rec := httptest.NewRecorder()
+
+	h.ListMutedFeedAuthors(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	var body struct {
+		Data struct {
+			Items      []MutedFeedAuthor `json:"items"`
+			Limit      int               `json:"limit"`
+			HasMore    bool              `json:"has_more"`
+			NextCursor *string           `json:"next_cursor"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("Decode() error = %v", err)
+	}
+	if len(body.Data.Items) != 2 {
+		t.Fatalf("items = %d, want 2", len(body.Data.Items))
+	}
+	if body.Data.Limit != 2 {
+		t.Fatalf("limit = %d, want 2", body.Data.Limit)
+	}
+	if !body.Data.HasMore {
+		t.Fatal("expected has_more to be true")
+	}
+	if body.Data.NextCursor == nil || *body.Data.NextCursor == "" {
+		t.Fatal("expected next_cursor")
+	}
+	next, err := decodeMutedFeedAuthorsCursor(*body.Data.NextCursor)
+	if err != nil {
+		t.Fatalf("decode next_cursor: %v", err)
+	}
+	if next.AuthorID != secondAuthorID || !next.MutedAt.Equal(mutedAt.Add(-time.Minute)) {
+		t.Fatalf("next cursor = %s %s, want %s %s", next.AuthorID, next.MutedAt, secondAuthorID, mutedAt.Add(-time.Minute))
+	}
+}
+
+func TestListMutedFeedAuthorsRejectsInvalidCursor(t *testing.T) {
+	called := false
+	h := NewHandler(&mockQuerier{
+		listMutedFeedAuthors: func(_ context.Context, _ uuid.UUID, _ *MutedFeedAuthorsCursor, _ int) ([]MutedFeedAuthor, error) {
+			called = true
+			return nil, nil
+		},
+	}, &mockUploader{})
+	req := withUserID(httptest.NewRequest(http.MethodGet, "/feed/authors/muted?before=bad", nil), fixedUser)
+	rec := httptest.NewRecorder()
+
+	h.ListMutedFeedAuthors(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+	if called {
+		t.Fatal("store should not be called for invalid cursor")
 	}
 }
 
