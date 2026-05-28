@@ -494,6 +494,9 @@ CREATE TABLE IF NOT EXISTS feed_muted_authors (
 CREATE INDEX IF NOT EXISTS idx_feed_muted_authors_user_muted_at
     ON feed_muted_authors(user_id, muted_at DESC);
 
+CREATE INDEX IF NOT EXISTS idx_feed_muted_authors_user_muted_author
+    ON feed_muted_authors(user_id, muted_at DESC, author_id DESC);
+
 CREATE TABLE IF NOT EXISTS feed_impressions (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,

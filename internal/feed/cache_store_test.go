@@ -68,6 +68,14 @@ func (s *stubQuerier) MuteFeedAuthor(context.Context, uuid.UUID, uuid.UUID) erro
 	return nil
 }
 
+func (s *stubQuerier) UnmuteFeedAuthor(context.Context, uuid.UUID, uuid.UUID) error {
+	return nil
+}
+
+func (s *stubQuerier) ListMutedFeedAuthors(context.Context, uuid.UUID, *MutedFeedAuthorsCursor, int) ([]MutedFeedAuthor, error) {
+	return nil, nil
+}
+
 func (s *stubQuerier) LogFeedImpressions(context.Context, uuid.UUID, []FeedImpressionInput) error {
 	return nil
 }
