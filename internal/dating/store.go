@@ -10,7 +10,6 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/project_radeon/api/internal/chats"
 	"github.com/project_radeon/api/internal/user"
 	"github.com/project_radeon/api/pkg/observability"
 )
@@ -345,9 +344,6 @@ func (s *pgStore) RecordAction(ctx context.Context, actorID, targetID uuid.UUID,
 		if match != nil {
 			result.Matched = true
 			result.Match = match
-			if match.ChatID != nil {
-				result.Chat = &chats.Chat{ID: *match.ChatID, Status: "active"}
-			}
 		}
 	}
 

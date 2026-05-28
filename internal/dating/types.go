@@ -5,7 +5,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/project_radeon/api/internal/chats"
 	"github.com/project_radeon/api/internal/user"
 )
 
@@ -62,5 +61,4 @@ type ActionResult struct {
 	Action  string       `json:"action"`
 	Matched bool         `json:"matched"`
 	Match   *DatingMatch `json:"match,omitempty"`
-	Chat    *chats.Chat  `json:"chat,omitempty"`
 }
