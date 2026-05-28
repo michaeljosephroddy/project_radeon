@@ -3,6 +3,7 @@ package user
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -65,6 +66,11 @@ type DiscoverPreviewFilters struct {
 	Interests  []string `json:"interests,omitempty"`
 }
 
+type BlockedUsersCursor struct {
+	BlockedAt time.Time
+	BlockedID uuid.UUID
+}
+
 // Querier is the database interface required by the user handler.
 type Querier interface {
 	GetUser(ctx context.Context, viewerID, userID uuid.UUID) (*User, error)
@@ -79,6 +85,7 @@ type Querier interface {
 	ListInterests(ctx context.Context) ([]string, error)
 	BlockUser(ctx context.Context, blockerID, blockedID uuid.UUID) error
 	UnblockUser(ctx context.Context, blockerID, blockedID uuid.UUID) error
+	ListBlockedUsers(ctx context.Context, userID uuid.UUID, before *BlockedUsersCursor, limit int) ([]BlockedUser, error)
 	ReportUser(ctx context.Context, reporterID, reportedUserID uuid.UUID, reason string, details *string) error
 }
 
@@ -119,6 +126,20 @@ type User struct {
 	CurrentCity                   *string    `json:"current_city,omitempty"`
 	CurrentCountry                *string    `json:"current_country,omitempty"`
 	LocationUpdatedAt             *time.Time `json:"location_updated_at,omitempty"`
+}
+
+type BlockedUserProfile struct {
+	ID        uuid.UUID `json:"id"`
+	Username  string    `json:"username"`
+	AvatarURL *string   `json:"avatar_url"`
+	City      *string   `json:"city"`
+	Country   *string   `json:"country"`
+}
+
+type BlockedUser struct {
+	ID        uuid.UUID          `json:"id"`
+	BlockedAt time.Time          `json:"blocked_at"`
+	User      BlockedUserProfile `json:"user"`
 }
 
 // GetMe returns the authenticated user's profile record.
@@ -381,6 +402,49 @@ func (h *Handler) UnblockUser(w http.ResponseWriter, r *http.Request) {
 	response.Success(w, http.StatusOK, map[string]bool{"blocked": false})
 }
 
+func (h *Handler) ListBlockedUsers(w http.ResponseWriter, r *http.Request) {
+	userID := middleware.CurrentUserID(r)
+	query := r.URL.Query()
+	limit := parsePositiveInt(query.Get("limit"), 25)
+	if limit > 50 {
+		limit = 50
+	}
+
+	var before *BlockedUsersCursor
+	if raw := strings.TrimSpace(query.Get("before")); raw != "" {
+		parsed, err := decodeBlockedUsersCursor(raw)
+		if err != nil {
+			response.Error(w, http.StatusBadRequest, "before must be a valid cursor")
+			return
+		}
+		before = parsed
+	}
+
+	items, err := h.db.ListBlockedUsers(r.Context(), userID, before, limit+1)
+	if err != nil {
+		response.Error(w, http.StatusInternalServerError, "could not fetch blocked users")
+		return
+	}
+
+	hasMore := len(items) > limit
+	if hasMore {
+		items = items[:limit]
+	}
+
+	var nextCursor *string
+	if hasMore && len(items) > 0 {
+		cursor := encodeBlockedUsersCursor(items[len(items)-1])
+		nextCursor = &cursor
+	}
+
+	response.Success(w, http.StatusOK, pagination.CursorResponse[BlockedUser]{
+		Items:      items,
+		Limit:      limit,
+		HasMore:    hasMore,
+		NextCursor: nextCursor,
+	})
+}
+
 func (h *Handler) ReportUser(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.CurrentUserID(r)
 	targetID, err := uuid.Parse(chi.URLParam(r, "id"))
@@ -418,6 +482,49 @@ func (h *Handler) ReportUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	response.Success(w, http.StatusCreated, map[string]bool{"reported": true})
+}
+
+func encodeBlockedUsersCursor(item BlockedUser) string {
+	payload := struct {
+		BlockedAt string `json:"blocked_at"`
+		BlockedID string `json:"blocked_id"`
+	}{
+		BlockedAt: item.BlockedAt.UTC().Format(time.RFC3339Nano),
+		BlockedID: item.ID.String(),
+	}
+	data, _ := json.Marshal(payload)
+	return base64.RawURLEncoding.EncodeToString(data)
+}
+
+func decodeBlockedUsersCursor(raw string) (*BlockedUsersCursor, error) {
+	data, err := base64.RawURLEncoding.DecodeString(raw)
+	if err != nil {
+		return nil, err
+	}
+	var payload struct {
+		BlockedAt string `json:"blocked_at"`
+		BlockedID string `json:"blocked_id"`
+	}
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return nil, err
+	}
+	blockedAt, err := time.Parse(time.RFC3339Nano, payload.BlockedAt)
+	if err != nil {
+		return nil, err
+	}
+	blockedID, err := uuid.Parse(payload.BlockedID)
+	if err != nil {
+		return nil, err
+	}
+	return &BlockedUsersCursor{BlockedAt: blockedAt, BlockedID: blockedID}, nil
+}
+
+func parsePositiveInt(raw string, fallback int) int {
+	value, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || value < 1 {
+		return fallback
+	}
+	return value
 }
 
 // ListInterests returns the curated interest tags available for user profiles.

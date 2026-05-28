@@ -309,6 +309,10 @@ func (s *cachedStore) UnblockUser(ctx context.Context, blockerID, blockedID uuid
 	)
 }
 
+func (s *cachedStore) ListBlockedUsers(ctx context.Context, userID uuid.UUID, before *BlockedUsersCursor, limit int) ([]BlockedUser, error) {
+	return s.inner.ListBlockedUsers(ctx, userID, before, limit)
+}
+
 func (s *cachedStore) ReportUser(ctx context.Context, reporterID, reportedUserID uuid.UUID, reason string, details *string) error {
 	return s.inner.ReportUser(ctx, reporterID, reportedUserID, reason, details)
 }

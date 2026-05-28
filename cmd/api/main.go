@@ -220,6 +220,7 @@ func main() {
 		r.Get("/users/me/friends", friendsHandler.ListFriends)
 		r.Get("/users/me/friend-requests/incoming", friendsHandler.ListIncomingRequests)
 		r.Get("/users/me/friend-requests/outgoing", friendsHandler.ListOutgoingRequests)
+		r.Get("/users/me/blocks", userHandler.ListBlockedUsers)
 		r.Get("/users/discover/preview", userHandler.DiscoverPreview)
 		r.Get("/users/discover", userHandler.Discover)
 		r.Get("/users/{id}/posts", feedHandler.GetUserPosts)

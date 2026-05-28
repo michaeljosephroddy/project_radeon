@@ -46,6 +46,10 @@ func (s *stubQuerier) UnblockUser(context.Context, uuid.UUID, uuid.UUID) error {
 	return nil
 }
 
+func (s *stubQuerier) ListBlockedUsers(context.Context, uuid.UUID, *BlockedUsersCursor, int) ([]BlockedUser, error) {
+	return nil, nil
+}
+
 func (s *stubQuerier) ReportUser(context.Context, uuid.UUID, uuid.UUID, string, *string) error {
 	return nil
 }

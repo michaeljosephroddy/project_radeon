@@ -1126,6 +1126,9 @@ CREATE TABLE IF NOT EXISTS user_blocks (
 CREATE INDEX IF NOT EXISTS idx_user_blocks_blocked_id
     ON user_blocks(blocked_id);
 
+CREATE INDEX IF NOT EXISTS idx_user_blocks_blocker_created
+    ON user_blocks(blocker_id, created_at DESC, blocked_id DESC);
+
 CREATE TABLE IF NOT EXISTS user_reports (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     reporter_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
