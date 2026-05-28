@@ -15,34 +15,24 @@ import (
 )
 
 type mockQuerier struct {
-	listChats          func(ctx context.Context, userID uuid.UUID, query string, before *ChatListCursor, limit int) ([]Chat, error)
-	listChatRequests   func(ctx context.Context, userID uuid.UUID) ([]Chat, error)
-	getChat            func(ctx context.Context, userID, chatID uuid.UUID) (*Chat, error)
-	getChatStatus      func(ctx context.Context, chatID uuid.UUID) (string, error)
-	getChatSummaries   func(ctx context.Context, chatID uuid.UUID, userIDs []uuid.UUID) (map[uuid.UUID]*Chat, error)
-	getLatestMessage   func(ctx context.Context, chatID uuid.UUID) (*Message, error)
-	listChatMemberIDs  func(ctx context.Context, chatID uuid.UUID) ([]uuid.UUID, error)
-	findDirectChat     func(ctx context.Context, userID, otherUserID uuid.UUID) (uuid.UUID, bool, error)
-	areUsersBlocked    func(ctx context.Context, userID, otherUserID uuid.UUID) (bool, error)
-	createChat         func(ctx context.Context, userID uuid.UUID, isGroup bool, name *string, memberIDs []uuid.UUID) (uuid.UUID, error)
-	isAddresseeOfChat  func(ctx context.Context, chatID, userID uuid.UUID) (bool, error)
-	acceptChatRequest  func(ctx context.Context, chatID uuid.UUID) error
-	declineChatRequest func(ctx context.Context, chatID uuid.UUID) error
-	isMemberOfChat     func(ctx context.Context, chatID, userID uuid.UUID) (bool, error)
-	listMessages       func(ctx context.Context, chatID, userID uuid.UUID, before *time.Time, limit int) ([]Message, *uuid.UUID, error)
-	insertMessage      func(ctx context.Context, chatID, userID uuid.UUID, body string, clientMessageID *string) (*Message, error)
-	deleteOrLeaveChat  func(ctx context.Context, chatID, userID uuid.UUID) (string, error)
+	listChats         func(ctx context.Context, userID uuid.UUID, query string, before *ChatListCursor, limit int) ([]Chat, error)
+	getChat           func(ctx context.Context, userID, chatID uuid.UUID) (*Chat, error)
+	getChatStatus     func(ctx context.Context, chatID uuid.UUID) (string, error)
+	getChatSummaries  func(ctx context.Context, chatID uuid.UUID, userIDs []uuid.UUID) (map[uuid.UUID]*Chat, error)
+	getLatestMessage  func(ctx context.Context, chatID uuid.UUID) (*Message, error)
+	listChatMemberIDs func(ctx context.Context, chatID uuid.UUID) ([]uuid.UUID, error)
+	findDirectChat    func(ctx context.Context, userID, otherUserID uuid.UUID) (uuid.UUID, bool, error)
+	areUsersBlocked   func(ctx context.Context, userID, otherUserID uuid.UUID) (bool, error)
+	createChat        func(ctx context.Context, userID uuid.UUID, isGroup bool, name *string, memberIDs []uuid.UUID) (uuid.UUID, error)
+	isMemberOfChat    func(ctx context.Context, chatID, userID uuid.UUID) (bool, error)
+	listMessages      func(ctx context.Context, chatID, userID uuid.UUID, before *time.Time, limit int) ([]Message, *uuid.UUID, error)
+	insertMessage     func(ctx context.Context, chatID, userID uuid.UUID, body string, clientMessageID *string) (*Message, error)
+	deleteOrLeaveChat func(ctx context.Context, chatID, userID uuid.UUID) (string, error)
 }
 
 func (m *mockQuerier) ListChats(ctx context.Context, userID uuid.UUID, query string, before *ChatListCursor, limit int) ([]Chat, error) {
 	if m.listChats != nil {
 		return m.listChats(ctx, userID, query, before, limit)
-	}
-	return nil, nil
-}
-func (m *mockQuerier) ListChatRequests(ctx context.Context, userID uuid.UUID) ([]Chat, error) {
-	if m.listChatRequests != nil {
-		return m.listChatRequests(ctx, userID)
 	}
 	return nil, nil
 }
@@ -105,24 +95,6 @@ func (m *mockQuerier) CreateChat(ctx context.Context, userID uuid.UUID, isGroup 
 		return m.createChat(ctx, userID, isGroup, name, memberIDs)
 	}
 	return uuid.MustParse("00000000-0000-0000-0000-000000000010"), nil
-}
-func (m *mockQuerier) IsAddresseeOfChat(ctx context.Context, chatID, userID uuid.UUID) (bool, error) {
-	if m.isAddresseeOfChat != nil {
-		return m.isAddresseeOfChat(ctx, chatID, userID)
-	}
-	return true, nil
-}
-func (m *mockQuerier) AcceptChatRequest(ctx context.Context, chatID uuid.UUID) error {
-	if m.acceptChatRequest != nil {
-		return m.acceptChatRequest(ctx, chatID)
-	}
-	return nil
-}
-func (m *mockQuerier) DeclineChatRequest(ctx context.Context, chatID uuid.UUID) error {
-	if m.declineChatRequest != nil {
-		return m.declineChatRequest(ctx, chatID)
-	}
-	return nil
 }
 func (m *mockQuerier) IsMemberOfChat(ctx context.Context, chatID, userID uuid.UUID) (bool, error) {
 	if m.isMemberOfChat != nil {
@@ -215,36 +187,6 @@ func TestListChatsInvalidBeforeCursor(t *testing.T) {
 	}
 }
 
-// ── ListChatRequests ──────────────────────────────────────────────────────────
-
-func TestListChatRequestsSuccess(t *testing.T) {
-	h := NewHandler(&mockQuerier{})
-	req := withUserID(httptest.NewRequest(http.MethodGet, "/chats/requests", nil), fixedUser)
-	rec := httptest.NewRecorder()
-
-	h.ListChatRequests(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
-	}
-}
-
-func TestListChatRequestsDBError(t *testing.T) {
-	h := NewHandler(&mockQuerier{
-		listChatRequests: func(_ context.Context, _ uuid.UUID) ([]Chat, error) {
-			return nil, errors.New("db error")
-		},
-	})
-	req := withUserID(httptest.NewRequest(http.MethodGet, "/chats/requests", nil), fixedUser)
-	rec := httptest.NewRecorder()
-
-	h.ListChatRequests(rec, req)
-
-	if rec.Code != http.StatusInternalServerError {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusInternalServerError)
-	}
-}
-
 // ── CreateChat ────────────────────────────────────────────────────────────────
 
 func TestCreateChatInvalidBody(t *testing.T) {
@@ -317,90 +259,6 @@ func TestCreateChatDBError(t *testing.T) {
 
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusInternalServerError)
-	}
-}
-
-// ── UpdateChatStatus ──────────────────────────────────────────────────────────
-
-func TestUpdateChatStatusInvalidID(t *testing.T) {
-	h := NewHandler(&mockQuerier{})
-	req := withUserID(httptest.NewRequest(http.MethodPatch, "/chats/bad/status", strings.NewReader(`{"status":"active"}`)), fixedUser)
-	req = withURLParam(req, "id", "bad")
-	rec := httptest.NewRecorder()
-
-	h.UpdateChatStatus(rec, req)
-
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
-	}
-}
-
-func TestUpdateChatStatusInvalidBody(t *testing.T) {
-	h := NewHandler(&mockQuerier{})
-	req := withUserID(httptest.NewRequest(http.MethodPatch, "/", strings.NewReader("{")), fixedUser)
-	req = withURLParam(req, "id", fixedChat.String())
-	rec := httptest.NewRecorder()
-
-	h.UpdateChatStatus(rec, req)
-
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
-	}
-}
-
-func TestUpdateChatStatusInvalidStatus(t *testing.T) {
-	h := NewHandler(&mockQuerier{})
-	req := withUserID(httptest.NewRequest(http.MethodPatch, "/", strings.NewReader(`{"status":"invalid"}`)), fixedUser)
-	req = withURLParam(req, "id", fixedChat.String())
-	rec := httptest.NewRecorder()
-
-	h.UpdateChatStatus(rec, req)
-
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
-	}
-}
-
-func TestUpdateChatStatusNotAddressee(t *testing.T) {
-	h := NewHandler(&mockQuerier{
-		isAddresseeOfChat: func(_ context.Context, _, _ uuid.UUID) (bool, error) {
-			return false, nil
-		},
-	})
-	req := withUserID(httptest.NewRequest(http.MethodPatch, "/", strings.NewReader(`{"status":"active"}`)), fixedUser)
-	req = withURLParam(req, "id", fixedChat.String())
-	rec := httptest.NewRecorder()
-
-	h.UpdateChatStatus(rec, req)
-
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusForbidden)
-	}
-}
-
-func TestUpdateChatStatusAccept(t *testing.T) {
-	h := NewHandler(&mockQuerier{})
-	req := withUserID(httptest.NewRequest(http.MethodPatch, "/", strings.NewReader(`{"status":"active"}`)), fixedUser)
-	req = withURLParam(req, "id", fixedChat.String())
-	rec := httptest.NewRecorder()
-
-	h.UpdateChatStatus(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
-	}
-}
-
-func TestUpdateChatStatusDecline(t *testing.T) {
-	h := NewHandler(&mockQuerier{})
-	req := withUserID(httptest.NewRequest(http.MethodPatch, "/", strings.NewReader(`{"status":"declined"}`)), fixedUser)
-	req = withURLParam(req, "id", fixedChat.String())
-	rec := httptest.NewRecorder()
-
-	h.UpdateChatStatus(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
 	}
 }
 

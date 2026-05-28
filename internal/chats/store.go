@@ -39,16 +39,11 @@ const chatSelectColumns = `SELECT
 			latest_support.response_type AS latest_offer_type,
 			CASE
 				WHEN sr.id IS NULL THEN NULL
-				WHEN ch.status = 'request' THEN 'pending_requester_acceptance'
 				WHEN ch.status = 'active' THEN 'accepted'
 				WHEN ch.status = 'declined' THEN 'declined'
 				ELSE ch.status
 			END AS support_status,
-			CASE
-				WHEN sr.id IS NULL THEN NULL
-				WHEN ch.status = 'request' THEN sr.requester_id
-				ELSE NULL
-			END AS awaiting_user_id`
+			NULL::uuid AS awaiting_user_id`
 
 // NewPgStore wraps a pgxpool.Pool as the production Querier implementation.
 func NewPgStore(pool *pgxpool.Pool) Querier {
@@ -94,7 +89,7 @@ func (s *pgStore) ListChats(ctx context.Context, userID uuid.UUID, query string,
 			LIMIT 1
 		) latest_support ON true
 		WHERE (
-				ch.status IN ('active', 'request')
+				ch.status = 'active'
 				OR (ch.status IN ('declined', 'closed') AND ch.support_request_id IS NOT NULL)
 			)
 			AND (
@@ -119,47 +114,6 @@ func (s *pgStore) ListChats(ctx context.Context, userID uuid.UUID, query string,
 		ORDER BY COALESCE(ch.last_message_at, ch.created_at) DESC, ch.id DESC
 		LIMIT $5`,
 		userID, query, beforeActivityAt, beforeChatID, limit,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	return scanChats(rows)
-}
-
-func (s *pgStore) ListChatRequests(ctx context.Context, userID uuid.UUID) ([]Chat, error) {
-	rows, err := s.pool.Query(ctx,
-		chatSelectColumns+`
-		FROM chats ch
-		JOIN chat_members cm
-			ON cm.chat_id = ch.id
-			AND cm.user_id = $1
-			AND cm.role = 'addressee'
-		LEFT JOIN chat_reads cr
-			ON cr.chat_id = ch.id
-			AND cr.user_id = $1
-		LEFT JOIN LATERAL (
-			SELECT
-				CASE WHEN u.deleted_at IS NULL THEN u.username ELSE 'Deleted user' END AS username,
-				CASE WHEN u.deleted_at IS NULL THEN u.avatar_url ELSE NULL END AS avatar_url
-			FROM chat_members cm2
-			JOIN users u ON u.id = cm2.user_id
-			WHERE cm2.chat_id = ch.id
-				AND cm2.user_id != $1
-			LIMIT 1
-		) other ON NOT ch.is_group
-		LEFT JOIN support_requests sr ON sr.id = ch.support_request_id
-		LEFT JOIN users requester ON requester.id = sr.requester_id
-		LEFT JOIN LATERAL (
-			SELECT response_type
-			FROM support_responses
-			WHERE chat_id = ch.id
-			ORDER BY created_at DESC
-			LIMIT 1
-		) latest_support ON true
-		WHERE ch.status = 'request'
-		ORDER BY ch.created_at DESC`,
-		userID,
 	)
 	if err != nil {
 		return nil, err
@@ -242,16 +196,11 @@ func (s *pgStore) GetChatSummaries(ctx context.Context, chatID uuid.UUID, userID
 			latest_support.response_type AS latest_offer_type,
 			CASE
 				WHEN sr.id IS NULL THEN NULL
-				WHEN ch.status = 'request' THEN 'pending_requester_acceptance'
 				WHEN ch.status = 'active' THEN 'accepted'
 				WHEN ch.status = 'declined' THEN 'declined'
 				ELSE ch.status
 			END AS support_status,
-			CASE
-				WHEN sr.id IS NULL THEN NULL
-				WHEN ch.status = 'request' THEN sr.requester_id
-				ELSE NULL
-			END AS awaiting_user_id
+			NULL::uuid AS awaiting_user_id
 		FROM chats ch
 		JOIN chat_members cm
 			ON cm.chat_id = ch.id
@@ -550,37 +499,6 @@ func (s *pgStore) CreateChat(ctx context.Context, userID uuid.UUID, isGroup bool
 		return uuid.Nil, err
 	}
 	return chatID, nil
-}
-
-func (s *pgStore) IsAddresseeOfChat(ctx context.Context, chatID, userID uuid.UUID) (bool, error) {
-	var is bool
-	err := s.pool.QueryRow(ctx,
-		`SELECT EXISTS(
-			SELECT 1
-			FROM chat_members
-			WHERE chat_id = $1
-				AND user_id = $2
-				AND role = 'addressee'
-		)`,
-		chatID, userID,
-	).Scan(&is)
-	return is, err
-}
-
-func (s *pgStore) AcceptChatRequest(ctx context.Context, chatID uuid.UUID) error {
-	_, err := s.pool.Exec(ctx,
-		`UPDATE chats SET status = 'active' WHERE id = $1`,
-		chatID,
-	)
-	return err
-}
-
-func (s *pgStore) DeclineChatRequest(ctx context.Context, chatID uuid.UUID) error {
-	_, err := s.pool.Exec(ctx,
-		`UPDATE chats SET status = 'declined' WHERE id = $1`,
-		chatID,
-	)
-	return err
 }
 
 func (s *pgStore) IsMemberOfChat(ctx context.Context, chatID, userID uuid.UUID) (bool, error) {

@@ -20,7 +20,6 @@ import (
 // Querier is the database interface required by the chats handler.
 type Querier interface {
 	ListChats(ctx context.Context, userID uuid.UUID, query string, before *ChatListCursor, limit int) ([]Chat, error)
-	ListChatRequests(ctx context.Context, userID uuid.UUID) ([]Chat, error)
 	GetChat(ctx context.Context, userID, chatID uuid.UUID) (*Chat, error)
 	GetChatStatus(ctx context.Context, chatID uuid.UUID) (string, error)
 	GetChatSummaries(ctx context.Context, chatID uuid.UUID, userIDs []uuid.UUID) (map[uuid.UUID]*Chat, error)
@@ -29,9 +28,6 @@ type Querier interface {
 	FindDirectChat(ctx context.Context, userID, otherUserID uuid.UUID) (uuid.UUID, bool, error)
 	AreUsersBlocked(ctx context.Context, userID, otherUserID uuid.UUID) (bool, error)
 	CreateChat(ctx context.Context, userID uuid.UUID, isGroup bool, name *string, memberIDs []uuid.UUID) (uuid.UUID, error)
-	IsAddresseeOfChat(ctx context.Context, chatID, userID uuid.UUID) (bool, error)
-	AcceptChatRequest(ctx context.Context, chatID uuid.UUID) error
-	DeclineChatRequest(ctx context.Context, chatID uuid.UUID) error
 	IsMemberOfChat(ctx context.Context, chatID, userID uuid.UUID) (bool, error)
 	ListMessages(ctx context.Context, chatID, userID uuid.UUID, before *time.Time, limit int) ([]Message, *uuid.UUID, error)
 	InsertMessage(ctx context.Context, chatID, userID uuid.UUID, body string, clientMessageID *string) (*Message, error)
@@ -191,19 +187,6 @@ func (h *Handler) ListChats(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// ListChatRequests returns pending direct-message requests addressed to the current user.
-func (h *Handler) ListChatRequests(w http.ResponseWriter, r *http.Request) {
-	userID := middleware.CurrentUserID(r)
-
-	chats, err := h.db.ListChatRequests(r.Context(), userID)
-	if err != nil {
-		response.Error(w, http.StatusInternalServerError, "could not fetch chat requests")
-		return
-	}
-
-	response.Success(w, http.StatusOK, chats)
-}
-
 // GetChat returns a single chat summary for the current member.
 func (h *Handler) GetChat(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.CurrentUserID(r)
@@ -274,58 +257,6 @@ func (h *Handler) CreateChat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	response.Success(w, http.StatusCreated, map[string]any{"id": chatID, "is_group": isGroup})
-}
-
-// UpdateChatStatus lets an addressee accept or decline a pending chat request.
-func (h *Handler) UpdateChatStatus(w http.ResponseWriter, r *http.Request) {
-	userID := middleware.CurrentUserID(r)
-	chatID, err := uuid.Parse(chi.URLParam(r, "id"))
-	if err != nil {
-		response.Error(w, http.StatusBadRequest, "invalid chat id")
-		return
-	}
-
-	var input struct {
-		Status string `json:"status"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-		response.Error(w, http.StatusBadRequest, "invalid request body")
-		return
-	}
-	if input.Status != "active" && input.Status != "declined" {
-		response.Error(w, http.StatusBadRequest, "status must be 'active' or 'declined'")
-		return
-	}
-
-	isAddressee, err := h.db.IsAddresseeOfChat(r.Context(), chatID, userID)
-	if err != nil {
-		response.Error(w, http.StatusInternalServerError, "could not check chat membership")
-		return
-	}
-	if !isAddressee {
-		response.Error(w, http.StatusForbidden, "not authorised")
-		return
-	}
-
-	if input.Status == "declined" {
-		if err := h.db.DeclineChatRequest(r.Context(), chatID); err != nil {
-			response.Error(w, http.StatusInternalServerError, "could not update chat")
-			return
-		}
-	} else {
-		if err := h.db.AcceptChatRequest(r.Context(), chatID); err != nil {
-			response.Error(w, http.StatusInternalServerError, "could not update chat")
-			return
-		}
-	}
-
-	chat, err := h.db.GetChat(r.Context(), userID, chatID)
-	if err != nil {
-		response.Error(w, http.StatusInternalServerError, "could not fetch chat")
-		return
-	}
-
-	response.Success(w, http.StatusOK, chat)
 }
 
 // GetMessages pages backwards through a chat transcript using an optional "before" cursor.
