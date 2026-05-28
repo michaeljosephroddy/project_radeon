@@ -7,7 +7,7 @@ Go REST API for a sober social network and people discovery app.
 - PostgreSQL via pgx (raw SQL, no ORM)
 - Redis for server-side response caching
 - JWT (HS256) auth
-- AWS S3 for avatar storage
+- AWS S3 for user and content media storage
 
 ## Running locally
 - Create a `.env` file with the values listed below
@@ -41,11 +41,16 @@ Go REST API for a sober social network and people discovery app.
 - `auth` — register, login
 - `user` — profile, avatar, discovery
 - `feed` — posts, comments, reactions
-- `connections` — friend requests
-- `meetups` — create, RSVP, attendees
-- `chats` — messages, chat requests
+- `friends` — friend requests and accepted friendships
+- `groups` — community groups, memberships, posts, admin inbox, moderation
+- `meetups` — create, RSVP, waitlists, attendees
+- `chats` — direct/group chats and realtime messages
+- `support` — peer support requests, offers, replies
+- `dating` — dating discovery, likes, matches
+- `notifications` — device registration, preferences, notification inbox
+- `recoverymeetings` — imported recovery meeting finder
 - `interests` — seeded list, user preferences
-- `discovery` — suggestions, likes, dismissals
+- `discovery` — people discovery and preview counts
 
 ## Other
 - All protected routes require `Authorization: Bearer <token>`

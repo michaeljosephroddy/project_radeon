@@ -8,19 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
-
-type StoreConfig struct {
-	DiscoverPipelineV2 bool
-}
-
-func NewPgStoreWithConfig(pool *pgxpool.Pool, cfg StoreConfig) Querier {
-	return &pgStore{
-		pool:               pool,
-		discoverPipelineV2: cfg.DiscoverPipelineV2,
-	}
-}
 
 func (s *pgStore) discoverUsersV2(ctx context.Context, params DiscoverUsersParams) ([]User, error) {
 	now := time.Now().UTC()

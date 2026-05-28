@@ -143,14 +143,14 @@ func (s *cachedStore) DiscoverUsers(ctx context.Context, params DiscoverUsersPar
 		ttl = discoverSearchTTL
 	}
 
-	if store, ok := s.inner.(*pgStore); ok && store.discoverPipelineV2 && s.shouldUseDiscoverRankedWindowCache(params) {
+	if store, ok := s.inner.(*pgStore); ok && s.shouldUseDiscoverRankedWindowCache(params) {
 		return s.discoverUsersFromRankedWindowCache(ctx, store, params, viewerVersion, globalVersion, ttl)
 	}
 
 	key := s.cache.Key(
 		"user",
 		"discover",
-		"pipeline", s.discoverPipelinePart(),
+		"pipeline", "v2",
 		"viewer_v", strconv.FormatInt(viewerVersion, 10),
 		"global_v", strconv.FormatInt(globalVersion, 10),
 		"viewer", params.CurrentUserID.String(),
@@ -190,7 +190,7 @@ func (s *cachedStore) discoverUsersFromRankedWindowCache(ctx context.Context, st
 	key := s.cache.Key(
 		"user",
 		"discover",
-		"pipeline", s.discoverPipelinePart(),
+		"pipeline", "v2",
 		"viewer_v", strconv.FormatInt(viewerVersion, 10),
 		"global_v", strconv.FormatInt(globalVersion, 10),
 		"viewer", params.CurrentUserID.String(),
@@ -241,7 +241,7 @@ func (s *cachedStore) CountDiscoverUsers(ctx context.Context, params DiscoverUse
 	key := s.cache.Key(
 		"user",
 		"discover_count",
-		"pipeline", s.discoverPipelinePart(),
+		"pipeline", "v2",
 		"viewer_v", strconv.FormatInt(viewerVersion, 10),
 		"global_v", strconv.FormatInt(globalVersion, 10),
 		"viewer", params.CurrentUserID.String(),
@@ -331,17 +331,6 @@ func (s *cachedStore) discoverViewerVersionKey(userID uuid.UUID) string {
 
 func (s *cachedStore) discoverGlobalVersionKey() string {
 	return s.cache.Key("ver", "discover", discoverGlobalPart)
-}
-
-func (s *cachedStore) discoverPipelinePart() string {
-	store, ok := s.inner.(*pgStore)
-	if !ok {
-		return "legacy"
-	}
-	if store.discoverPipelineV2 {
-		return "v2"
-	}
-	return "legacy"
 }
 
 func (s *cachedStore) shouldUseDiscoverRankedWindowCache(params DiscoverUsersParams) bool {

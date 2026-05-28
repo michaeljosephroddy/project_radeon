@@ -85,13 +85,9 @@ func main() {
 
 	userChecker := middleware.NewPGUserChecker(db)
 	authHandler := auth.NewHandler(auth.NewPgStore(db))
-	userStore := user.NewCachedStore(user.NewPgStoreWithConfig(db, user.StoreConfig{
-		DiscoverPipelineV2: parseBoolEnvWithDefault("DISCOVER_PIPELINE_V2", true),
-	}), cacheStore)
+	userStore := user.NewCachedStore(user.NewPgStore(db), cacheStore)
 	feedStore := feed.NewCachedStore(feed.NewPgStore(db), cacheStore)
-	meetupsStore := meetups.NewCachedStore(meetups.NewPgStoreWithConfig(db, meetups.StoreConfig{
-		RecommendedPipelineV2: parseBoolEnvWithDefault("MEETUPS_RECOMMENDER_V2", true),
-	}), cacheStore)
+	meetupsStore := meetups.NewCachedStore(meetups.NewPgStore(db), cacheStore)
 	supportStore := support.NewCachedStore(support.NewPgStore(db), cacheStore)
 	friendsStore := friends.NewCachedStore(friends.NewPgStore(db), cacheStore)
 	groupsStore := groups.NewCachedStore(groups.NewPgStore(db), cacheStore)

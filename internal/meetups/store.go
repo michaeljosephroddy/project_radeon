@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"sort"
 	"strings"
 	"time"
 
@@ -24,8 +23,7 @@ var (
 )
 
 type pgStore struct {
-	pool                  *pgxpool.Pool
-	recommendedPipelineV2 bool
+	pool *pgxpool.Pool
 }
 
 type viewerContext struct {
@@ -37,15 +35,7 @@ type viewerContext struct {
 }
 
 func NewPgStore(pool *pgxpool.Pool) Querier {
-	return NewPgStoreWithConfig(pool, StoreConfig{RecommendedPipelineV2: true})
-}
-
-type StoreConfig struct {
-	RecommendedPipelineV2 bool
-}
-
-func NewPgStoreWithConfig(pool *pgxpool.Pool, cfg StoreConfig) Querier {
-	return &pgStore{pool: pool, recommendedPipelineV2: cfg.RecommendedPipelineV2}
+	return &pgStore{pool: pool}
 }
 
 func (s *pgStore) ListCategories(ctx context.Context) ([]MeetupCategory, error) {
@@ -151,7 +141,7 @@ func (s *pgStore) DiscoverMeetups(ctx context.Context, userID uuid.UUID, params 
 	if err != nil {
 		return nil, err
 	}
-	if s.recommendedPipelineV2 && params.Sort == "recommended" {
+	if params.Sort == "recommended" {
 		return s.discoverRecommendedMeetups(ctx, userID, params, viewer)
 	}
 	dateFrom, dateTo := resolveDateWindow(params)
@@ -1153,22 +1143,6 @@ func nextWeekday(start time.Time, weekday time.Weekday) time.Time {
 	return value
 }
 
-func filterMeetups(meetups []Meetup, params DiscoverMeetupsParams, viewer viewerContext, includeNonPublic bool) []Meetup {
-	filtered := make([]Meetup, 0, len(meetups))
-	for _, meetup := range meetups {
-		if !includeNonPublic && meetup.Visibility != "public" {
-			continue
-		}
-		if params.DistanceKM != nil {
-			if meetup.DistanceKM == nil || *meetup.DistanceKM > float64(*params.DistanceKM) {
-				continue
-			}
-		}
-		filtered = append(filtered, meetup)
-	}
-	return filtered
-}
-
 func meetupDiscoverOrderBy(sortKey, distanceExpr string) string {
 	switch sortKey {
 	case "distance":
@@ -1190,125 +1164,6 @@ func myMeetupsOrderBy(scope string) string {
 		return " ORDER BY m.starts_at DESC, m.title ASC, m.id ASC"
 	}
 	return " ORDER BY m.starts_at ASC, m.title ASC, m.id ASC"
-}
-
-func sortMeetups(meetups []Meetup, sortKey string, viewer viewerContext) {
-	sort.SliceStable(meetups, func(i, j int) bool {
-		left := meetups[i]
-		right := meetups[j]
-		switch sortKey {
-		case "soonest":
-			return compareSoonest(left, right)
-		case "distance":
-			return compareDistance(left, right)
-		case "popular":
-			if left.AttendeeCt != right.AttendeeCt {
-				return left.AttendeeCt > right.AttendeeCt
-			}
-			return compareSoonest(left, right)
-		case "newest":
-			if left.PublishedAt != nil && right.PublishedAt != nil && !left.PublishedAt.Equal(*right.PublishedAt) {
-				return left.PublishedAt.After(*right.PublishedAt)
-			}
-			if left.CreatedAt != right.CreatedAt {
-				return left.CreatedAt.After(right.CreatedAt)
-			}
-			return compareSoonest(left, right)
-		default:
-			leftScore := recommendedScore(left, viewer)
-			rightScore := recommendedScore(right, viewer)
-			if math.Abs(leftScore-rightScore) > 0.001 {
-				return leftScore > rightScore
-			}
-			return compareSoonest(left, right)
-		}
-	})
-}
-
-func sortMyMeetups(meetups []Meetup, scope string) {
-	sort.SliceStable(meetups, func(i, j int) bool {
-		if scope == "past" {
-			if !meetups[i].StartsAt.Equal(meetups[j].StartsAt) {
-				return meetups[i].StartsAt.After(meetups[j].StartsAt)
-			}
-			return meetups[i].Title < meetups[j].Title
-		}
-		return compareSoonest(meetups[i], meetups[j])
-	})
-}
-
-func compareSoonest(left, right Meetup) bool {
-	if !left.StartsAt.Equal(right.StartsAt) {
-		return left.StartsAt.Before(right.StartsAt)
-	}
-	return left.Title < right.Title
-}
-
-func compareDistance(left, right Meetup) bool {
-	if left.DistanceKM == nil && right.DistanceKM == nil {
-		return compareSoonest(left, right)
-	}
-	if left.DistanceKM == nil {
-		return false
-	}
-	if right.DistanceKM == nil {
-		return true
-	}
-	if math.Abs(*left.DistanceKM-*right.DistanceKM) > 0.001 {
-		return *left.DistanceKM < *right.DistanceKM
-	}
-	return compareSoonest(left, right)
-}
-
-func recommendedScore(meetup Meetup, viewer viewerContext) float64 {
-	score := 100.0
-	if meetup.DistanceKM != nil {
-		score -= math.Min(*meetup.DistanceKM, 100.0) * 0.7
-	}
-	hoursUntil := meetup.StartsAt.Sub(time.Now().UTC()).Hours()
-	if hoursUntil > 0 {
-		score -= math.Min(hoursUntil, 336) * 0.12
-	}
-	score += math.Min(float64(meetup.AttendeeCt), 20) * 1.3
-	if meetup.WaitlistEnabled && meetup.Capacity != nil && meetup.AttendeeCt >= *meetup.Capacity {
-		score -= 8
-	}
-	if _, ok := viewer.Interests[strings.ToLower(meetup.CategoryLabel)]; ok {
-		score += 18
-	}
-	if meetup.EventType == "online" {
-		score += 2
-	}
-	return score
-}
-
-func sliceMeetups(meetups []Meetup, limit, offset int) *CursorPage[Meetup] {
-	if offset < 0 {
-		offset = 0
-	}
-	if offset >= len(meetups) {
-		return &CursorPage[Meetup]{
-			Items:      []Meetup{},
-			Limit:      limit,
-			HasMore:    false,
-			NextCursor: nil,
-		}
-	}
-	end := offset + limit
-	hasMore := end < len(meetups)
-	if end > len(meetups) {
-		end = len(meetups)
-	}
-	nextCursor := (*string)(nil)
-	if hasMore {
-		nextCursor = encodeOffsetCursor(end)
-	}
-	return &CursorPage[Meetup]{
-		Items:      meetups[offset:end],
-		Limit:      limit,
-		HasMore:    hasMore,
-		NextCursor: nextCursor,
-	}
 }
 
 func sliceLoadedMeetups(meetups []Meetup, limit, offset int) *CursorPage[Meetup] {
