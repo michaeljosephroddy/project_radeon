@@ -985,7 +985,7 @@ CREATE TABLE IF NOT EXISTS chats (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     is_group BOOLEAN NOT NULL DEFAULT FALSE,
     name TEXT,
-    status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('request', 'active', 'declined', 'closed')),
+    status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'closed')),
     support_request_id UUID REFERENCES support_requests(id) ON DELETE SET NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     next_message_seq BIGINT NOT NULL DEFAULT 1,
