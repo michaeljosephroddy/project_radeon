@@ -11,7 +11,6 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
-	"github.com/project_radeon/api/internal/chats"
 	"github.com/project_radeon/api/internal/user"
 	"github.com/project_radeon/api/pkg/middleware"
 )
@@ -268,7 +267,6 @@ func TestRecordActionNotifiesOnMatch(t *testing.T) {
 				Action:  ActionLike,
 				Matched: true,
 				Match:   &DatingMatch{ID: fixedMatch, ChatID: &fixedChat, Status: "active", MatchedAt: time.Now().UTC()},
-				Chat:    &chats.Chat{ID: fixedChat, Status: "active"},
 			}, nil
 		},
 	}, notifier)
