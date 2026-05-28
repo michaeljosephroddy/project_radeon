@@ -283,14 +283,12 @@ func main() {
 
 		// Chats
 		r.Get("/chats", chatsHandler.ListChats)
-		r.Get("/chats/requests", chatsHandler.ListChatRequests)
 		r.Post("/chats", chatsHandler.CreateChat)
 		r.Get("/chats/{id}", chatsHandler.GetChat)
 		r.Get("/chats/{id}/messages", chatsHandler.GetMessages)
 		r.Post("/chats/{id}/messages", chatsHandler.SendMessage)
 		r.Post("/chats/{id}/read", chatsHandler.MarkRead)
 		r.Delete("/chats/{id}", chatsHandler.DeleteChat)
-		r.Patch("/chats/{id}/status", chatsHandler.UpdateChatStatus)
 
 		// Notifications
 		r.Post("/notifications/devices", notificationsHandler.RegisterDevice)
