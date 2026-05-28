@@ -38,7 +38,7 @@ func (c *pgUserChecker) UserExists(ctx context.Context, userID uuid.UUID) (bool,
 
 	var exists bool
 	if err := c.pool.QueryRow(ctx, `
-		SELECT EXISTS(SELECT 1 FROM users WHERE id = $1)
+		SELECT EXISTS(SELECT 1 FROM users WHERE id = $1 AND deleted_at IS NULL)
 	`, userID).Scan(&exists); err != nil {
 		return false, err
 	}

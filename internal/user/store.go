@@ -3,6 +3,7 @@ package user
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -107,7 +108,8 @@ func (s *pgStore) GetUser(ctx context.Context, viewerID, userID uuid.UUID) (*Use
 				AND u.id = $1
 				AND f4.requester_id = u.id
 		) oc ON true
-		WHERE u.id = $2`,
+		WHERE u.id = $2
+			AND u.deleted_at IS NULL`,
 		viewerID, userID,
 	).Scan(
 		&u.ID, &u.Username, &u.AvatarURL, &u.BannerURL, &u.IsPlus, &u.SubscriptionTier, &u.SubscriptionStatus,
@@ -128,7 +130,7 @@ func (s *pgStore) GetUser(ctx context.Context, viewerID, userID uuid.UUID) (*Use
 func (s *pgStore) UsernameExistsForOthers(ctx context.Context, username string, userID uuid.UUID) (bool, error) {
 	var exists bool
 	err := s.pool.QueryRow(ctx,
-		`SELECT EXISTS(SELECT 1 FROM users WHERE username = $1 AND id != $2)`,
+		`SELECT EXISTS(SELECT 1 FROM users WHERE username = $1 AND id != $2 AND deleted_at IS NULL)`,
 		username, userID,
 	).Scan(&exists)
 	return exists, err
@@ -216,6 +218,90 @@ func (s *pgStore) UpdateCurrentLocation(ctx context.Context, userID uuid.UUID, l
 		userID, lat, lng, city, country,
 	)
 	return err
+}
+
+func (s *pgStore) DeleteCurrentUser(ctx context.Context, userID uuid.UUID) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	deletedUsername := "deleted." + strings.ReplaceAll(userID.String(), "-", "")[:12]
+	deletedEmail := "deleted+" + userID.String() + "@deleted.local"
+
+	if _, err := tx.Exec(ctx, `DELETE FROM notification_deliveries WHERE user_device_id IN (SELECT id FROM user_devices WHERE user_id = $1)`, userID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM user_devices WHERE user_id = $1`, userID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM notification_counters WHERE user_id = $1`, userID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM notification_preferences WHERE user_id = $1`, userID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM notifications WHERE user_id = $1`, userID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM user_interests WHERE user_id = $1`, userID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM group_memberships WHERE user_id = $1`, userID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM group_join_requests WHERE user_id = $1`, userID); err != nil {
+		return err
+	}
+
+	tag, err := tx.Exec(ctx,
+		`UPDATE users
+		SET
+			deleted_at = COALESCE(deleted_at, NOW()),
+			username = $2,
+			email = $3,
+			password_hash = '',
+			avatar_url = NULL,
+			banner_url = NULL,
+			city = NULL,
+			country = NULL,
+			bio = NULL,
+			gender = NULL,
+			birth_date = NULL,
+			sober_since = NULL,
+			subscription_tier = 'free',
+			subscription_status = 'inactive',
+			lat = NULL,
+			lng = NULL,
+			current_lat = NULL,
+			current_lng = NULL,
+			current_city = NULL,
+			current_country = NULL,
+			location_updated_at = NULL,
+			discover_lat = NULL,
+			discover_lng = NULL,
+			connection_intents = ARRAY['friends']::text[],
+			onboarding_completed_at = NULL,
+			onboarding_owner_welcome_comment_id = NULL,
+			identity_verification_status = 'not_started',
+			identity_verification_provider = NULL,
+			identity_verification_session_id = NULL,
+			identity_verification_last_error = NULL,
+			identity_verified_at = NULL,
+			sobriety_band = NULL,
+			profile_completeness = 0
+		WHERE id = $1`,
+		userID, deletedUsername, deletedEmail,
+	)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+
+	return tx.Commit(ctx)
 }
 
 func (s *pgStore) CompleteOnboarding(ctx context.Context, userID uuid.UUID) error {
@@ -366,6 +452,7 @@ func (s *pgStore) CountDiscoverUsers(ctx context.Context, params DiscoverUsersPa
 		`SELECT COUNT(*)
 		FROM users u
 		WHERE u.id != $1
+			AND u.deleted_at IS NULL
 			AND NOT EXISTS (
 				SELECT 1
 				FROM user_blocks ub
@@ -468,6 +555,7 @@ func (s *pgStore) discoverBySearch(ctx context.Context, params DiscoverUsersPara
 			WHERE ui.user_id = u.id
 		) interest_names ON true
 		WHERE u.id != $1
+			AND u.deleted_at IS NULL
 			AND NOT EXISTS (
 				SELECT 1
 				FROM friendships fx
@@ -564,7 +652,7 @@ func (s *pgStore) discoverRanked(ctx context.Context, params DiscoverUsersParams
 					THEN EXTRACT(EPOCH FROM (NOW() - sober_since::timestamptz)) / 86400.0
 					ELSE NULL
 				END AS days_sober
-			FROM users WHERE id = $1
+			FROM users WHERE id = $1 AND deleted_at IS NULL
 		),
 		viewer_band AS (
 			SELECT CASE
@@ -615,6 +703,7 @@ func (s *pgStore) discoverRanked(ctx context.Context, params DiscoverUsersParams
 				OR (f.user_b_id = $1 AND f.user_a_id = u.id)
 			)
 			WHERE u.id != $1
+			  AND u.deleted_at IS NULL
 			  AND NOT EXISTS (
 				SELECT 1
 				FROM user_blocks ub

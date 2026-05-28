@@ -534,7 +534,10 @@ func (s *pgStore) ListPosts(ctx context.Context, viewerID, groupID uuid.UUID, be
 	}
 	rows, err := s.pool.Query(ctx, `
 		SELECT
-			gp.id, gp.group_id, gp.user_id, u.username, u.avatar_url, gp.post_type, gp.body,
+			gp.id, gp.group_id, gp.user_id,
+			CASE WHEN u.deleted_at IS NULL THEN u.username ELSE 'Deleted user' END AS username,
+			CASE WHEN u.deleted_at IS NULL THEN u.avatar_url ELSE NULL END AS avatar_url,
+			gp.post_type, gp.body,
 			gp.anonymous, gp.pinned_at, gp.pinned_by, gp.comment_count, gp.reaction_count,
 			gp.image_count, gp.support_request_id,
 			EXISTS (
@@ -682,7 +685,10 @@ func (s *pgStore) ListComments(ctx context.Context, viewerID, groupID, postID uu
 		return nil, err
 	}
 	rows, err := s.pool.Query(ctx, `
-		SELECT gc.id, gc.group_id, gc.post_id, gc.user_id, u.username, u.avatar_url, gc.body, gc.created_at, gc.updated_at
+		SELECT gc.id, gc.group_id, gc.post_id, gc.user_id,
+			CASE WHEN u.deleted_at IS NULL THEN u.username ELSE 'Deleted user' END AS username,
+			CASE WHEN u.deleted_at IS NULL THEN u.avatar_url ELSE NULL END AS avatar_url,
+			gc.body, gc.created_at, gc.updated_at
 		FROM group_comments gc
 		JOIN users u ON u.id = gc.user_id
 		WHERE gc.group_id = $1
@@ -1673,7 +1679,10 @@ func scanPost(row postScanner) (*GroupPost, error) {
 func (s *pgStore) getPost(ctx context.Context, viewerID, groupID, postID uuid.UUID) (*GroupPost, error) {
 	row := s.pool.QueryRow(ctx, `
 		SELECT
-			gp.id, gp.group_id, gp.user_id, u.username, u.avatar_url, gp.post_type, gp.body,
+			gp.id, gp.group_id, gp.user_id,
+			CASE WHEN u.deleted_at IS NULL THEN u.username ELSE 'Deleted user' END AS username,
+			CASE WHEN u.deleted_at IS NULL THEN u.avatar_url ELSE NULL END AS avatar_url,
+			gp.post_type, gp.body,
 			gp.anonymous, gp.pinned_at, gp.pinned_by, gp.comment_count, gp.reaction_count,
 			gp.image_count, gp.support_request_id,
 			EXISTS (
@@ -1994,7 +2003,10 @@ func scanComment(row commentScanner) (*GroupComment, error) {
 
 func (s *pgStore) getComment(ctx context.Context, groupID, commentID uuid.UUID) (*GroupComment, error) {
 	row := s.pool.QueryRow(ctx, `
-		SELECT gc.id, gc.group_id, gc.post_id, gc.user_id, u.username, u.avatar_url, gc.body, gc.created_at, gc.updated_at
+		SELECT gc.id, gc.group_id, gc.post_id, gc.user_id,
+			CASE WHEN u.deleted_at IS NULL THEN u.username ELSE 'Deleted user' END AS username,
+			CASE WHEN u.deleted_at IS NULL THEN u.avatar_url ELSE NULL END AS avatar_url,
+			gc.body, gc.created_at, gc.updated_at
 		FROM group_comments gc
 		JOIN users u ON u.id = gc.user_id
 		WHERE gc.group_id = $1
@@ -2059,8 +2071,8 @@ func (s *pgStore) getAdminThread(ctx context.Context, viewerID, groupID, threadI
 			gat.id,
 			gat.group_id,
 			gat.user_id,
-			u.username,
-			u.avatar_url,
+			CASE WHEN u.deleted_at IS NULL THEN u.username ELSE 'Deleted user' END AS username,
+			CASE WHEN u.deleted_at IS NULL THEN u.avatar_url ELSE NULL END AS avatar_url,
 			gat.status,
 			gat.subject,
 			gat.created_at,
@@ -2099,7 +2111,10 @@ func (s *pgStore) getAdminThread(ctx context.Context, viewerID, groupID, threadI
 		return thread, nil
 	}
 	rows, err := s.pool.Query(ctx, `
-		SELECT gam.id, gam.thread_id, gam.sender_id, u.username, u.avatar_url, gam.body, gam.created_at
+		SELECT gam.id, gam.thread_id, gam.sender_id,
+			CASE WHEN u.deleted_at IS NULL THEN u.username ELSE 'Deleted user' END AS username,
+			CASE WHEN u.deleted_at IS NULL THEN u.avatar_url ELSE NULL END AS avatar_url,
+			gam.body, gam.created_at
 		FROM group_admin_messages gam
 		JOIN users u ON u.id = gam.sender_id
 		WHERE gam.thread_id = $1
@@ -2164,7 +2179,10 @@ func scanAdminMessage(row groupScanner) (*GroupAdminMessage, error) {
 
 func (s *pgStore) getAdminMessage(ctx context.Context, messageID uuid.UUID) (*GroupAdminMessage, error) {
 	return scanAdminMessage(s.pool.QueryRow(ctx, `
-		SELECT gam.id, gam.thread_id, gam.sender_id, u.username, u.avatar_url, gam.body, gam.created_at
+		SELECT gam.id, gam.thread_id, gam.sender_id,
+			CASE WHEN u.deleted_at IS NULL THEN u.username ELSE 'Deleted user' END AS username,
+			CASE WHEN u.deleted_at IS NULL THEN u.avatar_url ELSE NULL END AS avatar_url,
+			gam.body, gam.created_at
 		FROM group_admin_messages gam
 		JOIN users u ON u.id = gam.sender_id
 		WHERE gam.id = $1`,

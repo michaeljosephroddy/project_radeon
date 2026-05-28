@@ -163,6 +163,7 @@ func (s *pgStore) loadDiscoverViewerFeatures(ctx context.Context, viewerID uuid.
 		FROM users u
 		LEFT JOIN user_interests ui ON ui.user_id = u.id
 		WHERE u.id = $1
+			AND u.deleted_at IS NULL
 		GROUP BY u.id, u.connection_intents, u.sobriety_band, u.discover_lat, u.discover_lng`,
 		viewerID,
 	).Scan(&interestIDs, &connectionIntents, &sobrietyBand, &lat, &lng)
@@ -440,6 +441,7 @@ func (s *pgStore) hydrateDiscoverUsers(ctx context.Context, candidates []discove
 			WHERE ui.user_id = u.id
 		) interest_names ON true
 		WHERE u.id = ANY($1::uuid[])
+			AND u.deleted_at IS NULL
 		ORDER BY array_position($1::uuid[], u.id)`,
 		ids,
 	)
@@ -590,6 +592,7 @@ func discoverBaseArgs(params DiscoverUsersParams, filters discoverFilters, query
 func discoverEligibilitySQL(alias string) string {
 	distanceExpr := discoverDistanceSQL(alias)
 	return fmt.Sprintf(`%[1]s.id != $1
+			AND %[1]s.deleted_at IS NULL
 			AND NOT EXISTS (
 				SELECT 1
 				FROM friendships fx

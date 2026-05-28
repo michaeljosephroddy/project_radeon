@@ -35,7 +35,7 @@ const chatSelectColumns = `SELECT
 			sr.support_type AS support_request_type,
 			sr.message AS support_request_message,
 			sr.requester_id,
-			requester.username AS requester_username,
+			CASE WHEN requester.deleted_at IS NULL THEN requester.username ELSE 'Deleted user' END AS requester_username,
 			latest_support.response_type AS latest_offer_type,
 			CASE
 				WHEN sr.id IS NULL THEN NULL
@@ -76,8 +76,8 @@ func (s *pgStore) ListChats(ctx context.Context, userID uuid.UUID, query string,
 			AND cr.user_id = $1
 		LEFT JOIN LATERAL (
 			SELECT
-				u.username,
-				u.avatar_url
+				CASE WHEN u.deleted_at IS NULL THEN u.username ELSE 'Deleted user' END AS username,
+				CASE WHEN u.deleted_at IS NULL THEN u.avatar_url ELSE NULL END AS avatar_url
 			FROM chat_members cm2
 			JOIN users u ON u.id = cm2.user_id
 			WHERE cm2.chat_id = ch.id
@@ -140,8 +140,8 @@ func (s *pgStore) ListChatRequests(ctx context.Context, userID uuid.UUID) ([]Cha
 			AND cr.user_id = $1
 		LEFT JOIN LATERAL (
 			SELECT
-				u.username,
-				u.avatar_url
+				CASE WHEN u.deleted_at IS NULL THEN u.username ELSE 'Deleted user' END AS username,
+				CASE WHEN u.deleted_at IS NULL THEN u.avatar_url ELSE NULL END AS avatar_url
 			FROM chat_members cm2
 			JOIN users u ON u.id = cm2.user_id
 			WHERE cm2.chat_id = ch.id
@@ -180,8 +180,8 @@ func (s *pgStore) GetChat(ctx context.Context, userID, chatID uuid.UUID) (*Chat,
 			AND cr.user_id = $1
 		LEFT JOIN LATERAL (
 			SELECT
-				u.username,
-				u.avatar_url
+				CASE WHEN u.deleted_at IS NULL THEN u.username ELSE 'Deleted user' END AS username,
+				CASE WHEN u.deleted_at IS NULL THEN u.avatar_url ELSE NULL END AS avatar_url
 			FROM chat_members cm2
 			JOIN users u ON u.id = cm2.user_id
 			WHERE cm2.chat_id = ch.id
@@ -238,7 +238,7 @@ func (s *pgStore) GetChatSummaries(ctx context.Context, chatID uuid.UUID, userID
 			sr.support_type AS support_request_type,
 			sr.message AS support_request_message,
 			sr.requester_id,
-			requester.username AS requester_username,
+			CASE WHEN requester.deleted_at IS NULL THEN requester.username ELSE 'Deleted user' END AS requester_username,
 			latest_support.response_type AS latest_offer_type,
 			CASE
 				WHEN sr.id IS NULL THEN NULL
@@ -261,8 +261,8 @@ func (s *pgStore) GetChatSummaries(ctx context.Context, chatID uuid.UUID, userID
 			AND cr.user_id = cm.user_id
 		LEFT JOIN LATERAL (
 			SELECT
-				u.username,
-				u.avatar_url
+				CASE WHEN u.deleted_at IS NULL THEN u.username ELSE 'Deleted user' END AS username,
+				CASE WHEN u.deleted_at IS NULL THEN u.avatar_url ELSE NULL END AS avatar_url
 			FROM chat_members cm2
 			JOIN users u ON u.id = cm2.user_id
 			WHERE cm2.chat_id = ch.id
@@ -407,8 +407,8 @@ func (s *pgStore) GetLatestMessage(ctx context.Context, chatID uuid.UUID) (*Mess
 			m.id,
 			m.chat_id,
 			m.sender_id,
-			u.username,
-			u.avatar_url,
+			CASE WHEN u.deleted_at IS NULL THEN u.username ELSE 'Deleted user' END AS username,
+			CASE WHEN u.deleted_at IS NULL THEN u.avatar_url ELSE NULL END AS avatar_url,
 			m.kind,
 			m.body,
 			m.sent_at,
@@ -602,8 +602,8 @@ func (s *pgStore) ListMessages(ctx context.Context, chatID, userID uuid.UUID, be
 			m.id,
 			m.chat_id,
 			m.sender_id,
-			u.username,
-			u.avatar_url,
+			CASE WHEN u.deleted_at IS NULL THEN u.username ELSE 'Deleted user' END AS username,
+			CASE WHEN u.deleted_at IS NULL THEN u.avatar_url ELSE NULL END AS avatar_url,
 			m.kind,
 			m.body,
 			m.sent_at,
@@ -675,8 +675,8 @@ func (s *pgStore) InsertMessage(ctx context.Context, chatID, userID uuid.UUID, b
 					m.id,
 					m.chat_id,
 					m.sender_id,
-					u.username,
-					u.avatar_url,
+					CASE WHEN u.deleted_at IS NULL THEN u.username ELSE 'Deleted user' END AS username,
+					CASE WHEN u.deleted_at IS NULL THEN u.avatar_url ELSE NULL END AS avatar_url,
 					m.kind,
 					m.body,
 					m.sent_at,
@@ -762,8 +762,8 @@ func (s *pgStore) InsertMessage(ctx context.Context, chatID, userID uuid.UUID, b
 			inserted.id,
 			inserted.chat_id,
 			inserted.sender_id,
-			u.username,
-			u.avatar_url,
+			CASE WHEN u.deleted_at IS NULL THEN u.username ELSE 'Deleted user' END AS username,
+			CASE WHEN u.deleted_at IS NULL THEN u.avatar_url ELSE NULL END AS avatar_url,
 			inserted.kind,
 			inserted.body,
 			inserted.sent_at,

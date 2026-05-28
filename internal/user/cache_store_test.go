@@ -34,6 +34,10 @@ func (s *stubQuerier) UpdateUser(context.Context, uuid.UUID, *string, *string, *
 	return nil
 }
 
+func (s *stubQuerier) DeleteCurrentUser(context.Context, uuid.UUID) error {
+	return nil
+}
+
 func (s *stubQuerier) BlockUser(context.Context, uuid.UUID, uuid.UUID) error {
 	return nil
 }

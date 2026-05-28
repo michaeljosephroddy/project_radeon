@@ -217,6 +217,7 @@ func main() {
 		// Users
 		r.Get("/users/me", userHandler.GetMe)
 		r.Patch("/users/me", userHandler.UpdateMe)
+		r.Delete("/users/me", userHandler.DeleteMe)
 		r.Patch("/users/me/location", userHandler.UpdateMyCurrentLocation)
 		r.Post("/users/me/avatar", userHandler.UploadAvatar)
 		r.Post("/users/me/banner", userHandler.UploadBanner)

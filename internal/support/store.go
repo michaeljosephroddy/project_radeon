@@ -108,9 +108,9 @@ func (s *pgStore) GetSupportRequest(ctx context.Context, viewerID, requestID uui
 		`SELECT
 			sr.id,
 			sr.requester_id,
-			requester.username,
-			requester.avatar_url,
-			requester.city,
+			CASE WHEN requester.deleted_at IS NULL THEN requester.username ELSE 'Deleted user' END AS username,
+			CASE WHEN requester.deleted_at IS NULL THEN requester.avatar_url ELSE NULL END AS avatar_url,
+			CASE WHEN requester.deleted_at IS NULL THEN requester.city ELSE NULL END AS city,
 			sr.support_type,
 			COALESCE(sr.topics, '{}'::text[]),
 			sr.preferred_gender,
@@ -135,8 +135,8 @@ func (s *pgStore) GetSupportRequest(ctx context.Context, viewerID, requestID uui
 			sr.accepted_at,
 			sr.closed_at,
 			sr.accepted_responder_id,
-			responder.username,
-			responder.avatar_url,
+			CASE WHEN responder.deleted_at IS NULL THEN responder.username ELSE 'Deleted user' END AS responder_username,
+			CASE WHEN responder.deleted_at IS NULL THEN responder.avatar_url ELSE NULL END AS responder_avatar_url,
 			sr.chat_id,
 			EXISTS(
 				SELECT 1 FROM support_responses own_res
@@ -316,7 +316,10 @@ func (s *pgStore) CloseSupportRequest(ctx context.Context, requestID, userID uui
 func (s *pgStore) ListMySupportRequests(ctx context.Context, userID uuid.UUID, before *time.Time, limit int) ([]SupportRequest, error) {
 	rows, err := s.pool.Query(ctx,
 		`SELECT
-			sr.id, sr.requester_id, requester.username, requester.avatar_url, requester.city,
+			sr.id, sr.requester_id,
+			CASE WHEN requester.deleted_at IS NULL THEN requester.username ELSE 'Deleted user' END AS username,
+			CASE WHEN requester.deleted_at IS NULL THEN requester.avatar_url ELSE NULL END AS avatar_url,
+			CASE WHEN requester.deleted_at IS NULL THEN requester.city ELSE NULL END AS city,
 			sr.support_type, COALESCE(sr.topics, '{}'::text[]), sr.preferred_gender,
 			sr.location_visibility, sr.location_city, sr.location_region, sr.location_country, sr.location_approx_lat, sr.location_approx_lng,
 			sr.message, sr.urgency, sr.status,
@@ -330,8 +333,8 @@ func (s *pgStore) ListMySupportRequests(ctx context.Context, userID uuid.UUID, b
 			sr.accepted_at,
 			sr.closed_at,
 			sr.accepted_responder_id,
-			responder.username,
-			responder.avatar_url,
+			CASE WHEN responder.deleted_at IS NULL THEN responder.username ELSE 'Deleted user' END AS responder_username,
+			CASE WHEN responder.deleted_at IS NULL THEN responder.avatar_url ELSE NULL END AS responder_avatar_url,
 			sr.chat_id,
 			false AS has_responded,
 			false AS already_chatting,
@@ -415,9 +418,9 @@ func (s *pgStore) ListVisibleSupportRequests(ctx context.Context, userID uuid.UU
 			SELECT
 				sr.id,
 				sr.requester_id,
-				requester.username,
-				requester.avatar_url,
-				requester.city,
+				CASE WHEN requester.deleted_at IS NULL THEN requester.username ELSE 'Deleted user' END AS username,
+				CASE WHEN requester.deleted_at IS NULL THEN requester.avatar_url ELSE NULL END AS avatar_url,
+				CASE WHEN requester.deleted_at IS NULL THEN requester.city ELSE NULL END AS city,
 				sr.support_type,
 				COALESCE(sr.topics, '{}'::text[]) AS topics,
 				sr.preferred_gender,
@@ -602,7 +605,9 @@ func (s *pgStore) CreateSupportOffer(ctx context.Context, requestID, userID uuid
 		)
 		SELECT
 			i.id, i.support_request_id, i.responder_id,
-			u.username, u.avatar_url, u.city,
+			CASE WHEN u.deleted_at IS NULL THEN u.username ELSE 'Deleted user' END AS username,
+			CASE WHEN u.deleted_at IS NULL THEN u.avatar_url ELSE NULL END AS avatar_url,
+			CASE WHEN u.deleted_at IS NULL THEN u.city ELSE NULL END AS city,
 			i.response_type, i.message, i.status, i.scheduled_for, i.created_at, NULL::uuid
 		FROM inserted i
 		JOIN users u ON u.id = i.responder_id`,
@@ -797,7 +802,9 @@ func (s *pgStore) GetSupportRequestOwner(ctx context.Context, requestID uuid.UUI
 func (s *pgStore) ListSupportOffers(ctx context.Context, requestID uuid.UUID, status string, limit, offset int) ([]SupportOffer, error) {
 	query := `SELECT
 			sres.id, sres.support_request_id, sres.responder_id,
-			u.username, u.avatar_url, u.city,
+			CASE WHEN u.deleted_at IS NULL THEN u.username ELSE 'Deleted user' END AS username,
+			CASE WHEN u.deleted_at IS NULL THEN u.avatar_url ELSE NULL END AS avatar_url,
+			CASE WHEN u.deleted_at IS NULL THEN u.city ELSE NULL END AS city,
 			sres.response_type, sres.message, sres.status, sres.scheduled_for, sres.created_at,
 			CASE WHEN sr.accepted_response_id = sres.id THEN sr.chat_id ELSE NULL::uuid END
 		FROM support_responses sres
@@ -955,8 +962,8 @@ func (s *pgStore) CreateSupportReply(ctx context.Context, requestID, authorID uu
 			i.id,
 			i.support_request_id,
 			i.author_id,
-			u.username,
-			u.avatar_url,
+			CASE WHEN u.deleted_at IS NULL THEN u.username ELSE 'Deleted user' END AS username,
+			CASE WHEN u.deleted_at IS NULL THEN u.avatar_url ELSE NULL END AS avatar_url,
 			i.body,
 			i.created_at
 		FROM inserted i
@@ -999,8 +1006,8 @@ func (s *pgStore) ListSupportReplies(ctx context.Context, requestID uuid.UUID, c
 				gc.id,
 				$1::uuid AS support_request_id,
 				gc.user_id,
-				u.username,
-				u.avatar_url,
+				CASE WHEN u.deleted_at IS NULL THEN u.username ELSE 'Deleted user' END AS username,
+				CASE WHEN u.deleted_at IS NULL THEN u.avatar_url ELSE NULL END AS avatar_url,
 				gc.body,
 				gc.created_at
 			FROM group_comments gc
@@ -1037,8 +1044,8 @@ func (s *pgStore) ListSupportReplies(ctx context.Context, requestID uuid.UUID, c
 			sr.id,
 			sr.support_request_id,
 			sr.author_id,
-			u.username,
-			u.avatar_url,
+			CASE WHEN u.deleted_at IS NULL THEN u.username ELSE 'Deleted user' END AS username,
+			CASE WHEN u.deleted_at IS NULL THEN u.avatar_url ELSE NULL END AS avatar_url,
 			sr.body,
 			sr.created_at
 		FROM support_replies sr
