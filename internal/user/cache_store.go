@@ -120,14 +120,6 @@ func (s *cachedStore) UpdateAvatarURL(ctx context.Context, userID uuid.UUID, ava
 	)
 }
 
-func (s *cachedStore) UpdateBannerURL(ctx context.Context, userID uuid.UUID, bannerURL string) error {
-	if err := s.inner.UpdateBannerURL(ctx, userID, bannerURL); err != nil {
-		return err
-	}
-
-	return s.cache.BumpVersions(ctx, s.userVersionKey(userID))
-}
-
 func (s *cachedStore) DiscoverUsers(ctx context.Context, params DiscoverUsersParams) ([]User, error) {
 	viewerVersion, err := s.cache.GetVersion(ctx, s.discoverViewerVersionKey(params.CurrentUserID))
 	if err != nil {

@@ -46,7 +46,6 @@ func (s *pgStore) GetUser(ctx context.Context, viewerID, userID uuid.UUID) (*Use
 			u.id,
 			u.username,
 			u.avatar_url,
-			u.banner_url,
 			(u.subscription_tier = 'plus' AND u.subscription_status = 'active') AS is_plus,
 			u.subscription_tier,
 			u.subscription_status,
@@ -111,7 +110,7 @@ func (s *pgStore) GetUser(ctx context.Context, viewerID, userID uuid.UUID) (*Use
 			AND u.deleted_at IS NULL`,
 		viewerID, userID,
 	).Scan(
-		&u.ID, &u.Username, &u.AvatarURL, &u.BannerURL, &u.IsPlus, &u.SubscriptionTier, &u.SubscriptionStatus,
+		&u.ID, &u.Username, &u.AvatarURL, &u.IsPlus, &u.SubscriptionTier, &u.SubscriptionStatus,
 		&u.OnboardingCompletedAt, &u.IdentityVerificationStatus, &u.IdentityVerifiedAt, &u.IdentityVerificationLastError,
 		&u.City, &u.Country, &u.Bio, &u.Interests, &u.ConnectionIntents, &u.Gender, &u.BirthDate, &u.SoberSince, &u.CreatedAt,
 		&u.FriendshipStatus, &u.FriendCount, &u.IncomingFriendRequestCt, &u.OutgoingFriendRequestCt,
@@ -262,7 +261,6 @@ func (s *pgStore) DeleteCurrentUser(ctx context.Context, userID uuid.UUID) error
 			email = $3,
 			password_hash = '',
 			avatar_url = NULL,
-			banner_url = NULL,
 			city = NULL,
 			country = NULL,
 			bio = NULL,
@@ -374,14 +372,6 @@ func (s *pgStore) UpdateAvatarURL(ctx context.Context, userID uuid.UUID, avatarU
 		return err
 	}
 	return s.syncDiscoverUserState(ctx, userID)
-}
-
-func (s *pgStore) UpdateBannerURL(ctx context.Context, userID uuid.UUID, bannerURL string) error {
-	_, err := s.pool.Exec(ctx,
-		`UPDATE users SET banner_url = $1 WHERE id = $2`,
-		bannerURL, userID,
-	)
-	return err
 }
 
 func (s *pgStore) syncDiscoverUserState(ctx context.Context, userID uuid.UUID) error {

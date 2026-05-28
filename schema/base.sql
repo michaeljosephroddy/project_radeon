@@ -7,7 +7,6 @@ CREATE TABLE IF NOT EXISTS users (
     email TEXT NOT NULL,
     password_hash TEXT NOT NULL DEFAULT '',
     avatar_url TEXT,
-    banner_url TEXT,
     city TEXT,
     country TEXT,
     bio TEXT,
