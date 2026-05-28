@@ -295,7 +295,6 @@ func main() {
 		r.Delete("/notifications/devices/{id}", notificationsHandler.DeleteDevice)
 		r.Get("/notifications", notificationsHandler.ListNotifications)
 		r.Get("/notifications/summary", notificationsHandler.GetSummary)
-		r.Post("/notifications/read", notificationsHandler.MarkNotificationsRead)
 		r.Post("/notifications/read-all", notificationsHandler.MarkAllNotificationsRead)
 		r.Post("/notifications/{id}/read", notificationsHandler.MarkNotificationRead)
 		r.Get("/notifications/preferences", notificationsHandler.GetPreferences)

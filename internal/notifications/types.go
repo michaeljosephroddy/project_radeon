@@ -110,7 +110,6 @@ type Store interface {
 	ListNotifications(ctx context.Context, userID uuid.UUID, before *time.Time, limit int) ([]Notification, error)
 	GetSummary(ctx context.Context, userID uuid.UUID) (*NotificationSummary, error)
 	MarkNotificationRead(ctx context.Context, userID, notificationID uuid.UUID, readAt time.Time) error
-	MarkNotificationsRead(ctx context.Context, userID uuid.UUID, notificationIDs []uuid.UUID, readAt time.Time) (int, error)
 	MarkAllNotificationsRead(ctx context.Context, userID uuid.UUID, readAt time.Time) (int, error)
 	MarkChatRead(ctx context.Context, chatID, userID uuid.UUID, lastReadMessageID *uuid.UUID, readAt time.Time) error
 	CreateChatMessageNotifications(ctx context.Context, chatID, messageID, senderID uuid.UUID, body string) error
