@@ -211,33 +211,8 @@ type SupportReply struct {
 	CreatedAt        time.Time `json:"created_at"`
 }
 
-type SupportChatContext struct {
-	SupportRequestID  uuid.UUID  `json:"support_request_id"`
-	RequestType       string     `json:"request_type"`
-	RequestMessage    *string    `json:"request_message,omitempty"`
-	RequesterID       uuid.UUID  `json:"requester_id"`
-	RequesterUsername string     `json:"requester_username"`
-	LatestOfferType   *string    `json:"latest_offer_type,omitempty"`
-	Status            string     `json:"status"`
-	AwaitingUserID    *uuid.UUID `json:"awaiting_user_id,omitempty"`
-}
-
-type ChatSummary struct {
-	ID             uuid.UUID           `json:"id"`
-	IsGroup        bool                `json:"is_group"`
-	Name           *string             `json:"name"`
-	Username       *string             `json:"username"`
-	AvatarURL      *string             `json:"avatar_url"`
-	CreatedAt      time.Time           `json:"created_at"`
-	LastMessage    *string             `json:"last_message,omitempty"`
-	LastMessageAt  *time.Time          `json:"last_message_at,omitempty"`
-	Status         string              `json:"status"`
-	SupportContext *SupportChatContext `json:"support_context,omitempty"`
-}
-
 type CreateSupportOfferResult struct {
 	Offer *SupportOffer `json:"offer"`
-	Chat  *ChatSummary  `json:"chat,omitempty"`
 }
 
 type SupportRequestsPage struct {
