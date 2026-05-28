@@ -62,14 +62,6 @@ func (s *Service) MarkNotificationRead(ctx context.Context, userID, notification
 	return s.store.MarkNotificationRead(ctx, userID, notificationID, s.now().UTC())
 }
 
-func (s *Service) MarkNotificationsRead(ctx context.Context, userID uuid.UUID, notificationIDs []uuid.UUID) (*BulkReadResult, error) {
-	updated, err := s.store.MarkNotificationsRead(ctx, userID, notificationIDs, s.now().UTC())
-	if err != nil {
-		return nil, err
-	}
-	return &BulkReadResult{Read: true, Updated: updated}, nil
-}
-
 func (s *Service) MarkAllNotificationsRead(ctx context.Context, userID uuid.UUID) (*BulkReadResult, error) {
 	updated, err := s.store.MarkAllNotificationsRead(ctx, userID, s.now().UTC())
 	if err != nil {

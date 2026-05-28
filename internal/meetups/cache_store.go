@@ -82,14 +82,14 @@ func (s *cachedStore) DiscoverMeetups(ctx context.Context, userID uuid.UUID, par
 		return s.inner.DiscoverMeetups(ctx, userID, params)
 	}
 
-	if store, ok := s.inner.(*pgStore); ok && store.recommendedPipelineV2 && params.Sort == "recommended" {
+	if store, ok := s.inner.(*pgStore); ok && params.Sort == "recommended" {
 		return s.discoverRecommendedMeetupsFromWindowCache(ctx, store, userID, params, version)
 	}
 
 	key := s.cache.Key(
 		"meetups", "discover",
 		"v", strconv.FormatInt(version, 10),
-		"pipeline", discoverPipelineCacheVersion(params.Sort),
+		"pipeline", "query",
 		"viewer", userID.String(),
 		"q", encodeMeetupPart(params.Query),
 		"category", encodeMeetupPart(params.CategorySlug),
@@ -131,7 +131,7 @@ func (s *cachedStore) discoverRecommendedMeetupsFromWindowCache(ctx context.Cont
 	key := s.cache.Key(
 		"meetups", "discover", "recommended_window",
 		"v", strconv.FormatInt(version, 10),
-		"pipeline", discoverPipelineCacheVersion(params.Sort),
+		"pipeline", recommendedPipelineVersion,
 		"viewer", userID.String(),
 		"q", encodeMeetupPart(params.Query),
 		"category", encodeMeetupPart(params.CategorySlug),
@@ -170,13 +170,6 @@ func (s *cachedStore) discoverRecommendedMeetupsFromWindowCache(ctx context.Cont
 		store.decorateMeetups(ctx, page.Items, viewer)
 	}
 	return page, nil
-}
-
-func discoverPipelineCacheVersion(sortKey string) string {
-	if sortKey == "recommended" {
-		return recommendedPipelineVersion
-	}
-	return "legacy"
 }
 
 func (s *cachedStore) ListMyMeetups(ctx context.Context, userID uuid.UUID, params MyMeetupsParams) (*CursorPage[Meetup], error) {

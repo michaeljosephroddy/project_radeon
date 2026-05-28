@@ -144,24 +144,6 @@ func (h *Handler) MarkNotificationRead(w http.ResponseWriter, r *http.Request) {
 	response.Success(w, http.StatusOK, map[string]bool{"read": true})
 }
 
-func (h *Handler) MarkNotificationsRead(w http.ResponseWriter, r *http.Request) {
-	userID := middleware.CurrentUserID(r)
-	var input struct {
-		NotificationIDs []uuid.UUID `json:"notification_ids"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-		response.Error(w, http.StatusBadRequest, "invalid request body")
-		return
-	}
-
-	result, err := h.service.MarkNotificationsRead(r.Context(), userID, input.NotificationIDs)
-	if err != nil {
-		response.Error(w, http.StatusInternalServerError, "could not mark notifications read")
-		return
-	}
-	response.Success(w, http.StatusOK, result)
-}
-
 func (h *Handler) MarkAllNotificationsRead(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.CurrentUserID(r)
 	result, err := h.service.MarkAllNotificationsRead(r.Context(), userID)
