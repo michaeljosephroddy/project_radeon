@@ -1075,14 +1075,3 @@ func (s *pgStore) ListSupportReplies(ctx context.Context, requestID uuid.UUID, c
 	}
 	return replies, rows.Err()
 }
-
-func mapSupportChatStatus(chatStatus string) string {
-	switch chatStatus {
-	case "request":
-		return "pending_requester_acceptance"
-	case "active":
-		return "accepted"
-	default:
-		return chatStatus
-	}
-}
