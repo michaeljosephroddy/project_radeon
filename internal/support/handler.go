@@ -138,12 +138,12 @@ type SupportRequest struct {
 	CreatedAt           time.Time        `json:"created_at"`
 	PrivacyLevel        string           `json:"privacy_level,omitempty"`
 	AcceptedResponseID  *uuid.UUID       `json:"-"`
-	AcceptedResponderID *uuid.UUID       `json:"accepted_responder_id,omitempty"`
-	AcceptedAt          *time.Time       `json:"accepted_at,omitempty"`
+	AcceptedResponderID *uuid.UUID       `json:"-"`
+	AcceptedAt          *time.Time       `json:"-"`
 	ClosedAt            *time.Time       `json:"closed_at,omitempty"`
-	ResponderID         *uuid.UUID       `json:"responder_id,omitempty"`
-	ResponderUsername   *string          `json:"responder_username,omitempty"`
-	ResponderAvatarURL  *string          `json:"responder_avatar_url,omitempty"`
+	ResponderID         *uuid.UUID       `json:"-"`
+	ResponderUsername   *string          `json:"-"`
+	ResponderAvatarURL  *string          `json:"-"`
 	ChatID              *uuid.UUID       `json:"chat_id,omitempty"`
 	HasResponded        bool             `json:"-"`
 	HasOffered          bool             `json:"has_offered"`
