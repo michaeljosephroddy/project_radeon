@@ -351,6 +351,61 @@ func (s *pgStore) UnblockUser(ctx context.Context, blockerID, blockedID uuid.UUI
 	return err
 }
 
+func (s *pgStore) ListBlockedUsers(ctx context.Context, userID uuid.UUID, before *BlockedUsersCursor, limit int) ([]BlockedUser, error) {
+	var beforeAt *time.Time
+	var beforeID *uuid.UUID
+	if before != nil {
+		normalized := before.BlockedAt.UTC()
+		beforeAt = &normalized
+		beforeID = &before.BlockedID
+	}
+
+	rows, err := s.pool.Query(ctx,
+		`SELECT
+			ub.blocked_id,
+			ub.created_at,
+			u.id,
+			u.username,
+			u.avatar_url,
+			u.city,
+			u.country
+		FROM user_blocks ub
+		JOIN users u ON u.id = ub.blocked_id
+		WHERE ub.blocker_id = $1
+			AND u.deleted_at IS NULL
+			AND (
+				$2::timestamptz IS NULL
+				OR ub.created_at < $2
+				OR (ub.created_at = $2 AND ub.blocked_id < $3::uuid)
+			)
+		ORDER BY ub.created_at DESC, ub.blocked_id DESC
+		LIMIT $4`,
+		userID, beforeAt, beforeID, limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	blocked := []BlockedUser{}
+	for rows.Next() {
+		var item BlockedUser
+		if err := rows.Scan(
+			&item.ID,
+			&item.BlockedAt,
+			&item.User.ID,
+			&item.User.Username,
+			&item.User.AvatarURL,
+			&item.User.City,
+			&item.User.Country,
+		); err != nil {
+			return nil, err
+		}
+		blocked = append(blocked, item)
+	}
+	return blocked, rows.Err()
+}
+
 func (s *pgStore) ReportUser(ctx context.Context, reporterID, reportedUserID uuid.UUID, reason string, details *string) error {
 	_, err := s.pool.Exec(ctx,
 		`INSERT INTO user_reports (reporter_id, reported_user_id, reason, details)

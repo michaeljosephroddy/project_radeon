@@ -27,6 +27,7 @@ type mockQuerier struct {
 	countDiscoverUsers      func(ctx context.Context, params DiscoverUsersParams) (int, error)
 	blockUser               func(ctx context.Context, blockerID, blockedID uuid.UUID) error
 	unblockUser             func(ctx context.Context, blockerID, blockedID uuid.UUID) error
+	listBlockedUsers        func(ctx context.Context, userID uuid.UUID, before *BlockedUsersCursor, limit int) ([]BlockedUser, error)
 	reportUser              func(ctx context.Context, reporterID, reportedUserID uuid.UUID, reason string, details *string) error
 	listInterests           func(ctx context.Context) ([]string, error)
 	updateCurrentLocation   func(ctx context.Context, userID uuid.UUID, lat, lng float64, city, country string) error
@@ -94,6 +95,13 @@ func (m *mockQuerier) UnblockUser(ctx context.Context, blockerID, blockedID uuid
 		return m.unblockUser(ctx, blockerID, blockedID)
 	}
 	return nil
+}
+
+func (m *mockQuerier) ListBlockedUsers(ctx context.Context, userID uuid.UUID, before *BlockedUsersCursor, limit int) ([]BlockedUser, error) {
+	if m.listBlockedUsers != nil {
+		return m.listBlockedUsers(ctx, userID, before, limit)
+	}
+	return nil, nil
 }
 
 func (m *mockQuerier) ReportUser(ctx context.Context, reporterID, reportedUserID uuid.UUID, reason string, details *string) error {
@@ -551,6 +559,119 @@ func TestBlockUserRejectsSelf(t *testing.T) {
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+}
+
+func TestListBlockedUsersSuccessPaginates(t *testing.T) {
+	blockedAt := time.Date(2026, 5, 28, 12, 0, 0, 0, time.UTC)
+	thirdID := uuid.MustParse("00000000-0000-0000-0000-000000000003")
+	fourthID := uuid.MustParse("00000000-0000-0000-0000-000000000004")
+	h := NewHandler(&mockQuerier{
+		listBlockedUsers: func(_ context.Context, userID uuid.UUID, before *BlockedUsersCursor, limit int) ([]BlockedUser, error) {
+			if userID != fixedUser {
+				t.Fatalf("userID = %s, want %s", userID, fixedUser)
+			}
+			if before != nil {
+				t.Fatalf("before = %v, want nil", before)
+			}
+			if limit != 3 {
+				t.Fatalf("limit = %d, want 3", limit)
+			}
+			return []BlockedUser{
+				{ID: fixedOther, BlockedAt: blockedAt, User: BlockedUserProfile{ID: fixedOther, Username: "first"}},
+				{ID: thirdID, BlockedAt: blockedAt.Add(-time.Minute), User: BlockedUserProfile{ID: thirdID, Username: "second"}},
+				{ID: fourthID, BlockedAt: blockedAt.Add(-2 * time.Minute), User: BlockedUserProfile{ID: fourthID, Username: "third"}},
+			}, nil
+		},
+	}, &mockUploader{})
+	req := withUserID(httptest.NewRequest(http.MethodGet, "/users/me/blocks?limit=2", nil), fixedUser)
+	rec := httptest.NewRecorder()
+
+	h.ListBlockedUsers(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	var body struct {
+		Data struct {
+			Items      []BlockedUser `json:"items"`
+			Limit      int           `json:"limit"`
+			HasMore    bool          `json:"has_more"`
+			NextCursor *string       `json:"next_cursor"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("Decode() error = %v", err)
+	}
+	if len(body.Data.Items) != 2 {
+		t.Fatalf("items = %d, want 2", len(body.Data.Items))
+	}
+	if body.Data.Limit != 2 {
+		t.Fatalf("limit = %d, want 2", body.Data.Limit)
+	}
+	if !body.Data.HasMore {
+		t.Fatal("expected has_more to be true")
+	}
+	if body.Data.NextCursor == nil || *body.Data.NextCursor == "" {
+		t.Fatal("expected next_cursor")
+	}
+	next, err := decodeBlockedUsersCursor(*body.Data.NextCursor)
+	if err != nil {
+		t.Fatalf("decode next_cursor: %v", err)
+	}
+	if next.BlockedID != thirdID || !next.BlockedAt.Equal(blockedAt.Add(-time.Minute)) {
+		t.Fatalf("next cursor = %s %s, want %s %s", next.BlockedID, next.BlockedAt, thirdID, blockedAt.Add(-time.Minute))
+	}
+}
+
+func TestListBlockedUsersPassesCursor(t *testing.T) {
+	blockedAt := time.Date(2026, 5, 28, 12, 0, 0, 0, time.UTC)
+	cursor := encodeBlockedUsersCursor(BlockedUser{ID: fixedOther, BlockedAt: blockedAt})
+	h := NewHandler(&mockQuerier{
+		listBlockedUsers: func(_ context.Context, userID uuid.UUID, before *BlockedUsersCursor, limit int) ([]BlockedUser, error) {
+			if userID != fixedUser {
+				t.Fatalf("userID = %s, want %s", userID, fixedUser)
+			}
+			if before == nil {
+				t.Fatal("before = nil, want cursor")
+			}
+			if before.BlockedID != fixedOther || !before.BlockedAt.Equal(blockedAt) {
+				t.Fatalf("before = %s %s, want %s %s", before.BlockedID, before.BlockedAt, fixedOther, blockedAt)
+			}
+			if limit != 26 {
+				t.Fatalf("limit = %d, want 26", limit)
+			}
+			return nil, nil
+		},
+	}, &mockUploader{})
+	req := withUserID(httptest.NewRequest(http.MethodGet, "/users/me/blocks?before="+cursor, nil), fixedUser)
+	rec := httptest.NewRecorder()
+
+	h.ListBlockedUsers(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+}
+
+func TestListBlockedUsersRejectsInvalidCursor(t *testing.T) {
+	called := false
+	h := NewHandler(&mockQuerier{
+		listBlockedUsers: func(_ context.Context, _ uuid.UUID, _ *BlockedUsersCursor, _ int) ([]BlockedUser, error) {
+			called = true
+			return nil, nil
+		},
+	}, &mockUploader{})
+	req := withUserID(httptest.NewRequest(http.MethodGet, "/users/me/blocks?before=not-a-cursor", nil), fixedUser)
+	rec := httptest.NewRecorder()
+
+	h.ListBlockedUsers(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+	if called {
+		t.Fatal("store should not be called for invalid cursor")
 	}
 }
 
