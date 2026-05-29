@@ -26,8 +26,10 @@ import (
 	"github.com/project_radeon/api/internal/friends"
 	"github.com/project_radeon/api/internal/groups"
 	"github.com/project_radeon/api/internal/meetups"
+	"github.com/project_radeon/api/internal/moderation"
 	"github.com/project_radeon/api/internal/notifications"
 	"github.com/project_radeon/api/internal/recoverymeetings"
+	"github.com/project_radeon/api/internal/reports"
 	"github.com/project_radeon/api/internal/support"
 	"github.com/project_radeon/api/internal/user"
 	"github.com/project_radeon/api/pkg/cache"
@@ -63,7 +65,13 @@ func main() {
 		log.Fatalf("failed to load AWS config: %v", err)
 	}
 	s3Client := s3.NewFromConfig(awsCfg)
-	uploader := storage.NewS3Uploader(s3Client, awsBucket, awsRegion)
+	moderator := moderation.New(moderation.Config{
+		Enabled: parseBoolEnv("MODERATION_ENABLED"),
+		APIKey:  os.Getenv("OPENAI_API_KEY"),
+		Model:   strings.TrimSpace(os.Getenv("OPENAI_MODERATION_MODEL")),
+		Timeout: time.Duration(parseIntEnvWithDefault("OPENAI_MODERATION_TIMEOUT_MS", 5000)) * time.Millisecond,
+	}, db)
+	uploader := moderation.NewModeratingUploader(storage.NewS3Uploader(s3Client, awsBucket, awsRegion), moderator)
 
 	cacheEnabled := parseBoolEnv("CACHE_ENABLED")
 	cacheStore, err := cache.New(context.Background(), cache.Config{
@@ -94,6 +102,7 @@ func main() {
 	datingStore := dating.NewCachedStore(dating.NewPgStore(db), cacheStore)
 
 	userHandler := user.NewHandler(userStore, uploader)
+	userHandler.UseModerator(moderator)
 	notificationsService := notifications.NewService(
 		notifications.NewPgStore(db),
 		notifications.NewExpoProvider(nil),
@@ -102,13 +111,19 @@ func main() {
 	chatsRealtimeHub := chats.NewRealtimeHub()
 	chatsRealtimeBus := chats.NewRedisRealtimeBus(cacheStore)
 	chatsHandler := chats.NewHandlerWithRealtimeInfra(chats.NewPgStore(db), notificationsService, chatsRealtimeHub, chatsRealtimeBus)
+	chatsHandler.UseModerator(moderator)
 	datingHandler := dating.NewHandler(datingStore, notificationsService)
 	friendsHandler := friends.NewHandler(friendsStore)
 	groupsHandler := groups.NewHandlerWithNotifier(groupsStore, notificationsService, uploader)
+	groupsHandler.UseModerator(moderator)
 	feedHandler := feed.NewHandlerWithNotifier(feedStore, notificationsService, uploader)
+	feedHandler.UseModerator(moderator)
 	meetupsHandler := meetups.NewHandler(meetupsStore, uploader)
+	meetupsHandler.UseModerator(moderator)
+	reportsHandler := reports.NewHandler(reports.NewPgStore(db))
 	recoveryMeetingsHandler := recoverymeetings.NewHandler(recoverymeetings.NewPgStore(db))
 	supportHandler := support.NewHandlerWithChatBroadcaster(supportStore, chatsHandler, notificationsService)
+	supportHandler.UseModerator(moderator)
 
 	r := chi.NewRouter()
 
@@ -156,6 +171,8 @@ func main() {
 		r.Use(middleware.Authenticate)
 		r.Use(middleware.EnsureCurrentUserExists(userChecker))
 		r.Use(middleware.RateLimitUserWithStore(cacheStore))
+
+		r.Post("/reports", reportsHandler.CreateContentReport)
 
 		// Feed
 		r.Get("/feed/home", feedHandler.GetHomeFeed)

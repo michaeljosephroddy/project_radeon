@@ -40,19 +40,22 @@ func validateRegisterInput(input registerInput) map[string]string {
 	if len(input.Password) < 8 {
 		errs["password"] = "must be at least 8 characters"
 	}
+	if input.BirthDate == nil || strings.TrimSpace(*input.BirthDate) == "" {
+		errs["birth_date"] = "required"
+	} else {
+		trimmedBirthDate := strings.TrimSpace(*input.BirthDate)
+		parsed, err := parseCalendarDate(trimmedBirthDate)
+		if err != nil {
+			errs["birth_date"] = "birth_date must be YYYY-MM-DD"
+		} else if !isAtLeastAge(*parsed, 18, time.Now().UTC()) {
+			errs["birth_date"] = "you must be 18 or older to create an account"
+		}
+	}
 	if input.Gender != nil {
 		trimmedGender := strings.TrimSpace(*input.Gender)
 		if trimmedGender != "" {
 			if _, ok := normalizeRegisterGender(trimmedGender); !ok {
 				errs["gender"] = "gender must be woman, man, or non_binary"
-			}
-		}
-	}
-	if input.BirthDate != nil {
-		trimmedBirthDate := strings.TrimSpace(*input.BirthDate)
-		if trimmedBirthDate != "" {
-			if _, err := parseCalendarDate(trimmedBirthDate); err != nil {
-				errs["birth_date"] = "birth_date must be YYYY-MM-DD"
 			}
 		}
 	}
@@ -90,6 +93,11 @@ func parseCalendarDate(raw string) (*time.Time, error) {
 		return nil, err
 	}
 	return &parsed, nil
+}
+
+func isAtLeastAge(birthDate time.Time, age int, now time.Time) bool {
+	cutoff := time.Date(now.Year()-age, now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	return !birthDate.After(cutoff)
 }
 
 func normalizeRegisterGender(raw string) (string, bool) {

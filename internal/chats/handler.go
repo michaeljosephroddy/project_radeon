@@ -12,6 +12,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/project_radeon/api/internal/moderation"
 	"github.com/project_radeon/api/pkg/middleware"
 	"github.com/project_radeon/api/pkg/pagination"
 	"github.com/project_radeon/api/pkg/response"
@@ -40,10 +41,11 @@ type Notifier interface {
 }
 
 type Handler struct {
-	db       Querier
-	notifier Notifier
-	realtime *RealtimeHub
-	bus      EventBus
+	db        Querier
+	notifier  Notifier
+	realtime  *RealtimeHub
+	bus       EventBus
+	moderator moderation.Service
 }
 
 type SupportChatContext struct {
@@ -105,11 +107,11 @@ type MessagePage struct {
 
 // NewHandler builds a chats handler. Pass chats.NewPgStore(pool) for production.
 func NewHandler(db Querier) *Handler {
-	return &Handler{db: db, realtime: NewRealtimeHub()}
+	return &Handler{db: db, realtime: NewRealtimeHub(), moderator: moderation.Disabled()}
 }
 
 func NewHandlerWithNotifier(db Querier, notifier Notifier) *Handler {
-	return &Handler{db: db, notifier: notifier, realtime: NewRealtimeHub()}
+	return &Handler{db: db, notifier: notifier, realtime: NewRealtimeHub(), moderator: moderation.Disabled()}
 }
 
 func NewHandlerWithRealtimeInfra(db Querier, notifier Notifier, realtime *RealtimeHub, bus EventBus) *Handler {
@@ -117,11 +119,19 @@ func NewHandlerWithRealtimeInfra(db Querier, notifier Notifier, realtime *Realti
 		realtime = NewRealtimeHub()
 	}
 	return &Handler{
-		db:       db,
-		notifier: notifier,
-		realtime: realtime,
-		bus:      bus,
+		db:        db,
+		notifier:  notifier,
+		realtime:  realtime,
+		bus:       bus,
+		moderator: moderation.Disabled(),
 	}
+}
+
+func (h *Handler) UseModerator(service moderation.Service) {
+	if service == nil {
+		service = moderation.Disabled()
+	}
+	h.moderator = service
 }
 
 // BroadcastChatUpdate pushes the latest message and summary for an existing chat
@@ -351,6 +361,10 @@ func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
 	input.Body = strings.TrimSpace(input.Body)
 	if input.Body == "" {
 		response.Error(w, http.StatusBadRequest, "body is required")
+		return
+	}
+	if err := h.moderator.CheckText(r.Context(), "chat_message", input.Body); err != nil {
+		response.Error(w, http.StatusUnprocessableEntity, moderation.UserMessage(err))
 		return
 	}
 

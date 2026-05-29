@@ -19,6 +19,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/project_radeon/api/internal/moderation"
 	"github.com/project_radeon/api/pkg/middleware"
 	"github.com/project_radeon/api/pkg/pagination"
 	"github.com/project_radeon/api/pkg/response"
@@ -60,9 +61,10 @@ type MentionNotifier interface {
 }
 
 type Handler struct {
-	db       Querier
-	notifier MentionNotifier
-	uploader Uploader
+	db        Querier
+	notifier  MentionNotifier
+	uploader  Uploader
+	moderator moderation.Service
 }
 
 type MutedFeedAuthorsCursor struct {
@@ -72,11 +74,18 @@ type MutedFeedAuthorsCursor struct {
 
 // NewHandler builds a feed handler. Pass feed.NewPgStore(pool) for production.
 func NewHandler(db Querier, uploader Uploader) *Handler {
-	return &Handler{db: db, uploader: uploader}
+	return &Handler{db: db, uploader: uploader, moderator: moderation.Disabled()}
 }
 
 func NewHandlerWithNotifier(db Querier, notifier MentionNotifier, uploader Uploader) *Handler {
-	return &Handler{db: db, notifier: notifier, uploader: uploader}
+	return &Handler{db: db, notifier: notifier, uploader: uploader, moderator: moderation.Disabled()}
+}
+
+func (h *Handler) UseModerator(service moderation.Service) {
+	if service == nil {
+		service = moderation.Disabled()
+	}
+	h.moderator = service
 }
 
 type Post struct {
@@ -231,6 +240,10 @@ func (h *Handler) CreatePost(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	if err := h.moderator.CheckText(r.Context(), "feed_post", input.Body); err != nil {
+		response.Error(w, http.StatusUnprocessableEntity, moderation.UserMessage(err))
+		return
+	}
 
 	postID, err := h.db.CreatePost(r.Context(), userID, CreatePostInput{
 		Body:   input.Body,
@@ -259,6 +272,10 @@ func (h *Handler) SharePost(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil && !errors.Is(err, io.EOF) {
 		response.Error(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if err := h.moderator.CheckText(r.Context(), "feed_share", input.Commentary); err != nil {
+		response.Error(w, http.StatusUnprocessableEntity, moderation.UserMessage(err))
 		return
 	}
 
@@ -313,6 +330,10 @@ func (h *Handler) UploadPostImage(w http.ResponseWriter, r *http.Request) {
 	key := fmt.Sprintf("posts/%s/%s%s", userID, uuid.New(), imageFile.extension)
 	imageURL, err := h.uploader.Upload(r.Context(), key, imageFile.contentType, bytes.NewReader(imageFile.body))
 	if err != nil {
+		if errors.Is(err, moderation.ErrBlocked) {
+			response.Error(w, http.StatusUnprocessableEntity, moderation.UserMessage(err))
+			return
+		}
 		response.Error(w, http.StatusInternalServerError, "could not upload image")
 		return
 	}
@@ -772,6 +793,10 @@ func (h *Handler) AddFeedItemComment(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, http.StatusInternalServerError, "could not validate mentions")
 		return
 	}
+	if err := h.moderator.CheckText(r.Context(), "feed_comment", input.Body); err != nil {
+		response.Error(w, http.StatusUnprocessableEntity, moderation.UserMessage(err))
+		return
+	}
 
 	comment, err := h.db.AddFeedItemComment(r.Context(), itemID, userID, itemKind, input.Body, resolvedMentions)
 	if err != nil {
@@ -897,6 +922,10 @@ func (h *Handler) AddComment(w http.ResponseWriter, r *http.Request) {
 	resolvedMentions, err := h.resolveCommentMentions(r.Context(), input.Body, input.MentionUserIDs, userID)
 	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "could not validate mentions")
+		return
+	}
+	if err := h.moderator.CheckText(r.Context(), "post_comment", input.Body); err != nil {
+		response.Error(w, http.StatusUnprocessableEntity, moderation.UserMessage(err))
 		return
 	}
 

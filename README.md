@@ -27,6 +27,10 @@ Go REST API for a sober social network and people discovery app.
 - `REDIS_DB` — Redis logical database number (e.g. `0`)
 - `REDIS_TLS` — set to `true` for TLS-enabled Redis endpoints such as secured ElastiCache deployments
 - `REDIS_PREFIX` — Redis key prefix for this app (defaults to `pr`)
+- `MODERATION_ENABLED` — set to `true` to require OpenAI moderation before saving user-generated text/images
+- `OPENAI_API_KEY` — OpenAI API key used when moderation is enabled
+- `OPENAI_MODERATION_MODEL` — moderation model, defaults to `omni-moderation-latest`
+- `OPENAI_MODERATION_TIMEOUT_MS` — moderation request timeout in milliseconds
 - `AWS_REGION` — S3 bucket region
 - `AWS_S3_BUCKET` — bucket name for avatars
 - `AWS_ACCESS_KEY_ID` — AWS credentials
