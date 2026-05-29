@@ -50,8 +50,11 @@ type Querier interface {
 	CountLikes(ctx context.Context, userID uuid.UUID) (int, error)
 	RecordAction(ctx context.Context, actorID, targetID uuid.UUID, action string) (*ActionResult, error)
 	ListMatches(ctx context.Context, userID uuid.UUID, before *string, limit int) ([]DatingMatch, error)
+	CountUnseenMatches(ctx context.Context, userID uuid.UUID) (int, error)
+	MarkMatchesSeen(ctx context.Context, userID uuid.UUID) (time.Time, error)
 	GetMatch(ctx context.Context, userID, matchID uuid.UUID) (*DatingMatch, error)
 	Unmatch(ctx context.Context, userID, matchID uuid.UUID) (*DatingMatch, error)
+	LogEvents(ctx context.Context, userID uuid.UUID, events []DatingEventInput) error
 }
 
 type Notifier interface {
@@ -96,7 +99,7 @@ func (h *Handler) GetProfile(w http.ResponseWriter, r *http.Request) {
 		writeDatingError(w, err)
 		return
 	}
-	response.Success(w, http.StatusOK, profile)
+	response.Success(w, http.StatusOK, publicDatingProfile(*profile))
 }
 
 func (h *Handler) UpdateMyProfile(w http.ResponseWriter, r *http.Request) {
@@ -110,15 +113,23 @@ func (h *Handler) UpdateMyProfile(w http.ResponseWriter, r *http.Request) {
 		RelationshipGoal    *string   `json:"relationship_goal"`
 		InterestedInGenders *[]string `json:"interested_in_genders"`
 		HeightCm            *int      `json:"height_cm"`
+		JobTitle            *string   `json:"job_title"`
+		Company             *string   `json:"company"`
 		Work                *string   `json:"work"`
+		School              *string   `json:"school"`
+		Course              *string   `json:"course"`
 		Education           *string   `json:"education"`
 		KidsStatus          *string   `json:"kids_status"`
 		Interests           *[]string `json:"interests"`
-		AgeMin              *int      `json:"age_min"`
-		AgeMax              *int      `json:"age_max"`
-		DistanceKm          *int      `json:"distance_km"`
-		Paused              *bool     `json:"paused"`
-		Complete            bool      `json:"complete"`
+		PromptAnswers       *[]struct {
+			PromptKey string `json:"prompt_key"`
+			Answer    string `json:"answer"`
+		} `json:"prompt_answers"`
+		AgeMin     *int  `json:"age_min"`
+		AgeMax     *int  `json:"age_max"`
+		DistanceKm *int  `json:"distance_km"`
+		Paused     *bool `json:"paused"`
+		Complete   bool  `json:"complete"`
 	}
 	if err := json.Unmarshal(body, &input); err != nil {
 		response.Error(w, http.StatusBadRequest, "invalid request body")
@@ -132,7 +143,11 @@ func (h *Handler) UpdateMyProfile(w http.ResponseWriter, r *http.Request) {
 	update := UpdateProfileInput{
 		Bio:              trimOptionalString(input.Bio),
 		RelationshipGoal: normalizeRelationshipGoal(input.RelationshipGoal),
+		JobTitle:         trimOptionalString(input.JobTitle),
+		Company:          trimOptionalString(input.Company),
 		Work:             trimOptionalString(input.Work),
+		School:           trimOptionalString(input.School),
+		Course:           trimOptionalString(input.Course),
 		Education:        trimOptionalString(input.Education),
 		KidsStatus:       normalizeKidsStatus(input.KidsStatus),
 		AgeMin:           input.AgeMin,
@@ -140,6 +155,12 @@ func (h *Handler) UpdateMyProfile(w http.ResponseWriter, r *http.Request) {
 		DistanceKm:       input.DistanceKm,
 		Paused:           input.Paused,
 		Complete:         input.Complete,
+	}
+	if update.JobTitle == nil {
+		update.JobTitle = update.Work
+	}
+	if update.Course == nil {
+		update.Course = update.Education
 	}
 	if _, ok := rawFields["height_cm"]; ok {
 		update.HeightCm = input.HeightCm
@@ -162,12 +183,20 @@ func (h *Handler) UpdateMyProfile(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, http.StatusBadRequest, "height_cm must be between 90 and 230")
 		return
 	}
-	if update.Work != nil && len([]rune(*update.Work)) > 80 {
-		response.Error(w, http.StatusBadRequest, "work must be 80 characters or fewer")
+	if update.JobTitle != nil && len([]rune(*update.JobTitle)) > 80 {
+		response.Error(w, http.StatusBadRequest, "job_title must be 80 characters or fewer")
 		return
 	}
-	if update.Education != nil && len([]rune(*update.Education)) > 80 {
-		response.Error(w, http.StatusBadRequest, "education must be 80 characters or fewer")
+	if update.Company != nil && len([]rune(*update.Company)) > 80 {
+		response.Error(w, http.StatusBadRequest, "company must be 80 characters or fewer")
+		return
+	}
+	if update.School != nil && len([]rune(*update.School)) > 80 {
+		response.Error(w, http.StatusBadRequest, "school must be 80 characters or fewer")
+		return
+	}
+	if update.Course != nil && len([]rune(*update.Course)) > 80 {
+		response.Error(w, http.StatusBadRequest, "course must be 80 characters or fewer")
 		return
 	}
 	if update.KidsStatus != nil && !validKidsStatus(*update.KidsStatus) {
@@ -187,6 +216,15 @@ func (h *Handler) UpdateMyProfile(w http.ResponseWriter, r *http.Request) {
 		}
 		update.Interests = interests
 		update.ReplaceInterests = true
+	}
+	if input.PromptAnswers != nil {
+		promptAnswers, ok := normalizeDatingPromptAnswers(*input.PromptAnswers)
+		if !ok {
+			response.Error(w, http.StatusBadRequest, "prompt_answers contains an invalid prompt or answer")
+			return
+		}
+		update.PromptAnswers = promptAnswers
+		update.ReplacePromptAnswers = true
 	}
 	if input.AgeMin != nil && (*input.AgeMin < 18 || *input.AgeMin > 100) {
 		response.Error(w, http.StatusBadRequest, "age_min must be between 18 and 100")
@@ -309,8 +347,8 @@ func (h *Handler) Discover(w http.ResponseWriter, r *http.Request) {
 		nextCursor = &next
 	}
 
-	response.Success(w, http.StatusOK, pagination.CursorResponse[DatingProfile]{
-		Items:      profiles,
+	response.Success(w, http.StatusOK, pagination.CursorResponse[PublicDatingProfile]{
+		Items:      publicDatingProfiles(profiles),
 		Limit:      limit,
 		HasMore:    hasMore,
 		NextCursor: nextCursor,
@@ -366,8 +404,8 @@ func (h *Handler) ListLikes(w http.ResponseWriter, r *http.Request) {
 		nextCursor = &value
 	}
 
-	response.Success(w, http.StatusOK, pagination.CursorResponse[DatingProfile]{
-		Items:      profiles,
+	response.Success(w, http.StatusOK, pagination.CursorResponse[PublicDatingProfile]{
+		Items:      publicDatingProfiles(profiles),
 		Limit:      params.Limit,
 		HasMore:    hasMore,
 		NextCursor: nextCursor,
@@ -427,7 +465,7 @@ func (h *Handler) RecordAction(w http.ResponseWriter, r *http.Request) {
 	if action == ActionLike || action == ActionPass {
 		status = http.StatusCreated
 	}
-	response.Success(w, status, result)
+	response.Success(w, status, actionResultResponse(result))
 }
 
 func (h *Handler) ListMatches(w http.ResponseWriter, r *http.Request) {
@@ -444,10 +482,35 @@ func (h *Handler) ListMatches(w http.ResponseWriter, r *http.Request) {
 		writeDatingError(w, err)
 		return
 	}
+	unseenCount, err := h.db.CountUnseenMatches(r.Context(), userID)
+	if err != nil {
+		writeDatingError(w, err)
+		return
+	}
 
-	response.Success(w, http.StatusOK, pagination.CursorSlice(matches, params.Limit, func(match DatingMatch) time.Time {
+	page := pagination.CursorSlice(datingMatchResponses(matches), params.Limit, func(match DatingMatchResponse) time.Time {
 		return match.MatchedAt
-	}))
+	})
+	response.Success(w, http.StatusOK, DatingMatchesPage{
+		Items:       page.Items,
+		Limit:       page.Limit,
+		HasMore:     page.HasMore,
+		NextCursor:  page.NextCursor,
+		UnseenCount: unseenCount,
+	})
+}
+
+func (h *Handler) MarkMatchesSeen(w http.ResponseWriter, r *http.Request) {
+	userID := middleware.CurrentUserID(r)
+	seenAt, err := h.db.MarkMatchesSeen(r.Context(), userID)
+	if err != nil {
+		writeDatingError(w, err)
+		return
+	}
+	response.Success(w, http.StatusOK, DatingMatchesSeenResponse{
+		SeenAt:      seenAt,
+		UnseenCount: 0,
+	})
 }
 
 func (h *Handler) GetMatch(w http.ResponseWriter, r *http.Request) {
@@ -463,7 +526,7 @@ func (h *Handler) GetMatch(w http.ResponseWriter, r *http.Request) {
 		writeDatingError(w, err)
 		return
 	}
-	response.Success(w, http.StatusOK, match)
+	response.Success(w, http.StatusOK, datingMatchResponse(*match))
 }
 
 func (h *Handler) Unmatch(w http.ResponseWriter, r *http.Request) {
@@ -479,7 +542,97 @@ func (h *Handler) Unmatch(w http.ResponseWriter, r *http.Request) {
 		writeDatingError(w, err)
 		return
 	}
-	response.Success(w, http.StatusOK, match)
+	response.Success(w, http.StatusOK, datingMatchResponse(*match))
+}
+
+func (h *Handler) LogEvents(w http.ResponseWriter, r *http.Request) {
+	userID := middleware.CurrentUserID(r)
+
+	var input struct {
+		Events []DatingEventInput `json:"events"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		response.Error(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if len(input.Events) > 25 {
+		response.Error(w, http.StatusBadRequest, "events can contain at most 25 items")
+		return
+	}
+	if err := h.db.LogEvents(r.Context(), userID, input.Events); err != nil {
+		if errors.Is(err, ErrInvalidDatingEvent) {
+			response.Error(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		response.Error(w, http.StatusInternalServerError, "could not log dating events")
+		return
+	}
+	response.Success(w, http.StatusOK, map[string]any{"logged": len(input.Events)})
+}
+
+func publicDatingProfile(profile DatingProfile) PublicDatingProfile {
+	return PublicDatingProfile{
+		ID:               profile.ID,
+		UserID:           profile.UserID,
+		Username:         profile.Username,
+		Age:              profile.Age,
+		City:             profile.City,
+		Country:          profile.Country,
+		Bio:              profile.Bio,
+		RelationshipGoal: profile.RelationshipGoal,
+		HeightCm:         profile.HeightCm,
+		JobTitle:         profile.JobTitle,
+		Company:          profile.Company,
+		Work:             profile.Work,
+		School:           profile.School,
+		Course:           profile.Course,
+		Education:        profile.Education,
+		KidsStatus:       profile.KidsStatus,
+		Interests:        profile.Interests,
+		Photos:           profile.Photos,
+		PromptAnswers:    profile.PromptAnswers,
+		CreatedAt:        profile.CreatedAt,
+		UpdatedAt:        profile.UpdatedAt,
+	}
+}
+
+func publicDatingProfiles(profiles []DatingProfile) []PublicDatingProfile {
+	items := make([]PublicDatingProfile, 0, len(profiles))
+	for _, profile := range profiles {
+		items = append(items, publicDatingProfile(profile))
+	}
+	return items
+}
+
+func datingMatchResponse(match DatingMatch) DatingMatchResponse {
+	return DatingMatchResponse{
+		ID:          match.ID,
+		Profile:     publicDatingProfile(match.Profile),
+		ChatID:      match.ChatID,
+		Status:      match.Status,
+		MatchedAt:   match.MatchedAt,
+		UnmatchedAt: match.UnmatchedAt,
+	}
+}
+
+func datingMatchResponses(matches []DatingMatch) []DatingMatchResponse {
+	items := make([]DatingMatchResponse, 0, len(matches))
+	for _, match := range matches {
+		items = append(items, datingMatchResponse(match))
+	}
+	return items
+}
+
+func actionResultResponse(result *ActionResult) ActionResultResponse {
+	response := ActionResultResponse{
+		Action:  result.Action,
+		Matched: result.Matched,
+	}
+	if result.Match != nil {
+		match := datingMatchResponse(*result.Match)
+		response.Match = &match
+	}
+	return response
 }
 
 func writeDatingError(w http.ResponseWriter, err error) {
@@ -496,7 +649,10 @@ func writeDatingError(w http.ResponseWriter, err error) {
 		response.Error(w, http.StatusForbidden, "dating action is not allowed")
 	case errors.Is(err, ErrConflict):
 		response.Error(w, http.StatusConflict, "dating action already recorded")
+	case errors.Is(err, ErrPlusRequired):
+		response.Error(w, http.StatusPaymentRequired, "SoberSpace Plus is required for this Dating feature")
 	default:
+		log.Printf("dating request failed: %v", err)
 		response.Error(w, http.StatusInternalServerError, "dating request failed")
 	}
 }
@@ -588,6 +744,68 @@ func normalizeKidsStatus(value *string) *string {
 func validKidsStatus(value string) bool {
 	switch value {
 	case "", "have_kids", "dont_have_kids", "prefer_not_to_say":
+		return true
+	default:
+		return false
+	}
+}
+
+func normalizeDatingPromptAnswers(values []struct {
+	PromptKey string `json:"prompt_key"`
+	Answer    string `json:"answer"`
+}) ([]DatingPromptAnswerInput, bool) {
+	if len(values) > 3 {
+		return nil, false
+	}
+	seen := make(map[string]struct{}, len(values))
+	answers := make([]DatingPromptAnswerInput, 0, len(values))
+	for _, value := range values {
+		promptKey := strings.TrimSpace(strings.ToLower(value.PromptKey))
+		answer := strings.TrimSpace(value.Answer)
+		if !validDatingPromptKey(promptKey) || len([]rune(answer)) == 0 || len([]rune(answer)) > 220 {
+			return nil, false
+		}
+		if _, exists := seen[promptKey]; exists {
+			return nil, false
+		}
+		seen[promptKey] = struct{}{}
+		answers = append(answers, DatingPromptAnswerInput{PromptKey: promptKey, Answer: answer})
+	}
+	return answers, true
+}
+
+func validDatingPromptKey(value string) bool {
+	switch value {
+	case "small_thing_about_me",
+		"friends_describe_me",
+		"proud_of",
+		"happiest_when",
+		"simple_pleasure",
+		"recovery_lifestyle",
+		"best_part_sobriety",
+		"ideal_sober_date",
+		"sober_win",
+		"how_i_reset",
+		"looking_for",
+		"green_flag",
+		"great_first_date",
+		"chemistry_when",
+		"dating_intention",
+		"make_time_for",
+		"value_i_live_by",
+		"matters_most",
+		"feel_connected_when",
+		"relationship_works_when",
+		"perfect_sunday",
+		"usually_find_me",
+		"sober_weekend",
+		"recharge",
+		"next_adventure",
+		"ask_me_about",
+		"teach_me_about",
+		"lets_debate",
+		"make_me_laugh",
+		"voice_note_includes":
 		return true
 	default:
 		return false

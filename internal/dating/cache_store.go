@@ -157,6 +157,14 @@ func (s *cachedStore) ListMatches(ctx context.Context, userID uuid.UUID, before 
 	return s.inner.ListMatches(ctx, userID, before, limit)
 }
 
+func (s *cachedStore) CountUnseenMatches(ctx context.Context, userID uuid.UUID) (int, error) {
+	return s.inner.CountUnseenMatches(ctx, userID)
+}
+
+func (s *cachedStore) MarkMatchesSeen(ctx context.Context, userID uuid.UUID) (time.Time, error) {
+	return s.inner.MarkMatchesSeen(ctx, userID)
+}
+
 func (s *cachedStore) GetMatch(ctx context.Context, userID, matchID uuid.UUID) (*DatingMatch, error) {
 	return s.inner.GetMatch(ctx, userID, matchID)
 }
@@ -168,6 +176,10 @@ func (s *cachedStore) Unmatch(ctx context.Context, userID, matchID uuid.UUID) (*
 	}
 	_ = s.cache.BumpVersions(ctx, s.viewerVersionKey(userID), s.globalVersionKey())
 	return match, nil
+}
+
+func (s *cachedStore) LogEvents(ctx context.Context, userID uuid.UUID, events []DatingEventInput) error {
+	return s.inner.LogEvents(ctx, userID, events)
 }
 
 func (s *cachedStore) viewerVersionKey(userID uuid.UUID) string {

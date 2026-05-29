@@ -50,8 +50,11 @@ type mockQuerier struct {
 	countLikes    func(ctx context.Context, userID uuid.UUID) (int, error)
 	recordAction  func(ctx context.Context, actorID, targetID uuid.UUID, action string) (*ActionResult, error)
 	listMatches   func(ctx context.Context, userID uuid.UUID, before *string, limit int) ([]DatingMatch, error)
+	countUnseen   func(ctx context.Context, userID uuid.UUID) (int, error)
+	markSeen      func(ctx context.Context, userID uuid.UUID) (time.Time, error)
 	getMatch      func(ctx context.Context, userID, matchID uuid.UUID) (*DatingMatch, error)
 	unmatch       func(ctx context.Context, userID, matchID uuid.UUID) (*DatingMatch, error)
+	logEvents     func(ctx context.Context, userID uuid.UUID, events []DatingEventInput) error
 }
 
 func (m *mockQuerier) GetMyProfile(ctx context.Context, userID uuid.UUID) (*DatingProfile, error) {
@@ -151,6 +154,20 @@ func (m *mockQuerier) ListMatches(ctx context.Context, userID uuid.UUID, before 
 	return []DatingMatch{}, nil
 }
 
+func (m *mockQuerier) CountUnseenMatches(ctx context.Context, userID uuid.UUID) (int, error) {
+	if m.countUnseen != nil {
+		return m.countUnseen(ctx, userID)
+	}
+	return 0, nil
+}
+
+func (m *mockQuerier) MarkMatchesSeen(ctx context.Context, userID uuid.UUID) (time.Time, error) {
+	if m.markSeen != nil {
+		return m.markSeen(ctx, userID)
+	}
+	return time.Now().UTC(), nil
+}
+
 func (m *mockQuerier) GetMatch(ctx context.Context, userID, matchID uuid.UUID) (*DatingMatch, error) {
 	if m.getMatch != nil {
 		return m.getMatch(ctx, userID, matchID)
@@ -164,6 +181,13 @@ func (m *mockQuerier) Unmatch(ctx context.Context, userID, matchID uuid.UUID) (*
 	}
 	now := time.Now().UTC()
 	return &DatingMatch{ID: matchID, Status: "unmatched", MatchedAt: now, UnmatchedAt: &now}, nil
+}
+
+func (m *mockQuerier) LogEvents(ctx context.Context, userID uuid.UUID, events []DatingEventInput) error {
+	if m.logEvents != nil {
+		return m.logEvents(ctx, userID, events)
+	}
+	return nil
 }
 
 type mockNotifier struct {
@@ -253,6 +277,37 @@ func TestDiscoverReturnsOpaqueRankedCursor(t *testing.T) {
 	}
 }
 
+func TestDiscoverUsesPublicProfilePayload(t *testing.T) {
+	h := NewHandler(&mockQuerier{
+		discover: func(_ context.Context, _ DiscoverParams) ([]DatingProfile, error) {
+			profile := testDatingProfile(fixedOther, "casey", time.Now().UTC())
+			profile.InterestedInGenders = []string{"woman"}
+			profile.AgeMin = 30
+			profile.AgeMax = 45
+			profile.DistanceKm = 25
+			return []DatingProfile{profile}, nil
+		},
+	}, nil)
+
+	req := withUserID(httptest.NewRequest(http.MethodGet, "/dating/discover", nil), fixedUser)
+	rec := httptest.NewRecorder()
+
+	h.Discover(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for _, privateField := range []string{"interested_in_genders", "age_min", "age_max", "distance_km", "paused", "completed_at"} {
+		if strings.Contains(body, privateField) {
+			t.Fatalf("public discover response leaked %s: %s", privateField, body)
+		}
+	}
+	if !strings.Contains(body, `"username":"casey"`) {
+		t.Fatalf("response missing public profile data: %s", body)
+	}
+}
+
 func TestDiscoverRequiresCoordsWithDistance(t *testing.T) {
 	h := NewHandler(&mockQuerier{}, nil)
 	req := withUserID(httptest.NewRequest(http.MethodGet, "/dating/discover?distance_km=50", nil), fixedUser)
@@ -278,7 +333,11 @@ func TestUpdateMyProfileAcceptsDatingDetails(t *testing.T) {
 			got = input
 			profile := testDatingProfile(userID, "self", time.Now().UTC())
 			profile.HeightCm = input.HeightCm
+			profile.JobTitle = input.JobTitle
+			profile.Company = input.Company
 			profile.Work = input.Work
+			profile.School = input.School
+			profile.Course = input.Course
 			profile.Education = input.Education
 			if input.KidsStatus != nil {
 				profile.KidsStatus = *input.KidsStatus
@@ -290,8 +349,10 @@ func TestUpdateMyProfileAcceptsDatingDetails(t *testing.T) {
 
 	req := withUserID(httptest.NewRequest(http.MethodPatch, "/dating/profile", strings.NewReader(`{
 		"height_cm": 178,
-		"work": "Designer",
-		"education": "BA Psychology",
+		"job_title": "Designer",
+		"company": "Studio Co",
+		"school": "Trinity",
+		"course": "BA Psychology",
 		"kids_status": "dont_have_kids",
 		"interests": ["Hiking", "Coffee"]
 	}`)), fixedUser)
@@ -305,8 +366,11 @@ func TestUpdateMyProfileAcceptsDatingDetails(t *testing.T) {
 	if got.HeightCm == nil || *got.HeightCm != 178 || !got.ReplaceHeight {
 		t.Fatalf("height = %v replace %v", got.HeightCm, got.ReplaceHeight)
 	}
-	if got.Work == nil || *got.Work != "Designer" || got.Education == nil || *got.Education != "BA Psychology" {
-		t.Fatalf("work/education = %v %v", got.Work, got.Education)
+	if got.JobTitle == nil || *got.JobTitle != "Designer" || got.Company == nil || *got.Company != "Studio Co" {
+		t.Fatalf("job/company = %v %v", got.JobTitle, got.Company)
+	}
+	if got.School == nil || *got.School != "Trinity" || got.Course == nil || *got.Course != "BA Psychology" {
+		t.Fatalf("school/course = %v %v", got.School, got.Course)
 	}
 	if got.KidsStatus == nil || *got.KidsStatus != "dont_have_kids" {
 		t.Fatalf("kids status = %v", got.KidsStatus)
@@ -432,6 +496,78 @@ func TestRecordActionRejectsInvalidAction(t *testing.T) {
 	}
 }
 
+func TestListMatchesIncludesUnseenCount(t *testing.T) {
+	matchedAt := time.Date(2026, 5, 29, 14, 0, 0, 0, time.UTC)
+	var gotLimit int
+	h := NewHandler(&mockQuerier{
+		listMatches: func(_ context.Context, userID uuid.UUID, before *string, limit int) ([]DatingMatch, error) {
+			if userID != fixedUser {
+				t.Fatalf("userID = %s, want %s", userID, fixedUser)
+			}
+			gotLimit = limit
+			return []DatingMatch{
+				{ID: fixedMatch, Profile: testDatingProfile(fixedOther, "casey", matchedAt), Status: "active", MatchedAt: matchedAt},
+			}, nil
+		},
+		countUnseen: func(_ context.Context, userID uuid.UUID) (int, error) {
+			if userID != fixedUser {
+				t.Fatalf("count userID = %s, want %s", userID, fixedUser)
+			}
+			return 3, nil
+		},
+	}, nil)
+
+	req := withUserID(httptest.NewRequest(http.MethodGet, "/dating/matches?limit=1", nil), fixedUser)
+	rec := httptest.NewRecorder()
+
+	h.ListMatches(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body %s", rec.Code, rec.Body.String())
+	}
+	if gotLimit != 2 {
+		t.Fatalf("limit = %d, want 2", gotLimit)
+	}
+	var body struct {
+		Data struct {
+			Items       []DatingMatchResponse `json:"items"`
+			UnseenCount int                   `json:"unseen_count"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body.Data.UnseenCount != 3 || len(body.Data.Items) != 1 || body.Data.Items[0].ID != fixedMatch {
+		t.Fatalf("body = %+v", body.Data)
+	}
+}
+
+func TestMarkMatchesSeenUsesCurrentUser(t *testing.T) {
+	seenAt := time.Date(2026, 5, 29, 15, 0, 0, 0, time.UTC)
+	var gotUserID uuid.UUID
+	h := NewHandler(&mockQuerier{
+		markSeen: func(_ context.Context, userID uuid.UUID) (time.Time, error) {
+			gotUserID = userID
+			return seenAt, nil
+		},
+	}, nil)
+
+	req := withUserID(httptest.NewRequest(http.MethodPost, "/dating/matches/seen", nil), fixedUser)
+	rec := httptest.NewRecorder()
+
+	h.MarkMatchesSeen(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body %s", rec.Code, rec.Body.String())
+	}
+	if gotUserID != fixedUser {
+		t.Fatalf("userID = %s, want %s", gotUserID, fixedUser)
+	}
+	if !strings.Contains(rec.Body.String(), `"unseen_count":0`) {
+		t.Fatalf("body = %s", rec.Body.String())
+	}
+}
+
 func TestUnmatchUsesRouteMatchID(t *testing.T) {
 	var gotUserID uuid.UUID
 	var gotMatchID uuid.UUID
@@ -454,5 +590,29 @@ func TestUnmatchUsesRouteMatchID(t *testing.T) {
 	}
 	if gotUserID != fixedUser || gotMatchID != fixedMatch {
 		t.Fatalf("unmatch args = %s %s", gotUserID, gotMatchID)
+	}
+}
+
+func TestLogEventsValidatesAndForwardsEvents(t *testing.T) {
+	var gotUserID uuid.UUID
+	var gotEvents []DatingEventInput
+	h := NewHandler(&mockQuerier{
+		logEvents: func(_ context.Context, userID uuid.UUID, events []DatingEventInput) error {
+			gotUserID = userID
+			gotEvents = events
+			return nil
+		},
+	}, nil)
+
+	req := withUserID(httptest.NewRequest(http.MethodPost, "/dating/events", strings.NewReader(`{"events":[{"profile_id":"`+fixedOther.String()+`","event_type":"profile_opened","payload":{"surface":"discover"}}]}`)), fixedUser)
+	rec := httptest.NewRecorder()
+
+	h.LogEvents(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body %s", rec.Code, rec.Body.String())
+	}
+	if gotUserID != fixedUser || len(gotEvents) != 1 || gotEvents[0].EventType != DatingEventProfileOpened {
+		t.Fatalf("events = user %s %+v", gotUserID, gotEvents)
 	}
 }

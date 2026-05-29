@@ -1222,7 +1222,11 @@ CREATE TABLE IF NOT EXISTS dating_profiles (
     relationship_goal TEXT NOT NULL DEFAULT '',
     interested_in_genders TEXT[] NOT NULL DEFAULT '{}'::TEXT[],
     height_cm INT,
+    job_title TEXT,
+    company TEXT,
     work TEXT,
+    school TEXT,
+    course TEXT,
     education TEXT,
     kids_status TEXT NOT NULL DEFAULT '',
     age_min INT NOT NULL DEFAULT 18,
@@ -1242,11 +1246,23 @@ CREATE TABLE IF NOT EXISTS dating_profiles (
     CONSTRAINT dating_profiles_height_cm_chk CHECK (
         height_cm IS NULL OR height_cm BETWEEN 90 AND 230
     ),
+    CONSTRAINT dating_profiles_job_title_length_chk CHECK (
+        char_length(COALESCE(job_title, '')) <= 80
+    ),
+    CONSTRAINT dating_profiles_company_length_chk CHECK (
+        char_length(COALESCE(company, '')) <= 80
+    ),
     CONSTRAINT dating_profiles_work_length_chk CHECK (
-        char_length(COALESCE(work, '')) <= 80
+        char_length(COALESCE(work, '')) <= 170
+    ),
+    CONSTRAINT dating_profiles_school_length_chk CHECK (
+        char_length(COALESCE(school, '')) <= 80
+    ),
+    CONSTRAINT dating_profiles_course_length_chk CHECK (
+        char_length(COALESCE(course, '')) <= 80
     ),
     CONSTRAINT dating_profiles_education_length_chk CHECK (
-        char_length(COALESCE(education, '')) <= 80
+        char_length(COALESCE(education, '')) <= 170
     ),
     CONSTRAINT dating_profiles_kids_status_chk CHECK (
         kids_status IN ('', 'have_kids', 'dont_have_kids', 'prefer_not_to_say')
@@ -1269,7 +1285,7 @@ CREATE TABLE IF NOT EXISTS dating_profile_photos (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     CONSTRAINT dating_profile_photos_dimensions_chk CHECK (width > 0 AND height > 0),
     CONSTRAINT dating_profile_photos_position_chk CHECK (position BETWEEN 0 AND 5),
-    UNIQUE (profile_id, position)
+    CONSTRAINT dating_profile_photos_profile_id_position_key UNIQUE (profile_id, position) DEFERRABLE INITIALLY IMMEDIATE
 );
 
 CREATE INDEX IF NOT EXISTS idx_dating_profiles_completed_active
@@ -1287,6 +1303,58 @@ CREATE TABLE IF NOT EXISTS dating_profile_interests (
 
 CREATE INDEX IF NOT EXISTS idx_dating_profile_interests_interest_id
     ON dating_profile_interests(interest_id);
+
+CREATE TABLE IF NOT EXISTS dating_profile_prompt_answers (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    profile_id UUID NOT NULL REFERENCES dating_profiles(id) ON DELETE CASCADE,
+    prompt_key TEXT NOT NULL,
+    answer TEXT NOT NULL,
+    position INT NOT NULL DEFAULT 0,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE(profile_id, prompt_key),
+    CONSTRAINT dating_profile_prompt_key_chk CHECK (
+        prompt_key IN (
+            'small_thing_about_me',
+            'friends_describe_me',
+            'proud_of',
+            'happiest_when',
+            'simple_pleasure',
+            'recovery_lifestyle',
+            'best_part_sobriety',
+            'ideal_sober_date',
+            'sober_win',
+            'how_i_reset',
+            'looking_for',
+            'green_flag',
+            'great_first_date',
+            'chemistry_when',
+            'dating_intention',
+            'make_time_for',
+            'value_i_live_by',
+            'matters_most',
+            'feel_connected_when',
+            'relationship_works_when',
+            'perfect_sunday',
+            'usually_find_me',
+            'sober_weekend',
+            'recharge',
+            'next_adventure',
+            'ask_me_about',
+            'teach_me_about',
+            'lets_debate',
+            'make_me_laugh',
+            'voice_note_includes'
+        )
+    ),
+    CONSTRAINT dating_profile_prompt_answer_length_chk CHECK (
+        length(trim(answer)) BETWEEN 1 AND 220
+    ),
+    CONSTRAINT dating_profile_prompt_position_chk CHECK (position BETWEEN 0 AND 3)
+);
+
+CREATE INDEX IF NOT EXISTS idx_dating_profile_prompt_answers_profile_position
+    ON dating_profile_prompt_answers(profile_id, position);
 
 CREATE TABLE IF NOT EXISTS dating_actions (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -1310,6 +1378,9 @@ CREATE INDEX IF NOT EXISTS idx_dating_actions_target_like
 CREATE INDEX IF NOT EXISTS idx_dating_actions_target_like_updated
     ON dating_actions(target_id, action, updated_at DESC, id DESC)
     WHERE action = 'like';
+
+CREATE INDEX IF NOT EXISTS idx_dating_actions_target_action_updated
+    ON dating_actions(target_id, action, updated_at DESC);
 
 CREATE TABLE IF NOT EXISTS dating_matches (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -1339,6 +1410,12 @@ CREATE INDEX IF NOT EXISTS idx_dating_matches_user_b_status
 CREATE INDEX IF NOT EXISTS idx_dating_matches_chat_id
     ON dating_matches(chat_id);
 
+CREATE TABLE IF NOT EXISTS dating_match_views (
+    user_id UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 CREATE INDEX IF NOT EXISTS idx_users_dating_geo_active
     ON users(discover_lat, discover_lng, last_active_at DESC)
     WHERE connection_intents @> ARRAY['dating']::text[];
@@ -1350,6 +1427,51 @@ CREATE INDEX IF NOT EXISTS idx_users_dating_last_active
 CREATE INDEX IF NOT EXISTS idx_users_dating_created_at
     ON users(created_at DESC, id DESC)
     WHERE connection_intents @> ARRAY['dating']::text[];
+
+CREATE INDEX IF NOT EXISTS idx_dating_profiles_user_completed_paused
+    ON dating_profiles(user_id, completed_at, paused);
+
+CREATE TABLE IF NOT EXISTS dating_events (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    profile_id UUID REFERENCES dating_profiles(id) ON DELETE SET NULL,
+    match_id UUID REFERENCES dating_matches(id) ON DELETE SET NULL,
+    event_type TEXT NOT NULL,
+    position INT,
+    event_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    payload JSONB NOT NULL DEFAULT '{}'::JSONB,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT dating_events_event_type_chk CHECK (
+        event_type IN (
+            'setup_started',
+            'setup_completed',
+            'profile_opened',
+            'like',
+            'pass',
+            'match_created',
+            'chat_opened',
+            'first_message_sent',
+            'report',
+            'block',
+            'unmatch',
+            'likes_you_gate_viewed'
+        )
+    )
+);
+
+CREATE INDEX IF NOT EXISTS idx_dating_events_user_event_at
+    ON dating_events(user_id, event_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_dating_events_profile_event_at
+    ON dating_events(profile_id, event_at DESC)
+    WHERE profile_id IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_dating_events_match_event_at
+    ON dating_events(match_id, event_at DESC)
+    WHERE match_id IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_dating_events_type_event_at
+    ON dating_events(event_type, event_at DESC);
 
 CREATE TABLE IF NOT EXISTS comment_mentions (
     comment_id UUID NOT NULL REFERENCES comments(id) ON DELETE CASCADE,

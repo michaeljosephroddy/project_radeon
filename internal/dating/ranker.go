@@ -107,6 +107,18 @@ func mergeDatingCandidateFeatures(existing, incoming datingCandidate) datingCand
 	if incoming.IncomingLike {
 		existing.IncomingLike = true
 	}
+	if existing.DistanceKm == nil || (incoming.DistanceKm != nil && *incoming.DistanceKm < *existing.DistanceKm) {
+		existing.DistanceKm = incoming.DistanceKm
+	}
+	if incoming.SharedInterestCount > existing.SharedInterestCount {
+		existing.SharedInterestCount = incoming.SharedInterestCount
+	}
+	if existing.LastActiveAt == nil || (incoming.LastActiveAt != nil && incoming.LastActiveAt.After(*existing.LastActiveAt)) {
+		existing.LastActiveAt = incoming.LastActiveAt
+	}
+	if incoming.ProfileCompleteness > existing.ProfileCompleteness {
+		existing.ProfileCompleteness = incoming.ProfileCompleteness
+	}
 	if existing.Source == "" {
 		existing.Source = incoming.Source
 	} else if incoming.Source != "" && !strings.Contains(existing.Source, incoming.Source) {

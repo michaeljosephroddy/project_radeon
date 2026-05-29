@@ -77,6 +77,9 @@ func loadDatingProfileByUser(ctx context.Context, q querier, userID uuid.UUID) (
 	if err := attachDatingProfilePhotos(ctx, q, profiles); err != nil {
 		return nil, err
 	}
+	if err := attachDatingProfilePromptAnswers(ctx, q, profiles); err != nil {
+		return nil, err
+	}
 	return &profiles[0], nil
 }
 
@@ -112,6 +115,9 @@ func loadDatingProfileByID(ctx context.Context, q querier, profileID uuid.UUID) 
 		return nil, pgx.ErrNoRows
 	}
 	if err := attachDatingProfilePhotos(ctx, q, profiles); err != nil {
+		return nil, err
+	}
+	if err := attachDatingProfilePromptAnswers(ctx, q, profiles); err != nil {
 		return nil, err
 	}
 	return &profiles[0], nil
@@ -188,7 +194,8 @@ func (s *pgStore) UpdateMyProfile(ctx context.Context, userID uuid.UUID, input U
 	defer tx.Rollback(ctx)
 
 	var profileID uuid.UUID
-	if err := tx.QueryRow(ctx, `SELECT id FROM dating_profiles WHERE user_id = $1`, userID).Scan(&profileID); err != nil {
+	var wasComplete bool
+	if err := tx.QueryRow(ctx, `SELECT id, completed_at IS NOT NULL FROM dating_profiles WHERE user_id = $1`, userID).Scan(&profileID, &wasComplete); err != nil {
 		return nil, err
 	}
 
@@ -202,9 +209,27 @@ func (s *pgStore) UpdateMyProfile(ctx context.Context, userID uuid.UUID, input U
 			distance_km = COALESCE($8::int, distance_km),
 			paused = COALESCE($9::bool, paused),
 			height_cm = CASE WHEN NOT $10 THEN height_cm ELSE $11::int END,
-			work = CASE WHEN $12::text IS NULL THEN work ELSE NULLIF($12::text, '') END,
-			education = CASE WHEN $13::text IS NULL THEN education ELSE NULLIF($13::text, '') END,
-			kids_status = CASE WHEN $14::text IS NULL THEN kids_status ELSE $14::text END,
+			job_title = CASE WHEN $12::text IS NULL THEN job_title ELSE NULLIF($12::text, '') END,
+			company = CASE WHEN $13::text IS NULL THEN company ELSE NULLIF($13::text, '') END,
+			work = CASE
+				WHEN $12::text IS NULL AND $13::text IS NULL THEN work
+				ELSE NULLIF(concat_ws(
+					' @ ',
+					NULLIF(COALESCE($12::text, job_title), ''),
+					NULLIF(COALESCE($13::text, company), '')
+				), '')
+			END,
+			school = CASE WHEN $14::text IS NULL THEN school ELSE NULLIF($14::text, '') END,
+			course = CASE WHEN $15::text IS NULL THEN course ELSE NULLIF($15::text, '') END,
+			education = CASE
+				WHEN $14::text IS NULL AND $15::text IS NULL THEN education
+				ELSE NULLIF(concat_ws(
+					' @ ',
+					NULLIF(COALESCE($15::text, course), ''),
+					NULLIF(COALESCE($14::text, school), '')
+				), '')
+			END,
+			kids_status = CASE WHEN $16::text IS NULL THEN kids_status ELSE $16::text END,
 			updated_at = NOW()
 		WHERE user_id = $1`,
 		userID,
@@ -218,8 +243,10 @@ func (s *pgStore) UpdateMyProfile(ctx context.Context, userID uuid.UUID, input U
 		input.Paused,
 		input.ReplaceHeight,
 		input.HeightCm,
-		input.Work,
-		input.Education,
+		input.JobTitle,
+		input.Company,
+		input.School,
+		input.Course,
 		input.KidsStatus,
 	)
 	if err != nil {
@@ -241,9 +268,26 @@ func (s *pgStore) UpdateMyProfile(ctx context.Context, userID uuid.UUID, input U
 			}
 		}
 	}
+	if input.ReplacePromptAnswers {
+		if _, err := tx.Exec(ctx, `DELETE FROM dating_profile_prompt_answers WHERE profile_id = $1`, profileID); err != nil {
+			return nil, err
+		}
+		for index, answer := range input.PromptAnswers {
+			if _, err := tx.Exec(ctx,
+				`INSERT INTO dating_profile_prompt_answers (profile_id, prompt_key, answer, position)
+				VALUES ($1, $2, $3, $4)`,
+				profileID, answer.PromptKey, answer.Answer, index,
+			); err != nil {
+				return nil, err
+			}
+		}
+	}
 	complete, err := datingProfileIsComplete(ctx, tx, userID)
 	if err != nil {
 		return nil, err
+	}
+	if !complete && (input.Complete || wasComplete) {
+		return nil, ErrProfileIncomplete
 	}
 	if !complete {
 		if _, err := tx.Exec(ctx, `UPDATE dating_profiles SET completed_at = NULL, updated_at = NOW() WHERE user_id = $1`, userID); err != nil {
@@ -251,9 +295,6 @@ func (s *pgStore) UpdateMyProfile(ctx context.Context, userID uuid.UUID, input U
 		}
 	}
 	if input.Complete {
-		if !complete {
-			return nil, ErrProfileIncomplete
-		}
 		if _, err := tx.Exec(ctx, `UPDATE dating_profiles SET completed_at = COALESCE(completed_at, NOW()), updated_at = NOW() WHERE user_id = $1`, userID); err != nil {
 			return nil, err
 		}
@@ -342,6 +383,9 @@ func (s *pgStore) ReorderPhotos(ctx context.Context, userID uuid.UUID, photoIDs 
 		return nil, err
 	}
 	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `SET CONSTRAINTS dating_profile_photos_profile_id_position_key DEFERRED`); err != nil {
+		return nil, err
+	}
 
 	profile, err := loadDatingProfileByUser(ctx, tx, userID)
 	if err != nil {
@@ -444,10 +488,13 @@ func (s *pgStore) loadDatingViewerFeatures(ctx context.Context, userID uuid.UUID
 	viewer := datingViewerFeatures{UserID: userID}
 	err := s.pool.QueryRow(ctx,
 		`SELECT sobriety_band
-		FROM users
-		WHERE id = $1
-			AND deleted_at IS NULL
-			AND connection_intents @> ARRAY['dating']::text[]`,
+		FROM users u
+		JOIN dating_profiles dp ON dp.user_id = u.id
+		WHERE u.id = $1
+			AND u.deleted_at IS NULL
+			AND u.connection_intents @> ARRAY['dating']::text[]
+			AND dp.completed_at IS NOT NULL
+			AND dp.paused = FALSE`,
 		userID,
 	).Scan(&viewer.SobrietyBand)
 	return viewer, err
@@ -604,6 +651,12 @@ func (s *pgStore) CountDiscover(ctx context.Context, params DiscoverParams) (int
 }
 
 func (s *pgStore) ListLikes(ctx context.Context, userID uuid.UUID, before *string, limit int) ([]DatingLike, error) {
+	if ok, err := s.userHasPlus(ctx, userID); err != nil {
+		return nil, err
+	} else if !ok {
+		return nil, ErrPlusRequired
+	}
+
 	var beforeTime *time.Time
 	if before != nil {
 		if parsed, err := time.Parse(time.RFC3339Nano, *before); err == nil {
@@ -743,6 +796,34 @@ func (s *pgStore) ListMatches(ctx context.Context, userID uuid.UUID, before *str
 	return matches, nil
 }
 
+func (s *pgStore) CountUnseenMatches(ctx context.Context, userID uuid.UUID) (int, error) {
+	var count int
+	err := s.pool.QueryRow(ctx,
+		`SELECT COUNT(*)
+		FROM dating_matches dm
+		LEFT JOIN dating_match_views dmv ON dmv.user_id = $1
+		WHERE dm.status = 'active'
+			AND (dm.user_a_id = $1 OR dm.user_b_id = $1)
+			AND dm.matched_at > COALESCE(dmv.seen_at, '-infinity'::timestamptz)`,
+		userID,
+	).Scan(&count)
+	return count, err
+}
+
+func (s *pgStore) MarkMatchesSeen(ctx context.Context, userID uuid.UUID) (time.Time, error) {
+	var seenAt time.Time
+	err := s.pool.QueryRow(ctx,
+		`INSERT INTO dating_match_views (user_id, seen_at, updated_at)
+		VALUES ($1, NOW(), NOW())
+		ON CONFLICT (user_id) DO UPDATE
+		SET seen_at = EXCLUDED.seen_at,
+			updated_at = EXCLUDED.updated_at
+		RETURNING seen_at`,
+		userID,
+	).Scan(&seenAt)
+	return seenAt, err
+}
+
 func (s *pgStore) GetMatch(ctx context.Context, userID, matchID uuid.UUID) (*DatingMatch, error) {
 	match, err := loadDatingMatch(ctx, s.pool, userID, matchID)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -795,6 +876,58 @@ func (s *pgStore) Unmatch(ctx context.Context, userID, matchID uuid.UUID) (*Dati
 	return match, nil
 }
 
+func (s *pgStore) LogEvents(ctx context.Context, userID uuid.UUID, events []DatingEventInput) error {
+	if len(events) == 0 {
+		return nil
+	}
+
+	batch := &pgx.Batch{}
+	now := time.Now().UTC()
+	for _, event := range events {
+		if !event.EventType.Valid() {
+			return ErrInvalidDatingEvent
+		}
+		eventAt := event.EventAt
+		if eventAt.IsZero() {
+			eventAt = now
+		}
+		payload := []byte("{}")
+		if len(event.Payload) > 0 {
+			payload = event.Payload
+		}
+		var position any
+		if event.Position != nil {
+			position = *event.Position
+		}
+		batch.Queue(
+			`INSERT INTO dating_events (
+				user_id,
+				profile_id,
+				match_id,
+				event_type,
+				position,
+				event_at,
+				payload
+			) VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)`,
+			userID,
+			event.ProfileID,
+			event.MatchID,
+			string(event.EventType),
+			position,
+			eventAt.UTC(),
+			payload,
+		)
+	}
+	results := s.pool.SendBatch(ctx, batch)
+	defer results.Close()
+	for range events {
+		if _, err := results.Exec(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (s *pgStore) userHasDating(ctx context.Context, userID uuid.UUID) (bool, error) {
 	var ok bool
 	err := s.pool.QueryRow(ctx,
@@ -809,15 +942,49 @@ func (s *pgStore) userHasDating(ctx context.Context, userID uuid.UUID) (bool, er
 	return ok, err
 }
 
+func (s *pgStore) userHasPlus(ctx context.Context, userID uuid.UUID) (bool, error) {
+	var ok bool
+	err := s.pool.QueryRow(ctx,
+		`SELECT EXISTS(
+			SELECT 1 FROM users
+			WHERE id = $1
+				AND deleted_at IS NULL
+				AND subscription_tier = 'plus'
+				AND subscription_status = 'active'
+		)`,
+		userID,
+	).Scan(&ok)
+	return ok, err
+}
+
 func validateDatingPair(ctx context.Context, q querier, actorID, targetID uuid.UUID) error {
-	var actorDating, targetDating, actorComplete, targetComplete, targetPaused, blocked, acceptedFriends bool
+	var actorDating, targetDating, actorComplete, targetComplete, actorPaused, targetPaused, mutualPreference, blocked, acceptedFriends bool
 	err := q.QueryRow(ctx,
 		`SELECT
 			EXISTS(SELECT 1 FROM users WHERE id = $1 AND deleted_at IS NULL AND connection_intents @> ARRAY['dating']::text[]),
 			EXISTS(SELECT 1 FROM users WHERE id = $2 AND deleted_at IS NULL AND connection_intents @> ARRAY['dating']::text[]),
 			EXISTS(SELECT 1 FROM dating_profiles WHERE user_id = $1 AND completed_at IS NOT NULL),
 			EXISTS(SELECT 1 FROM dating_profiles WHERE user_id = $2 AND completed_at IS NOT NULL),
+			EXISTS(SELECT 1 FROM dating_profiles WHERE user_id = $1 AND paused = TRUE),
 			EXISTS(SELECT 1 FROM dating_profiles WHERE user_id = $2 AND paused = TRUE),
+			EXISTS(
+				SELECT 1
+				FROM users actor
+				JOIN users target ON target.id = $2
+				JOIN dating_profiles actor_dp ON actor_dp.user_id = actor.id
+				JOIN dating_profiles target_dp ON target_dp.user_id = target.id
+				WHERE actor.id = $1
+					AND (
+						actor.gender IS NULL
+						OR cardinality(target_dp.interested_in_genders) = 0
+						OR target_dp.interested_in_genders @> ARRAY[actor.gender]::text[]
+					)
+					AND (
+						target.gender IS NULL
+						OR cardinality(actor_dp.interested_in_genders) = 0
+						OR actor_dp.interested_in_genders @> ARRAY[target.gender]::text[]
+					)
+			),
 			EXISTS(
 				SELECT 1 FROM user_blocks
 				WHERE (blocker_id = $1 AND blocked_id = $2)
@@ -829,17 +996,20 @@ func validateDatingPair(ctx context.Context, q querier, actorID, targetID uuid.U
 					AND ((user_a_id = $1 AND user_b_id = $2) OR (user_a_id = $2 AND user_b_id = $1))
 			)`,
 		actorID, targetID,
-	).Scan(&actorDating, &targetDating, &actorComplete, &targetComplete, &targetPaused, &blocked, &acceptedFriends)
+	).Scan(&actorDating, &targetDating, &actorComplete, &targetComplete, &actorPaused, &targetPaused, &mutualPreference, &blocked, &acceptedFriends)
 	if err != nil {
 		return err
 	}
 	if !actorDating {
 		return ErrDatingDisabled
 	}
-	if !actorComplete {
+	if !actorComplete || actorPaused {
 		return ErrProfileIncomplete
 	}
 	if !targetDating || !targetComplete || targetPaused {
+		return ErrTargetUnavailable
+	}
+	if !mutualPreference {
 		return ErrTargetUnavailable
 	}
 	if blocked || acceptedFriends {
@@ -1010,8 +1180,18 @@ const datingProfileColumns = `
 			dp.relationship_goal,
 			dp.interested_in_genders,
 			dp.height_cm,
-			dp.work,
-			dp.education,
+			dp.job_title,
+			dp.company,
+			CASE
+				WHEN NULLIF(dp.job_title, '') IS NULL AND NULLIF(dp.company, '') IS NULL THEN dp.work
+				ELSE NULLIF(concat_ws(' @ ', NULLIF(dp.job_title, ''), NULLIF(dp.company, '')), '')
+			END AS work,
+			dp.school,
+			dp.course,
+			CASE
+				WHEN NULLIF(dp.course, '') IS NULL AND NULLIF(dp.school, '') IS NULL THEN dp.education
+				ELSE NULLIF(concat_ws(' @ ', NULLIF(dp.course, ''), NULLIF(dp.school, '')), '')
+			END AS education,
 			dp.kids_status,
 			COALESCE(interest_names.items, '{}') AS interests,
 			dp.age_min,
@@ -1101,13 +1281,21 @@ const datingDiscoverWhereSQL = `
 			AND dp.paused = FALSE
 			AND EXISTS (
 				SELECT 1 FROM users viewer
+				JOIN dating_profiles viewer_dp ON viewer_dp.user_id = viewer.id
 				WHERE viewer.id = $1
 					AND viewer.deleted_at IS NULL
 					AND viewer.connection_intents @> ARRAY['dating']::text[]
+					AND viewer_dp.completed_at IS NOT NULL
+					AND viewer_dp.paused = FALSE
 					AND (
 						viewer.gender IS NULL
 						OR cardinality(dp.interested_in_genders) = 0
 						OR dp.interested_in_genders @> ARRAY[viewer.gender]::text[]
+					)
+					AND (
+						u.gender IS NULL
+						OR cardinality(viewer_dp.interested_in_genders) = 0
+						OR viewer_dp.interested_in_genders @> ARRAY[u.gender]::text[]
 					)
 			)
 			AND NOT EXISTS (
@@ -1252,7 +1440,11 @@ func scanDatingLikes(rows pgx.Rows) ([]DatingLike, error) {
 			&like.Profile.RelationshipGoal,
 			&like.Profile.InterestedInGenders,
 			&like.Profile.HeightCm,
+			&like.Profile.JobTitle,
+			&like.Profile.Company,
 			&like.Profile.Work,
+			&like.Profile.School,
+			&like.Profile.Course,
 			&like.Profile.Education,
 			&like.Profile.KidsStatus,
 			&like.Profile.Interests,
@@ -1279,8 +1471,12 @@ func attachDatingLikePhotos(ctx context.Context, q querier, likes []DatingLike) 
 	if err := attachDatingProfilePhotos(ctx, q, profiles); err != nil {
 		return err
 	}
+	if err := attachDatingProfilePromptAnswers(ctx, q, profiles); err != nil {
+		return err
+	}
 	for index := range likes {
 		likes[index].Profile.Photos = profiles[index].Photos
+		likes[index].Profile.PromptAnswers = profiles[index].PromptAnswers
 	}
 	return nil
 }
@@ -1305,7 +1501,11 @@ func scanDatingMatches(rows pgx.Rows) ([]DatingMatch, error) {
 			&match.Profile.RelationshipGoal,
 			&match.Profile.InterestedInGenders,
 			&match.Profile.HeightCm,
+			&match.Profile.JobTitle,
+			&match.Profile.Company,
 			&match.Profile.Work,
+			&match.Profile.School,
+			&match.Profile.Course,
 			&match.Profile.Education,
 			&match.Profile.KidsStatus,
 			&match.Profile.Interests,
@@ -1332,8 +1532,12 @@ func attachDatingMatchPhotos(ctx context.Context, q querier, matches []DatingMat
 	if err := attachDatingProfilePhotos(ctx, q, profiles); err != nil {
 		return err
 	}
+	if err := attachDatingProfilePromptAnswers(ctx, q, profiles); err != nil {
+		return err
+	}
 	for index := range matches {
 		matches[index].Profile.Photos = profiles[index].Photos
+		matches[index].Profile.PromptAnswers = profiles[index].PromptAnswers
 	}
 	return nil
 }
@@ -1346,8 +1550,12 @@ func attachDatingCandidatePhotos(ctx context.Context, q querier, candidates []da
 	if err := attachDatingProfilePhotos(ctx, q, profiles); err != nil {
 		return err
 	}
+	if err := attachDatingProfilePromptAnswers(ctx, q, profiles); err != nil {
+		return err
+	}
 	for index := range candidates {
 		candidates[index].Profile.Photos = profiles[index].Photos
+		candidates[index].Profile.PromptAnswers = profiles[index].PromptAnswers
 	}
 	return nil
 }
@@ -1387,6 +1595,41 @@ func attachDatingProfilePhotos(ctx context.Context, q querier, profiles []Dating
 	return rows.Err()
 }
 
+func attachDatingProfilePromptAnswers(ctx context.Context, q querier, profiles []DatingProfile) error {
+	if len(profiles) == 0 {
+		return nil
+	}
+	ids := make([]uuid.UUID, 0, len(profiles))
+	indexByID := make(map[uuid.UUID]int, len(profiles))
+	for index, profile := range profiles {
+		ids = append(ids, profile.ID)
+		indexByID[profile.ID] = index
+		profiles[index].PromptAnswers = []DatingPromptAnswer{}
+	}
+	rows, err := q.Query(ctx,
+		`SELECT id, profile_id, prompt_key, answer, position, created_at, updated_at
+		FROM dating_profile_prompt_answers
+		WHERE profile_id = ANY($1::uuid[])
+		ORDER BY profile_id, position, created_at`,
+		ids,
+	)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var profileID uuid.UUID
+		var answer DatingPromptAnswer
+		if err := rows.Scan(&answer.ID, &profileID, &answer.PromptKey, &answer.Answer, &answer.Position, &answer.CreatedAt, &answer.UpdatedAt); err != nil {
+			return err
+		}
+		if index, ok := indexByID[profileID]; ok {
+			profiles[index].PromptAnswers = append(profiles[index].PromptAnswers, answer)
+		}
+	}
+	return rows.Err()
+}
+
 func scanDatingProfiles(rows pgx.Rows) ([]DatingProfile, error) {
 	profiles := []DatingProfile{}
 	for rows.Next() {
@@ -1402,7 +1645,11 @@ func scanDatingProfiles(rows pgx.Rows) ([]DatingProfile, error) {
 			&profile.RelationshipGoal,
 			&profile.InterestedInGenders,
 			&profile.HeightCm,
+			&profile.JobTitle,
+			&profile.Company,
 			&profile.Work,
+			&profile.School,
+			&profile.Course,
 			&profile.Education,
 			&profile.KidsStatus,
 			&profile.Interests,
@@ -1436,7 +1683,11 @@ func scanDatingCandidates(rows pgx.Rows) ([]datingCandidate, error) {
 			&candidate.Profile.RelationshipGoal,
 			&candidate.Profile.InterestedInGenders,
 			&candidate.Profile.HeightCm,
+			&candidate.Profile.JobTitle,
+			&candidate.Profile.Company,
 			&candidate.Profile.Work,
+			&candidate.Profile.School,
+			&candidate.Profile.Course,
 			&candidate.Profile.Education,
 			&candidate.Profile.KidsStatus,
 			&candidate.Profile.Interests,

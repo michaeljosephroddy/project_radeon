@@ -259,8 +259,10 @@ func main() {
 		r.Get("/dating/likes/preview", datingHandler.LikesPreview)
 		r.Post("/dating/actions", datingHandler.RecordAction)
 		r.Get("/dating/matches", datingHandler.ListMatches)
+		r.Post("/dating/matches/seen", datingHandler.MarkMatchesSeen)
 		r.Get("/dating/matches/{id}", datingHandler.GetMatch)
 		r.Post("/dating/matches/{id}/unmatch", datingHandler.Unmatch)
+		r.Post("/dating/events", datingHandler.LogEvents)
 
 		// Meetups
 		r.Get("/meetups/categories", meetupsHandler.ListCategories)
