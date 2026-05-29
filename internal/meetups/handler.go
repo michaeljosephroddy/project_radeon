@@ -18,6 +18,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/project_radeon/api/internal/moderation"
 	"github.com/project_radeon/api/pkg/middleware"
 	"github.com/project_radeon/api/pkg/response"
 	_ "image/jpeg"
@@ -40,8 +41,9 @@ type Querier interface {
 }
 
 type Handler struct {
-	db       Querier
-	uploader Uploader
+	db        Querier
+	uploader  Uploader
+	moderator moderation.Service
 }
 
 type Uploader interface {
@@ -53,7 +55,14 @@ func NewHandler(db Querier, uploaders ...Uploader) *Handler {
 	if len(uploaders) > 0 {
 		uploader = uploaders[0]
 	}
-	return &Handler{db: db, uploader: uploader}
+	return &Handler{db: db, uploader: uploader, moderator: moderation.Disabled()}
+}
+
+func (h *Handler) UseModerator(service moderation.Service) {
+	if service == nil {
+		service = moderation.Disabled()
+	}
+	h.moderator = service
 }
 
 func (h *Handler) ListCategories(w http.ResponseWriter, r *http.Request) {
@@ -183,6 +192,10 @@ func (h *Handler) CreateMeetup(w http.ResponseWriter, r *http.Request) {
 		response.ValidationError(w, hostErrs)
 		return
 	}
+	if err := h.moderator.CheckText(r.Context(), "meetup", strings.Join(meetupModerationText(input), "\n")); err != nil {
+		response.Error(w, http.StatusUnprocessableEntity, moderation.UserMessage(err))
+		return
+	}
 
 	meetup, err := h.db.CreateMeetup(r.Context(), userID, CreateMeetupInput{
 		Title:           input.Title,
@@ -249,6 +262,10 @@ func (h *Handler) UploadCoverImage(w http.ResponseWriter, r *http.Request) {
 	key := fmt.Sprintf("meetups/%s/%s%s", userID, uuid.New(), imageFile.extension)
 	imageURL, err := h.uploader.Upload(r.Context(), key, imageFile.contentType, bytes.NewReader(imageFile.body))
 	if err != nil {
+		if errors.Is(err, moderation.ErrBlocked) {
+			response.Error(w, http.StatusUnprocessableEntity, moderation.UserMessage(err))
+			return
+		}
 		response.Error(w, http.StatusInternalServerError, "could not upload image")
 		return
 	}
@@ -307,6 +324,10 @@ func (h *Handler) UpdateMeetup(w http.ResponseWriter, r *http.Request) {
 	coHostIDs, hostErrs := parseCoHostIDs(input.CoHostIDs)
 	if len(hostErrs) > 0 {
 		response.ValidationError(w, hostErrs)
+		return
+	}
+	if err := h.moderator.CheckText(r.Context(), "meetup", strings.Join(meetupModerationText(input), "\n")); err != nil {
+		response.Error(w, http.StatusUnprocessableEntity, moderation.UserMessage(err))
 		return
 	}
 
@@ -378,6 +399,22 @@ func (h *Handler) DeleteMeetup(w http.ResponseWriter, r *http.Request) {
 	}
 
 	response.Success(w, http.StatusOK, map[string]any{"deleted": true})
+}
+
+func meetupModerationText(input meetupInput) []string {
+	values := []string{input.Title}
+	for _, value := range []*string{
+		input.Description,
+		input.VenueName,
+		input.AddressLine1,
+		input.AddressLine2,
+		input.HowToFindUs,
+	} {
+		if value != nil {
+			values = append(values, *value)
+		}
+	}
+	return values
 }
 
 func (h *Handler) categoryExists(ctx context.Context, slug string) (bool, error) {

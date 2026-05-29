@@ -46,7 +46,7 @@ func (m *mockQuerier) GetUserCredentials(ctx context.Context, email string) (uui
 	return uuid.Nil, "", errors.New("not found")
 }
 
-const validRegisterBody = `{"username":"valid.user","email":"user@example.com","password":"password123"}`
+const validRegisterBody = `{"username":"valid.user","email":"user@example.com","password":"password123","birth_date":"1990-05-14"}`
 
 // ── Register ──────────────────────────────────────────────────────────────────
 
@@ -65,7 +65,7 @@ func TestRegisterValidationFails(t *testing.T) {
 
 func TestRegisterInvalidSoberSince(t *testing.T) {
 	h := NewHandler(&mockQuerier{})
-	req := httptest.NewRequest(http.MethodPost, "/auth/register", strings.NewReader(`{"username":"valid.user","email":"user@example.com","password":"password123","sober_since":"04/19/2026"}`))
+	req := httptest.NewRequest(http.MethodPost, "/auth/register", strings.NewReader(`{"username":"valid.user","email":"user@example.com","password":"password123","birth_date":"1990-05-14","sober_since":"04/19/2026"}`))
 	rec := httptest.NewRecorder()
 
 	h.Register(rec, req)
@@ -88,9 +88,22 @@ func TestRegisterInvalidBirthDate(t *testing.T) {
 	assertErrorFields(t, rec, "birth_date")
 }
 
+func TestRegisterRejectsUnder18(t *testing.T) {
+	h := NewHandler(&mockQuerier{})
+	req := httptest.NewRequest(http.MethodPost, "/auth/register", strings.NewReader(`{"username":"valid.user","email":"user@example.com","password":"password123","birth_date":"2015-05-14"}`))
+	rec := httptest.NewRecorder()
+
+	h.Register(rec, req)
+
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnprocessableEntity)
+	}
+	assertErrorFields(t, rec, "birth_date")
+}
+
 func TestRegisterInvalidGender(t *testing.T) {
 	h := NewHandler(&mockQuerier{})
-	req := httptest.NewRequest(http.MethodPost, "/auth/register", strings.NewReader(`{"username":"valid.user","email":"user@example.com","password":"password123","gender":"robot"}`))
+	req := httptest.NewRequest(http.MethodPost, "/auth/register", strings.NewReader(`{"username":"valid.user","email":"user@example.com","password":"password123","birth_date":"1990-05-14","gender":"robot"}`))
 	rec := httptest.NewRecorder()
 
 	h.Register(rec, req)

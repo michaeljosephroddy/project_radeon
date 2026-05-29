@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -17,6 +18,7 @@ import (
 	"github.com/disintegration/imaging"
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/project_radeon/api/internal/moderation"
 	"github.com/project_radeon/api/pkg/middleware"
 	"github.com/project_radeon/api/pkg/pagination"
 	"github.com/project_radeon/api/pkg/response"
@@ -90,13 +92,21 @@ type Querier interface {
 }
 
 type Handler struct {
-	db       Querier
-	uploader Uploader
+	db        Querier
+	uploader  Uploader
+	moderator moderation.Service
 }
 
 // NewHandler builds a user handler. Pass user.NewPgStore(pool) for production.
 func NewHandler(db Querier, uploader Uploader) *Handler {
-	return &Handler{db: db, uploader: uploader}
+	return &Handler{db: db, uploader: uploader, moderator: moderation.Disabled()}
+}
+
+func (h *Handler) UseModerator(service moderation.Service) {
+	if service == nil {
+		service = moderation.Disabled()
+	}
+	h.moderator = service
 }
 
 type User struct {
@@ -222,6 +232,10 @@ func (h *Handler) UpdateMe(w http.ResponseWriter, r *http.Request) {
 			response.ValidationError(w, map[string]string{"bio": "bio must be 160 characters or fewer"})
 			return
 		}
+		if err := h.moderator.CheckText(r.Context(), "profile_bio", trimmedBio); err != nil {
+			response.Error(w, http.StatusUnprocessableEntity, moderation.UserMessage(err))
+			return
+		}
 		input.Bio = &trimmedBio
 	}
 
@@ -248,6 +262,10 @@ func (h *Handler) UpdateMe(w http.ResponseWriter, r *http.Request) {
 			parsed, err := parseCalendarDate(trimmedBirthDate)
 			if err != nil {
 				response.Error(w, http.StatusBadRequest, "birth_date must be YYYY-MM-DD")
+				return
+			}
+			if !isAtLeastAge(*parsed, 18, time.Now().UTC()) {
+				response.ValidationError(w, map[string]string{"birth_date": "you must be 18 or older to use SoberSpace"})
 				return
 			}
 			parsedBirthDate = parsed
@@ -620,6 +638,11 @@ func parseCalendarDate(raw string) (*time.Time, error) {
 	}
 
 	return &parsed, nil
+}
+
+func isAtLeastAge(birthDate time.Time, age int, now time.Time) bool {
+	cutoff := time.Date(now.Year()-age, now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	return !birthDate.After(cutoff)
 }
 
 func normalizeProfileGender(raw string) (string, bool) {
@@ -1055,6 +1078,10 @@ func (h *Handler) UploadAvatar(w http.ResponseWriter, r *http.Request) {
 	key := fmt.Sprintf("avatars/%s/original.jpg", userID)
 	avatarURL, err := h.uploader.Upload(r.Context(), key, "image/jpeg", &buf)
 	if err != nil {
+		if errors.Is(err, moderation.ErrBlocked) {
+			response.Error(w, http.StatusUnprocessableEntity, moderation.UserMessage(err))
+			return
+		}
 		log.Printf("avatar upload failed for user %s: %v", userID, err)
 		response.Error(w, http.StatusInternalServerError, "could not upload image")
 		return

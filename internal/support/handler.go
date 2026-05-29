@@ -11,6 +11,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/project_radeon/api/internal/moderation"
 	"github.com/project_radeon/api/pkg/middleware"
 	"github.com/project_radeon/api/pkg/pagination"
 	"github.com/project_radeon/api/pkg/response"
@@ -40,6 +41,7 @@ type Handler struct {
 	db              Querier
 	chatBroadcaster ChatBroadcaster
 	notifier        SupportNotifier
+	moderator       moderation.Service
 }
 
 type ChatBroadcaster interface {
@@ -105,15 +107,22 @@ var validSupportRequestFilters = map[SupportRequestFilter]bool{
 
 // NewHandler builds a support handler. Pass support.NewPgStore(pool) for production.
 func NewHandler(db Querier) *Handler {
-	return &Handler{db: db}
+	return &Handler{db: db, moderator: moderation.Disabled()}
 }
 
 func NewHandlerWithChatBroadcaster(db Querier, chatBroadcaster ChatBroadcaster, notifiers ...SupportNotifier) *Handler {
-	h := &Handler{db: db, chatBroadcaster: chatBroadcaster}
+	h := &Handler{db: db, chatBroadcaster: chatBroadcaster, moderator: moderation.Disabled()}
 	if len(notifiers) > 0 {
 		h.notifier = notifiers[0]
 	}
 	return h
+}
+
+func (h *Handler) UseModerator(service moderation.Service) {
+	if service == nil {
+		service = moderation.Disabled()
+	}
+	h.moderator = service
 }
 
 type SupportRequest struct {
@@ -248,6 +257,12 @@ func (h *Handler) createSupportRequest(w http.ResponseWriter, r *http.Request, u
 	if errs := validateCreateSupportRequestInput(normalized); len(errs) > 0 {
 		response.ValidationError(w, errs)
 		return nil, false
+	}
+	if normalized.Message != nil {
+		if err := h.moderator.CheckText(r.Context(), "support_request", *normalized.Message); err != nil {
+			response.Error(w, http.StatusUnprocessableEntity, moderation.UserMessage(err))
+			return nil, false
+		}
 	}
 
 	openCount, err := h.db.CountOpenSupportRequests(r.Context(), userID)
@@ -492,6 +507,12 @@ func (h *Handler) CreateSupportOffer(w http.ResponseWriter, r *http.Request) {
 		response.ValidationError(w, errs)
 		return
 	}
+	if input.Message != nil {
+		if err := h.moderator.CheckText(r.Context(), "support_offer", *input.Message); err != nil {
+			response.Error(w, http.StatusUnprocessableEntity, moderation.UserMessage(err))
+			return
+		}
+	}
 
 	scheduledFor, err := parseSupportOfferScheduledFor(input.ScheduledFor)
 	if err != nil {
@@ -671,6 +692,10 @@ func (h *Handler) CreateSupportReply(w http.ResponseWriter, r *http.Request) {
 	body := strings.TrimSpace(input.Body)
 	if body == "" || len(body) > 1000 {
 		response.ValidationError(w, map[string]string{"body": "must be between 1 and 1000 characters"})
+		return
+	}
+	if err := h.moderator.CheckText(r.Context(), "support_reply", body); err != nil {
+		response.Error(w, http.StatusUnprocessableEntity, moderation.UserMessage(err))
 		return
 	}
 	_, status, err := h.db.GetSupportRequestState(r.Context(), requestID)

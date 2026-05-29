@@ -16,6 +16,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/project_radeon/api/internal/moderation"
 	"github.com/project_radeon/api/pkg/middleware"
 	"github.com/project_radeon/api/pkg/pagination"
 	"github.com/project_radeon/api/pkg/response"
@@ -24,9 +25,10 @@ import (
 )
 
 type Handler struct {
-	store    Store
-	notifier Notifier
-	uploader Uploader
+	store     Store
+	notifier  Notifier
+	uploader  Uploader
+	moderator moderation.Service
 }
 
 type Uploader interface {
@@ -38,7 +40,7 @@ func NewHandler(store Store, uploaders ...Uploader) *Handler {
 	if len(uploaders) > 0 {
 		uploader = uploaders[0]
 	}
-	return &Handler{store: store, uploader: uploader}
+	return &Handler{store: store, uploader: uploader, moderator: moderation.Disabled()}
 }
 
 func NewHandlerWithNotifier(store Store, notifier Notifier, uploaders ...Uploader) *Handler {
@@ -46,7 +48,14 @@ func NewHandlerWithNotifier(store Store, notifier Notifier, uploaders ...Uploade
 	if len(uploaders) > 0 {
 		uploader = uploaders[0]
 	}
-	return &Handler{store: store, notifier: notifier, uploader: uploader}
+	return &Handler{store: store, notifier: notifier, uploader: uploader, moderator: moderation.Disabled()}
+}
+
+func (h *Handler) UseModerator(service moderation.Service) {
+	if service == nil {
+		service = moderation.Disabled()
+	}
+	h.moderator = service
 }
 
 type Notifier interface {
@@ -148,6 +157,10 @@ func (h *Handler) CreateGroup(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.CurrentUserID(r)
 	input, ok := decodeCreateGroupInput(w, r)
 	if !ok {
+		return
+	}
+	if err := h.moderator.CheckText(r.Context(), "group_profile", strings.Join(groupModerationText(input), "\n")); err != nil {
+		response.Error(w, http.StatusUnprocessableEntity, moderation.UserMessage(err))
 		return
 	}
 	group, err := h.store.CreateGroup(r.Context(), userID, input)
@@ -294,6 +307,10 @@ func (h *Handler) CreatePost(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if err := h.moderator.CheckText(r.Context(), "group_post", input.Body); err != nil {
+		response.Error(w, http.StatusUnprocessableEntity, moderation.UserMessage(err))
+		return
+	}
 	post, err := h.store.CreatePost(r.Context(), userID, groupID, input)
 	if errors.Is(err, ErrNotFound) {
 		response.Error(w, http.StatusNotFound, "group not found")
@@ -346,6 +363,10 @@ func (h *Handler) UploadGroupImage(w http.ResponseWriter, r *http.Request) {
 	key := fmt.Sprintf("groups/%s/%s%s", userID, uuid.New(), imageFile.extension)
 	imageURL, err := h.uploader.Upload(r.Context(), key, imageFile.contentType, bytes.NewReader(imageFile.body))
 	if err != nil {
+		if errors.Is(err, moderation.ErrBlocked) {
+			response.Error(w, http.StatusUnprocessableEntity, moderation.UserMessage(err))
+			return
+		}
 		response.Error(w, http.StatusInternalServerError, "could not upload image")
 		return
 	}
@@ -417,6 +438,10 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 	body := strings.TrimSpace(req.Body)
 	if body == "" || len(body) > 2000 {
 		response.ValidationError(w, map[string]string{"body": "comment must be 1 to 2000 characters"})
+		return
+	}
+	if err := h.moderator.CheckText(r.Context(), "group_comment", body); err != nil {
+		response.Error(w, http.StatusUnprocessableEntity, moderation.UserMessage(err))
 		return
 	}
 	comment, err := h.store.CreateComment(r.Context(), userID, groupID, postID, body)
@@ -669,6 +694,10 @@ func (h *Handler) ContactAdmins(w http.ResponseWriter, r *http.Request) {
 		response.ValidationError(w, map[string]string{"body": "message must be 1 to 2000 characters"})
 		return
 	}
+	if err := h.moderator.CheckText(r.Context(), "group_admin_contact", body); err != nil {
+		response.Error(w, http.StatusUnprocessableEntity, moderation.UserMessage(err))
+		return
+	}
 	thread, err := h.store.ContactAdmins(r.Context(), userID, groupID, req.Subject, body)
 	if errors.Is(err, ErrNotFound) {
 		response.Error(w, http.StatusNotFound, "group not found")
@@ -748,6 +777,10 @@ func (h *Handler) ReplyAdminThread(w http.ResponseWriter, r *http.Request) {
 	body := strings.TrimSpace(req.Body)
 	if body == "" || len(body) > 2000 {
 		response.ValidationError(w, map[string]string{"body": "message must be 1 to 2000 characters"})
+		return
+	}
+	if err := h.moderator.CheckText(r.Context(), "group_admin_reply", body); err != nil {
+		response.Error(w, http.StatusUnprocessableEntity, moderation.UserMessage(err))
 		return
 	}
 	message, err := h.store.ReplyAdminThread(r.Context(), userID, groupID, threadID, body)
@@ -923,6 +956,17 @@ func decodeCreateGroupInput(w http.ResponseWriter, r *http.Request) (CreateGroup
 		Tags:                normalizeLabels(req.Tags, 12),
 		RecoveryPathways:    normalizeLabels(req.RecoveryPathways, 8),
 	}, true
+}
+
+func groupModerationText(input CreateGroupInput) []string {
+	values := []string{input.Name}
+	if input.Description != nil {
+		values = append(values, *input.Description)
+	}
+	if input.Rules != nil {
+		values = append(values, *input.Rules)
+	}
+	return values
 }
 
 func decodeCreatePostInput(w http.ResponseWriter, r *http.Request) (CreateGroupPostInput, bool) {
