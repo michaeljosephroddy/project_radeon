@@ -112,7 +112,7 @@ func main() {
 	chatsRealtimeBus := chats.NewRedisRealtimeBus(cacheStore)
 	chatsHandler := chats.NewHandlerWithRealtimeInfra(chats.NewPgStore(db), notificationsService, chatsRealtimeHub, chatsRealtimeBus)
 	chatsHandler.UseModerator(moderator)
-	datingHandler := dating.NewHandler(datingStore, notificationsService)
+	datingHandler := dating.NewHandler(datingStore, notificationsService, uploader)
 	friendsHandler := friends.NewHandler(friendsStore)
 	groupsHandler := groups.NewHandlerWithNotifier(groupsStore, notificationsService, uploader)
 	groupsHandler.UseModerator(moderator)
@@ -247,6 +247,12 @@ func main() {
 		r.Delete("/users/{id}/friend", friendsHandler.RemoveFriend)
 
 		// Dating
+		r.Get("/dating/profile", datingHandler.GetMyProfile)
+		r.Patch("/dating/profile", datingHandler.UpdateMyProfile)
+		r.Post("/dating/profile/photos", datingHandler.UploadProfilePhoto)
+		r.Delete("/dating/profile/photos/{id}", datingHandler.DeleteProfilePhoto)
+		r.Patch("/dating/profile/photos/order", datingHandler.ReorderProfilePhotos)
+		r.Get("/dating/profiles/{id}", datingHandler.GetProfile)
 		r.Get("/dating/discover", datingHandler.Discover)
 		r.Get("/dating/discover/preview", datingHandler.DiscoverPreview)
 		r.Get("/dating/likes", datingHandler.ListLikes)

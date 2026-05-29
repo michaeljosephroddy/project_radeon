@@ -10,7 +10,6 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/project_radeon/api/internal/user"
 	"github.com/project_radeon/api/pkg/observability"
 )
 
@@ -37,12 +36,352 @@ func NewPgStore(pool *pgxpool.Pool) Querier {
 	return &pgStore{pool: pool}
 }
 
-func (s *pgStore) Discover(ctx context.Context, params DiscoverParams) ([]user.User, error) {
+func (s *pgStore) ensureDatingProfile(ctx context.Context, userID uuid.UUID) error {
+	var hasDating bool
+	if err := s.pool.QueryRow(ctx,
+		`SELECT EXISTS(
+			SELECT 1 FROM users
+			WHERE id = $1
+				AND deleted_at IS NULL
+				AND connection_intents @> ARRAY['dating']::text[]
+		)`,
+		userID,
+	).Scan(&hasDating); err != nil {
+		return err
+	}
+	if !hasDating {
+		return ErrDatingDisabled
+	}
+	_, err := s.pool.Exec(ctx,
+		`INSERT INTO dating_profiles (user_id)
+		VALUES ($1)
+		ON CONFLICT (user_id) DO NOTHING`,
+		userID,
+	)
+	return err
+}
+
+func loadDatingProfileByUser(ctx context.Context, q querier, userID uuid.UUID) (*DatingProfile, error) {
+	rows, err := q.Query(ctx, datingProfileSelectSQL+` WHERE u.id = $1 AND u.deleted_at IS NULL`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	profiles, err := scanDatingProfiles(rows)
+	if err != nil {
+		return nil, err
+	}
+	if len(profiles) == 0 {
+		return nil, pgx.ErrNoRows
+	}
+	if err := attachDatingProfilePhotos(ctx, q, profiles); err != nil {
+		return nil, err
+	}
+	return &profiles[0], nil
+}
+
+func (s *pgStore) ListInterests(ctx context.Context) ([]string, error) {
+	rows, err := s.pool.Query(ctx, `SELECT name FROM interests ORDER BY name ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	interests := make([]string, 0)
+	for rows.Next() {
+		var interest string
+		if err := rows.Scan(&interest); err != nil {
+			return nil, err
+		}
+		interests = append(interests, interest)
+	}
+	return interests, rows.Err()
+}
+
+func loadDatingProfileByID(ctx context.Context, q querier, profileID uuid.UUID) (*DatingProfile, error) {
+	rows, err := q.Query(ctx, datingProfileSelectSQL+` WHERE dp.id = $1 AND u.deleted_at IS NULL`, profileID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	profiles, err := scanDatingProfiles(rows)
+	if err != nil {
+		return nil, err
+	}
+	if len(profiles) == 0 {
+		return nil, pgx.ErrNoRows
+	}
+	if err := attachDatingProfilePhotos(ctx, q, profiles); err != nil {
+		return nil, err
+	}
+	return &profiles[0], nil
+}
+
+func datingProfileIsComplete(ctx context.Context, q querier, userID uuid.UUID) (bool, error) {
+	var ok bool
+	err := q.QueryRow(ctx,
+		`SELECT
+			NULLIF(dp.bio, '') IS NOT NULL
+			AND dp.relationship_goal <> ''
+			AND cardinality(dp.interested_in_genders) > 0
+			AND EXISTS (SELECT 1 FROM dating_profile_interests dpi WHERE dpi.profile_id = dp.id)
+			AND EXISTS (SELECT 1 FROM dating_profile_photos p WHERE p.profile_id = dp.id)
+		FROM dating_profiles dp
+		WHERE dp.user_id = $1`,
+		userID,
+	).Scan(&ok)
+	return ok, err
+}
+
+func normalizeDatingPhotoPositions(ctx context.Context, q querier, profileID uuid.UUID) error {
+	_, err := q.Exec(ctx,
+		`WITH ordered AS (
+			SELECT id, ROW_NUMBER() OVER (ORDER BY position, created_at) - 1 AS next_position
+			FROM dating_profile_photos
+			WHERE profile_id = $1
+		)
+		UPDATE dating_profile_photos p
+		SET position = ordered.next_position
+		FROM ordered
+		WHERE p.id = ordered.id`,
+		profileID,
+	)
+	return err
+}
+
+func (s *pgStore) GetMyProfile(ctx context.Context, userID uuid.UUID) (*DatingProfile, error) {
+	if err := s.ensureDatingProfile(ctx, userID); err != nil {
+		return nil, err
+	}
+	return loadDatingProfileByUser(ctx, s.pool, userID)
+}
+
+func (s *pgStore) GetProfile(ctx context.Context, viewerID, profileID uuid.UUID) (*DatingProfile, error) {
+	profile, err := loadDatingProfileByID(ctx, s.pool, profileID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	if profile.CompletedAt == nil || profile.Paused {
+		return nil, ErrNotFound
+	}
+	if profile.UserID == viewerID {
+		return profile, nil
+	}
+	if err := validateDatingPair(ctx, s.pool, viewerID, profile.UserID); err != nil {
+		return nil, err
+	}
+	return profile, nil
+}
+
+func (s *pgStore) UpdateMyProfile(ctx context.Context, userID uuid.UUID, input UpdateProfileInput) (*DatingProfile, error) {
+	if err := s.ensureDatingProfile(ctx, userID); err != nil {
+		return nil, err
+	}
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+
+	var profileID uuid.UUID
+	if err := tx.QueryRow(ctx, `SELECT id FROM dating_profiles WHERE user_id = $1`, userID).Scan(&profileID); err != nil {
+		return nil, err
+	}
+
+	_, err = tx.Exec(ctx,
+		`UPDATE dating_profiles
+		SET bio = CASE WHEN $2::text IS NULL THEN bio ELSE NULLIF($2::text, '') END,
+			relationship_goal = CASE WHEN $3::text IS NULL THEN relationship_goal ELSE $3::text END,
+			interested_in_genders = CASE WHEN NOT $4 THEN interested_in_genders ELSE $5::text[] END,
+			age_min = COALESCE($6::int, age_min),
+			age_max = COALESCE($7::int, age_max),
+			distance_km = COALESCE($8::int, distance_km),
+			paused = COALESCE($9::bool, paused),
+			height_cm = CASE WHEN NOT $10 THEN height_cm ELSE $11::int END,
+			work = CASE WHEN $12::text IS NULL THEN work ELSE NULLIF($12::text, '') END,
+			education = CASE WHEN $13::text IS NULL THEN education ELSE NULLIF($13::text, '') END,
+			kids_status = CASE WHEN $14::text IS NULL THEN kids_status ELSE $14::text END,
+			updated_at = NOW()
+		WHERE user_id = $1`,
+		userID,
+		input.Bio,
+		input.RelationshipGoal,
+		input.ReplaceGenders,
+		input.InterestedInGenders,
+		input.AgeMin,
+		input.AgeMax,
+		input.DistanceKm,
+		input.Paused,
+		input.ReplaceHeight,
+		input.HeightCm,
+		input.Work,
+		input.Education,
+		input.KidsStatus,
+	)
+	if err != nil {
+		return nil, err
+	}
+	if input.ReplaceInterests {
+		if _, err := tx.Exec(ctx, `DELETE FROM dating_profile_interests WHERE profile_id = $1`, profileID); err != nil {
+			return nil, err
+		}
+		if len(input.Interests) > 0 {
+			if _, err := tx.Exec(ctx,
+				`INSERT INTO dating_profile_interests (profile_id, interest_id)
+				SELECT $1, i.id
+				FROM interests i
+				WHERE i.name = ANY($2::text[])`,
+				profileID, input.Interests,
+			); err != nil {
+				return nil, err
+			}
+		}
+	}
+	complete, err := datingProfileIsComplete(ctx, tx, userID)
+	if err != nil {
+		return nil, err
+	}
+	if !complete {
+		if _, err := tx.Exec(ctx, `UPDATE dating_profiles SET completed_at = NULL, updated_at = NOW() WHERE user_id = $1`, userID); err != nil {
+			return nil, err
+		}
+	}
+	if input.Complete {
+		if !complete {
+			return nil, ErrProfileIncomplete
+		}
+		if _, err := tx.Exec(ctx, `UPDATE dating_profiles SET completed_at = COALESCE(completed_at, NOW()), updated_at = NOW() WHERE user_id = $1`, userID); err != nil {
+			return nil, err
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return loadDatingProfileByUser(ctx, s.pool, userID)
+}
+
+func (s *pgStore) AddPhoto(ctx context.Context, userID uuid.UUID, imageURL string, width, height int) (*DatingProfile, error) {
+	if strings.TrimSpace(imageURL) == "" || width <= 0 || height <= 0 {
+		return nil, ErrForbidden
+	}
+	if err := s.ensureDatingProfile(ctx, userID); err != nil {
+		return nil, err
+	}
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+
+	var profileID uuid.UUID
+	var count int
+	if err := tx.QueryRow(ctx, `SELECT id, (SELECT COUNT(*) FROM dating_profile_photos WHERE profile_id = dating_profiles.id) FROM dating_profiles WHERE user_id = $1`, userID).Scan(&profileID, &count); err != nil {
+		return nil, err
+	}
+	if count >= 6 {
+		return nil, ErrConflict
+	}
+	_, err = tx.Exec(ctx,
+		`INSERT INTO dating_profile_photos (profile_id, image_url, width, height, position)
+		VALUES ($1, $2, $3, $4, $5)`,
+		profileID, strings.TrimSpace(imageURL), width, height, count,
+	)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := tx.Exec(ctx, `UPDATE dating_profiles SET updated_at = NOW() WHERE id = $1`, profileID); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return loadDatingProfileByUser(ctx, s.pool, userID)
+}
+
+func (s *pgStore) DeletePhoto(ctx context.Context, userID, photoID uuid.UUID) (*DatingProfile, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+
+	var profileID uuid.UUID
+	err = tx.QueryRow(ctx,
+		`DELETE FROM dating_profile_photos p
+		USING dating_profiles dp
+		WHERE p.id = $2 AND p.profile_id = dp.id AND dp.user_id = $1
+		RETURNING dp.id`,
+		userID, photoID,
+	).Scan(&profileID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	if err := normalizeDatingPhotoPositions(ctx, tx, profileID); err != nil {
+		return nil, err
+	}
+	if _, err := tx.Exec(ctx, `UPDATE dating_profiles SET completed_at = NULL, updated_at = NOW() WHERE id = $1 AND NOT EXISTS (SELECT 1 FROM dating_profile_photos WHERE profile_id = $1)`, profileID); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return loadDatingProfileByUser(ctx, s.pool, userID)
+}
+
+func (s *pgStore) ReorderPhotos(ctx context.Context, userID uuid.UUID, photoIDs []uuid.UUID) (*DatingProfile, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+
+	profile, err := loadDatingProfileByUser(ctx, tx, userID)
+	if err != nil {
+		return nil, err
+	}
+	if len(photoIDs) != len(profile.Photos) {
+		return nil, ErrForbidden
+	}
+	tag, err := tx.Exec(ctx,
+		`WITH desired AS (
+			SELECT id, ordinality::int - 1 AS position
+			FROM unnest($2::uuid[]) WITH ORDINALITY AS input(id, ordinality)
+		)
+		UPDATE dating_profile_photos p
+		SET position = desired.position
+		FROM desired
+		WHERE p.profile_id = $1 AND p.id = desired.id`,
+		profile.ID, photoIDs,
+	)
+	if err != nil {
+		return nil, err
+	}
+	if int(tag.RowsAffected()) != len(profile.Photos) {
+		return nil, ErrForbidden
+	}
+	if _, err := tx.Exec(ctx, `UPDATE dating_profiles SET updated_at = NOW() WHERE id = $1`, profile.ID); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return loadDatingProfileByUser(ctx, s.pool, userID)
+}
+
+func (s *pgStore) Discover(ctx context.Context, params DiscoverParams) ([]DatingProfile, error) {
 	ranked, err := s.loadDatingRankedWindow(ctx, params, time.Now().UTC())
 	if err != nil {
 		return nil, err
 	}
-	return s.discoverUsersFromRankedCandidates(ctx, params, ranked)
+	return s.discoverProfilesFromRankedCandidates(ctx, params, ranked)
 }
 
 func (s *pgStore) loadDatingRankedWindow(ctx context.Context, params DiscoverParams, now time.Time) ([]datingCandidate, error) {
@@ -75,13 +414,13 @@ func (s *pgStore) loadDatingRankedWindow(ctx context.Context, params DiscoverPar
 	return candidates, nil
 }
 
-func (s *pgStore) discoverUsersFromRankedCandidates(ctx context.Context, params DiscoverParams, candidates []datingCandidate) ([]user.User, error) {
+func (s *pgStore) discoverProfilesFromRankedCandidates(ctx context.Context, params DiscoverParams, candidates []datingCandidate) ([]DatingProfile, error) {
 	offset := params.CursorOffset
 	if offset == 0 {
 		offset = parseOffset(params.Cursor)
 	}
 	if offset >= len(candidates) {
-		return []user.User{}, nil
+		return []DatingProfile{}, nil
 	}
 	end := offset + params.Limit + 1
 	if end > len(candidates) {
@@ -94,11 +433,11 @@ func (s *pgStore) discoverUsersFromRankedCandidates(ctx context.Context, params 
 	if visibleEnd > offset {
 		_ = s.recordDatingImpressions(ctx, params, candidates[offset:visibleEnd])
 	}
-	users := make([]user.User, 0, end-offset)
+	profiles := make([]DatingProfile, 0, end-offset)
 	for _, candidate := range candidates[offset:end] {
-		users = append(users, candidate.User)
+		profiles = append(profiles, candidate.Profile)
 	}
-	return users, nil
+	return profiles, nil
 }
 
 func (s *pgStore) loadDatingViewerFeatures(ctx context.Context, userID uuid.UUID) (datingViewerFeatures, error) {
@@ -133,7 +472,7 @@ func (s *pgStore) loadDatingCandidatePool(ctx context.Context, params DiscoverPa
 			name:    "nearby",
 			limit:   limit,
 			where:   "AND u.discover_lat IS NOT NULL AND u.discover_lng IS NOT NULL",
-			orderBy: "distance_km ASC NULLS LAST, u.last_active_at DESC NULLS LAST, u.id DESC",
+			orderBy: "candidate_distance_km ASC NULLS LAST, u.last_active_at DESC NULLS LAST, u.id DESC",
 		}
 		if params.DistanceKm != nil && *params.DistanceKm > 0 {
 			source.where += datingBoundingBoxWhereSQL
@@ -198,6 +537,9 @@ func (s *pgStore) loadDatingCandidatesFromSource(ctx context.Context, params Dis
 	if err != nil {
 		return nil, err
 	}
+	if err := attachDatingCandidatePhotos(ctx, s.pool, candidates); err != nil {
+		return nil, err
+	}
 	for index := range candidates {
 		candidates[index].Source = source.name
 		if source.incomingLike {
@@ -222,7 +564,7 @@ func (s *pgStore) recordDatingImpressions(ctx context.Context, params DiscoverPa
 			`INSERT INTO dating_impressions (viewer_id, candidate_id, source, rank_score, rank_position, request_id)
 			VALUES ($1, $2, $3, $4, $5, $6)`,
 			params.CurrentUserID,
-			candidate.User.ID,
+			candidate.Profile.UserID,
 			source,
 			candidate.Score,
 			params.CursorOffset+index,
@@ -255,7 +597,9 @@ func (s *pgStore) CountDiscover(ctx context.Context, params DiscoverParams) (int
 	}
 
 	var count int
-	err := s.pool.QueryRow(ctx, `SELECT COUNT(*) FROM users u `+datingDiscoverWhereSQL, datingDiscoverArgs(params, 0)[:9]...).Scan(&count)
+	err := s.pool.QueryRow(ctx, `SELECT COUNT(*)
+		FROM users u
+		JOIN dating_profiles dp ON dp.user_id = u.id `+datingDiscoverWhereSQL, datingDiscoverArgs(params, 0)[:9]...).Scan(&count)
 	return count, err
 }
 
@@ -278,7 +622,14 @@ func (s *pgStore) ListLikes(ctx context.Context, userID uuid.UUID, before *strin
 		return nil, err
 	}
 	defer rows.Close()
-	return scanDatingLikes(rows)
+	likes, err := scanDatingLikes(rows)
+	if err != nil {
+		return nil, err
+	}
+	if err := attachDatingLikePhotos(ctx, s.pool, likes); err != nil {
+		return nil, err
+	}
+	return likes, nil
 }
 
 func (s *pgStore) CountLikes(ctx context.Context, userID uuid.UUID) (int, error) {
@@ -293,23 +644,31 @@ func (s *pgStore) CountLikes(ctx context.Context, userID uuid.UUID) (int, error)
 		SELECT COUNT(*)
 		FROM dating_actions da
 		JOIN users u ON u.id = da.actor_id
+		JOIN dating_profiles dp ON dp.user_id = u.id
 		`+datingLikesWhereSQL,
 		userID,
 	).Scan(&count)
 	return count, err
 }
 
-func (s *pgStore) RecordAction(ctx context.Context, actorID, targetID uuid.UUID, action string) (*ActionResult, error) {
-	if actorID == targetID {
-		return nil, ErrForbidden
-	}
-
+func (s *pgStore) RecordAction(ctx context.Context, actorID, targetProfileID uuid.UUID, action string) (*ActionResult, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback(ctx)
 
+	targetProfile, err := loadDatingProfileByID(ctx, tx, targetProfileID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrTargetUnavailable
+	}
+	if err != nil {
+		return nil, err
+	}
+	targetID := targetProfile.UserID
+	if actorID == targetID {
+		return nil, ErrForbidden
+	}
 	if err := validateDatingPair(ctx, tx, actorID, targetID); err != nil {
 		return nil, err
 	}
@@ -374,7 +733,14 @@ func (s *pgStore) ListMatches(ctx context.Context, userID uuid.UUID, before *str
 		return nil, err
 	}
 	defer rows.Close()
-	return scanDatingMatches(rows)
+	matches, err := scanDatingMatches(rows)
+	if err != nil {
+		return nil, err
+	}
+	if err := attachDatingMatchPhotos(ctx, s.pool, matches); err != nil {
+		return nil, err
+	}
+	return matches, nil
 }
 
 func (s *pgStore) GetMatch(ctx context.Context, userID, matchID uuid.UUID) (*DatingMatch, error) {
@@ -444,11 +810,14 @@ func (s *pgStore) userHasDating(ctx context.Context, userID uuid.UUID) (bool, er
 }
 
 func validateDatingPair(ctx context.Context, q querier, actorID, targetID uuid.UUID) error {
-	var actorDating, targetDating, blocked, acceptedFriends bool
+	var actorDating, targetDating, actorComplete, targetComplete, targetPaused, blocked, acceptedFriends bool
 	err := q.QueryRow(ctx,
 		`SELECT
 			EXISTS(SELECT 1 FROM users WHERE id = $1 AND deleted_at IS NULL AND connection_intents @> ARRAY['dating']::text[]),
 			EXISTS(SELECT 1 FROM users WHERE id = $2 AND deleted_at IS NULL AND connection_intents @> ARRAY['dating']::text[]),
+			EXISTS(SELECT 1 FROM dating_profiles WHERE user_id = $1 AND completed_at IS NOT NULL),
+			EXISTS(SELECT 1 FROM dating_profiles WHERE user_id = $2 AND completed_at IS NOT NULL),
+			EXISTS(SELECT 1 FROM dating_profiles WHERE user_id = $2 AND paused = TRUE),
 			EXISTS(
 				SELECT 1 FROM user_blocks
 				WHERE (blocker_id = $1 AND blocked_id = $2)
@@ -460,14 +829,17 @@ func validateDatingPair(ctx context.Context, q querier, actorID, targetID uuid.U
 					AND ((user_a_id = $1 AND user_b_id = $2) OR (user_a_id = $2 AND user_b_id = $1))
 			)`,
 		actorID, targetID,
-	).Scan(&actorDating, &targetDating, &blocked, &acceptedFriends)
+	).Scan(&actorDating, &targetDating, &actorComplete, &targetComplete, &targetPaused, &blocked, &acceptedFriends)
 	if err != nil {
 		return err
 	}
 	if !actorDating {
 		return ErrDatingDisabled
 	}
-	if !targetDating {
+	if !actorComplete {
+		return ErrProfileIncomplete
+	}
+	if !targetDating || !targetComplete || targetPaused {
 		return ErrTargetUnavailable
 	}
 	if blocked || acceptedFriends {
@@ -624,47 +996,50 @@ func sobrietyMinimumDays(filter string) *int {
 	return &days
 }
 
-const datingUserColumns = `
+const datingProfileColumns = `
+			dp.id,
 			u.id,
 			u.username,
-			u.avatar_url,
-			(u.subscription_tier = 'plus' AND u.subscription_status = 'active') AS is_plus,
-			u.subscription_tier,
-			u.subscription_status,
-			u.city,
-			u.country,
-			u.bio,
-			COALESCE(interest_names.items, '{}') AS interests,
-			u.connection_intents,
-			u.gender,
 			CASE
 				WHEN u.birth_date IS NULL THEN NULL
-				ELSE TO_CHAR(u.birth_date, 'YYYY-MM-DD')
-			END AS birth_date,
-			u.sober_since,
-			u.created_at,
-			CASE
-				WHEN f.status = 'accepted' THEN 'friends'
-				WHEN f.requester_id = $1 THEN 'outgoing'
-				WHEN f.requester_id = u.id THEN 'incoming'
-				ELSE 'none'
-			END AS friendship_status,
-			u.friend_count,
-			0 AS incoming_friend_request_count,
-			0 AS outgoing_friend_request_count,
-			u.current_city,
-			u.location_updated_at`
+				ELSE EXTRACT(YEAR FROM AGE(CURRENT_DATE, u.birth_date))::int
+			END AS age,
+			u.city,
+			u.country,
+			dp.bio,
+			dp.relationship_goal,
+			dp.interested_in_genders,
+			dp.height_cm,
+			dp.work,
+			dp.education,
+			dp.kids_status,
+			COALESCE(interest_names.items, '{}') AS interests,
+			dp.age_min,
+			dp.age_max,
+			dp.distance_km,
+			dp.paused,
+			dp.completed_at,
+			dp.created_at,
+			dp.updated_at`
 
-const datingDiscoverSelectSQL = `SELECT` + datingUserColumns + `
-		FROM users u
-		LEFT JOIN friendships f
-			ON ((f.user_a_id = $1 AND f.user_b_id = u.id) OR (f.user_b_id = $1 AND f.user_a_id = u.id))
+const datingProfileInterestNamesJoinSQL = `
 		LEFT JOIN LATERAL (
 			SELECT array_agg(i.name ORDER BY i.name) AS items
-			FROM user_interests ui
-			JOIN interests i ON i.id = ui.interest_id
-			WHERE ui.user_id = u.id
+			FROM dating_profile_interests dpi
+			JOIN interests i ON i.id = dpi.interest_id
+			WHERE dpi.profile_id = dp.id
 		) interest_names ON true`
+
+const datingProfileSelectSQL = `SELECT` + datingProfileColumns + `
+		FROM dating_profiles dp
+		JOIN users u ON u.id = dp.user_id` + datingProfileInterestNamesJoinSQL
+
+const datingDiscoverSelectSQL = `SELECT` + datingProfileColumns + `
+		FROM users u
+		JOIN dating_profiles dp ON dp.user_id = u.id
+		LEFT JOIN friendships f
+			ON ((f.user_a_id = $1 AND f.user_b_id = u.id) OR (f.user_b_id = $1 AND f.user_a_id = u.id))` + datingProfileInterestNamesJoinSQL + `
+		`
 
 const datingDistanceSQL = `CASE
 				WHEN $6::float8 IS NULL OR $7::float8 IS NULL OR u.discover_lat IS NULL OR u.discover_lng IS NULL THEN NULL
@@ -675,8 +1050,8 @@ const datingDistanceSQL = `CASE
 				))
 			END`
 
-const datingCandidateColumns = datingUserColumns + `,
-			` + datingDistanceSQL + ` AS distance_km,
+const datingCandidateColumns = datingProfileColumns + `,
+			` + datingDistanceSQL + ` AS candidate_distance_km,
 			COALESCE(shared_interests.count, 0)::int AS shared_interest_count,
 			u.sobriety_band,
 			u.profile_completeness,
@@ -685,21 +1060,17 @@ const datingCandidateColumns = datingUserColumns + `,
 
 const datingDiscoverCandidateSelectSQL = `SELECT` + datingCandidateColumns + `
 		FROM users u
+		JOIN dating_profiles dp ON dp.user_id = u.id
 		LEFT JOIN friendships f
-			ON ((f.user_a_id = $1 AND f.user_b_id = u.id) OR (f.user_b_id = $1 AND f.user_a_id = u.id))
+			ON ((f.user_a_id = $1 AND f.user_b_id = u.id) OR (f.user_b_id = $1 AND f.user_a_id = u.id))` + datingProfileInterestNamesJoinSQL + `
 		LEFT JOIN LATERAL (
-			SELECT array_agg(i.name ORDER BY i.name) AS items
-			FROM user_interests ui
-			JOIN interests i ON i.id = ui.interest_id
-			WHERE ui.user_id = u.id
-		) interest_names ON true
-		LEFT JOIN LATERAL (
-			SELECT COUNT(DISTINCT ui.interest_id)::int AS count
-			FROM user_interests ui
-			JOIN user_interests viewer_ui
-				ON viewer_ui.interest_id = ui.interest_id
-				AND viewer_ui.user_id = $1
-			WHERE ui.user_id = u.id
+			SELECT COUNT(DISTINCT dpi.interest_id)::int AS count
+			FROM dating_profile_interests dpi
+			JOIN dating_profiles viewer_dp ON viewer_dp.user_id = $1
+			JOIN dating_profile_interests viewer_dpi
+				ON viewer_dpi.profile_id = viewer_dp.id
+				AND viewer_dpi.interest_id = dpi.interest_id
+			WHERE dpi.profile_id = dp.id
 		) shared_interests ON true
 		LEFT JOIN LATERAL (
 			SELECT di.shown_at
@@ -726,6 +1097,19 @@ const datingDiscoverWhereSQL = `
 		WHERE u.id != $1
 			AND u.deleted_at IS NULL
 			AND u.connection_intents @> ARRAY['dating']::text[]
+			AND dp.completed_at IS NOT NULL
+			AND dp.paused = FALSE
+			AND EXISTS (
+				SELECT 1 FROM users viewer
+				WHERE viewer.id = $1
+					AND viewer.deleted_at IS NULL
+					AND viewer.connection_intents @> ARRAY['dating']::text[]
+					AND (
+						viewer.gender IS NULL
+						OR cardinality(dp.interested_in_genders) = 0
+						OR dp.interested_in_genders @> ARRAY[viewer.gender]::text[]
+					)
+			)
 			AND NOT EXISTS (
 				SELECT 1 FROM user_blocks ub
 				WHERE (ub.blocker_id = $1 AND ub.blocked_id = u.id)
@@ -769,32 +1153,30 @@ const datingDiscoverWhereSQL = `
 				OR cardinality($9::text[]) = 0
 				OR EXISTS (
 					SELECT 1
-					FROM user_interests ui
-					JOIN interests i ON i.id = ui.interest_id
-					WHERE ui.user_id = u.id
+					FROM dating_profile_interests dpi
+					JOIN interests i ON i.id = dpi.interest_id
+					WHERE dpi.profile_id = dp.id
 						AND i.name = ANY($9::text[])
 				)
 			)`
 
 const datingLikesSelectSQL = `SELECT
 			da.updated_at,
-			` + datingUserColumns + `
+			` + datingProfileColumns + `
 		FROM dating_actions da
 		JOIN users u ON u.id = da.actor_id
+		JOIN dating_profiles dp ON dp.user_id = u.id
 		LEFT JOIN friendships f
-			ON ((f.user_a_id = $1 AND f.user_b_id = u.id) OR (f.user_b_id = $1 AND f.user_a_id = u.id))
-		LEFT JOIN LATERAL (
-			SELECT array_agg(i.name ORDER BY i.name) AS items
-			FROM user_interests ui
-			JOIN interests i ON i.id = ui.interest_id
-			WHERE ui.user_id = u.id
-		) interest_names ON true`
+			ON ((f.user_a_id = $1 AND f.user_b_id = u.id) OR (f.user_b_id = $1 AND f.user_a_id = u.id))` + datingProfileInterestNamesJoinSQL + `
+		`
 
 const datingLikesWhereSQL = `
 		WHERE da.target_id = $1
 			AND da.action = 'like'
 			AND u.deleted_at IS NULL
 			AND u.connection_intents @> ARRAY['dating']::text[]
+			AND dp.completed_at IS NOT NULL
+			AND dp.paused = FALSE
 			AND NOT EXISTS (
 				SELECT 1 FROM dating_actions viewer_action
 				WHERE viewer_action.actor_id = $1 AND viewer_action.target_id = u.id
@@ -821,17 +1203,13 @@ const datingMatchSelectSQL = `SELECT
 			dm.status,
 			dm.matched_at,
 			dm.unmatched_at,
-			` + datingUserColumns + `
+			` + datingProfileColumns + `
 		FROM dating_matches dm
 		JOIN users u ON u.id = CASE WHEN dm.user_a_id = $1 THEN dm.user_b_id ELSE dm.user_a_id END
+		JOIN dating_profiles dp ON dp.user_id = u.id
 		LEFT JOIN friendships f
-			ON ((f.user_a_id = $1 AND f.user_b_id = u.id) OR (f.user_b_id = $1 AND f.user_a_id = u.id))
-		LEFT JOIN LATERAL (
-			SELECT array_agg(i.name ORDER BY i.name) AS items
-			FROM user_interests ui
-			JOIN interests i ON i.id = ui.interest_id
-			WHERE ui.user_id = u.id
-		) interest_names ON true`
+			ON ((f.user_a_id = $1 AND f.user_b_id = u.id) OR (f.user_b_id = $1 AND f.user_a_id = u.id))` + datingProfileInterestNamesJoinSQL + `
+		`
 
 func loadDatingMatch(ctx context.Context, q querier, userID, matchID uuid.UUID) (*DatingMatch, error) {
 	rows, err := q.Query(ctx, datingMatchSelectSQL+`
@@ -849,6 +1227,9 @@ func loadDatingMatch(ctx context.Context, q querier, userID, matchID uuid.UUID) 
 	if err != nil {
 		return nil, err
 	}
+	if err := attachDatingMatchPhotos(ctx, q, matches); err != nil {
+		return nil, err
+	}
 	if len(matches) == 0 {
 		return nil, pgx.ErrNoRows
 	}
@@ -861,33 +1242,47 @@ func scanDatingLikes(rows pgx.Rows) ([]DatingLike, error) {
 		var like DatingLike
 		if err := rows.Scan(
 			&like.LikedAt,
-			&like.User.ID,
-			&like.User.Username,
-			&like.User.AvatarURL,
-			&like.User.IsPlus,
-			&like.User.SubscriptionTier,
-			&like.User.SubscriptionStatus,
-			&like.User.City,
-			&like.User.Country,
-			&like.User.Bio,
-			&like.User.Interests,
-			&like.User.ConnectionIntents,
-			&like.User.Gender,
-			&like.User.BirthDate,
-			&like.User.SoberSince,
-			&like.User.CreatedAt,
-			&like.User.FriendshipStatus,
-			&like.User.FriendCount,
-			&like.User.IncomingFriendRequestCt,
-			&like.User.OutgoingFriendRequestCt,
-			&like.User.CurrentCity,
-			&like.User.LocationUpdatedAt,
+			&like.Profile.ID,
+			&like.Profile.UserID,
+			&like.Profile.Username,
+			&like.Profile.Age,
+			&like.Profile.City,
+			&like.Profile.Country,
+			&like.Profile.Bio,
+			&like.Profile.RelationshipGoal,
+			&like.Profile.InterestedInGenders,
+			&like.Profile.HeightCm,
+			&like.Profile.Work,
+			&like.Profile.Education,
+			&like.Profile.KidsStatus,
+			&like.Profile.Interests,
+			&like.Profile.AgeMin,
+			&like.Profile.AgeMax,
+			&like.Profile.DistanceKm,
+			&like.Profile.Paused,
+			&like.Profile.CompletedAt,
+			&like.Profile.CreatedAt,
+			&like.Profile.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}
 		likes = append(likes, like)
 	}
 	return likes, rows.Err()
+}
+
+func attachDatingLikePhotos(ctx context.Context, q querier, likes []DatingLike) error {
+	profiles := make([]DatingProfile, 0, len(likes))
+	for _, like := range likes {
+		profiles = append(profiles, like.Profile)
+	}
+	if err := attachDatingProfilePhotos(ctx, q, profiles); err != nil {
+		return err
+	}
+	for index := range likes {
+		likes[index].Profile.Photos = profiles[index].Photos
+	}
+	return nil
 }
 
 func scanDatingMatches(rows pgx.Rows) ([]DatingMatch, error) {
@@ -900,27 +1295,27 @@ func scanDatingMatches(rows pgx.Rows) ([]DatingMatch, error) {
 			&match.Status,
 			&match.MatchedAt,
 			&match.UnmatchedAt,
-			&match.User.ID,
-			&match.User.Username,
-			&match.User.AvatarURL,
-			&match.User.IsPlus,
-			&match.User.SubscriptionTier,
-			&match.User.SubscriptionStatus,
-			&match.User.City,
-			&match.User.Country,
-			&match.User.Bio,
-			&match.User.Interests,
-			&match.User.ConnectionIntents,
-			&match.User.Gender,
-			&match.User.BirthDate,
-			&match.User.SoberSince,
-			&match.User.CreatedAt,
-			&match.User.FriendshipStatus,
-			&match.User.FriendCount,
-			&match.User.IncomingFriendRequestCt,
-			&match.User.OutgoingFriendRequestCt,
-			&match.User.CurrentCity,
-			&match.User.LocationUpdatedAt,
+			&match.Profile.ID,
+			&match.Profile.UserID,
+			&match.Profile.Username,
+			&match.Profile.Age,
+			&match.Profile.City,
+			&match.Profile.Country,
+			&match.Profile.Bio,
+			&match.Profile.RelationshipGoal,
+			&match.Profile.InterestedInGenders,
+			&match.Profile.HeightCm,
+			&match.Profile.Work,
+			&match.Profile.Education,
+			&match.Profile.KidsStatus,
+			&match.Profile.Interests,
+			&match.Profile.AgeMin,
+			&match.Profile.AgeMax,
+			&match.Profile.DistanceKm,
+			&match.Profile.Paused,
+			&match.Profile.CompletedAt,
+			&match.Profile.CreatedAt,
+			&match.Profile.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -929,38 +1324,101 @@ func scanDatingMatches(rows pgx.Rows) ([]DatingMatch, error) {
 	return matches, rows.Err()
 }
 
-func scanDatingUsers(rows pgx.Rows) ([]user.User, error) {
-	users := []user.User{}
+func attachDatingMatchPhotos(ctx context.Context, q querier, matches []DatingMatch) error {
+	profiles := make([]DatingProfile, 0, len(matches))
+	for _, match := range matches {
+		profiles = append(profiles, match.Profile)
+	}
+	if err := attachDatingProfilePhotos(ctx, q, profiles); err != nil {
+		return err
+	}
+	for index := range matches {
+		matches[index].Profile.Photos = profiles[index].Photos
+	}
+	return nil
+}
+
+func attachDatingCandidatePhotos(ctx context.Context, q querier, candidates []datingCandidate) error {
+	profiles := make([]DatingProfile, 0, len(candidates))
+	for _, candidate := range candidates {
+		profiles = append(profiles, candidate.Profile)
+	}
+	if err := attachDatingProfilePhotos(ctx, q, profiles); err != nil {
+		return err
+	}
+	for index := range candidates {
+		candidates[index].Profile.Photos = profiles[index].Photos
+	}
+	return nil
+}
+
+func attachDatingProfilePhotos(ctx context.Context, q querier, profiles []DatingProfile) error {
+	if len(profiles) == 0 {
+		return nil
+	}
+	ids := make([]uuid.UUID, 0, len(profiles))
+	indexByID := make(map[uuid.UUID]int, len(profiles))
+	for index, profile := range profiles {
+		ids = append(ids, profile.ID)
+		indexByID[profile.ID] = index
+		profiles[index].Photos = []DatingPhoto{}
+	}
+	rows, err := q.Query(ctx,
+		`SELECT id, profile_id, image_url, width, height, position, created_at
+		FROM dating_profile_photos
+		WHERE profile_id = ANY($1::uuid[])
+		ORDER BY profile_id, position, created_at`,
+		ids,
+	)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
 	for rows.Next() {
-		var u user.User
+		var profileID uuid.UUID
+		var photo DatingPhoto
+		if err := rows.Scan(&photo.ID, &profileID, &photo.ImageURL, &photo.Width, &photo.Height, &photo.Position, &photo.CreatedAt); err != nil {
+			return err
+		}
+		if index, ok := indexByID[profileID]; ok {
+			profiles[index].Photos = append(profiles[index].Photos, photo)
+		}
+	}
+	return rows.Err()
+}
+
+func scanDatingProfiles(rows pgx.Rows) ([]DatingProfile, error) {
+	profiles := []DatingProfile{}
+	for rows.Next() {
+		var profile DatingProfile
 		if err := rows.Scan(
-			&u.ID,
-			&u.Username,
-			&u.AvatarURL,
-			&u.IsPlus,
-			&u.SubscriptionTier,
-			&u.SubscriptionStatus,
-			&u.City,
-			&u.Country,
-			&u.Bio,
-			&u.Interests,
-			&u.ConnectionIntents,
-			&u.Gender,
-			&u.BirthDate,
-			&u.SoberSince,
-			&u.CreatedAt,
-			&u.FriendshipStatus,
-			&u.FriendCount,
-			&u.IncomingFriendRequestCt,
-			&u.OutgoingFriendRequestCt,
-			&u.CurrentCity,
-			&u.LocationUpdatedAt,
+			&profile.ID,
+			&profile.UserID,
+			&profile.Username,
+			&profile.Age,
+			&profile.City,
+			&profile.Country,
+			&profile.Bio,
+			&profile.RelationshipGoal,
+			&profile.InterestedInGenders,
+			&profile.HeightCm,
+			&profile.Work,
+			&profile.Education,
+			&profile.KidsStatus,
+			&profile.Interests,
+			&profile.AgeMin,
+			&profile.AgeMax,
+			&profile.DistanceKm,
+			&profile.Paused,
+			&profile.CompletedAt,
+			&profile.CreatedAt,
+			&profile.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}
-		users = append(users, u)
+		profiles = append(profiles, profile)
 	}
-	return users, rows.Err()
+	return profiles, rows.Err()
 }
 
 func scanDatingCandidates(rows pgx.Rows) ([]datingCandidate, error) {
@@ -968,27 +1426,27 @@ func scanDatingCandidates(rows pgx.Rows) ([]datingCandidate, error) {
 	for rows.Next() {
 		var candidate datingCandidate
 		if err := rows.Scan(
-			&candidate.User.ID,
-			&candidate.User.Username,
-			&candidate.User.AvatarURL,
-			&candidate.User.IsPlus,
-			&candidate.User.SubscriptionTier,
-			&candidate.User.SubscriptionStatus,
-			&candidate.User.City,
-			&candidate.User.Country,
-			&candidate.User.Bio,
-			&candidate.User.Interests,
-			&candidate.User.ConnectionIntents,
-			&candidate.User.Gender,
-			&candidate.User.BirthDate,
-			&candidate.User.SoberSince,
-			&candidate.User.CreatedAt,
-			&candidate.User.FriendshipStatus,
-			&candidate.User.FriendCount,
-			&candidate.User.IncomingFriendRequestCt,
-			&candidate.User.OutgoingFriendRequestCt,
-			&candidate.User.CurrentCity,
-			&candidate.User.LocationUpdatedAt,
+			&candidate.Profile.ID,
+			&candidate.Profile.UserID,
+			&candidate.Profile.Username,
+			&candidate.Profile.Age,
+			&candidate.Profile.City,
+			&candidate.Profile.Country,
+			&candidate.Profile.Bio,
+			&candidate.Profile.RelationshipGoal,
+			&candidate.Profile.InterestedInGenders,
+			&candidate.Profile.HeightCm,
+			&candidate.Profile.Work,
+			&candidate.Profile.Education,
+			&candidate.Profile.KidsStatus,
+			&candidate.Profile.Interests,
+			&candidate.Profile.AgeMin,
+			&candidate.Profile.AgeMax,
+			&candidate.Profile.DistanceKm,
+			&candidate.Profile.Paused,
+			&candidate.Profile.CompletedAt,
+			&candidate.Profile.CreatedAt,
+			&candidate.Profile.UpdatedAt,
 			&candidate.DistanceKm,
 			&candidate.SharedInterestCount,
 			&candidate.SobrietyBand,

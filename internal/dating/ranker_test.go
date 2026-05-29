@@ -5,22 +5,21 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/project_radeon/api/internal/user"
 )
 
 func TestRankDatingCandidatesPrefersSharedInterests(t *testing.T) {
 	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
 	base := baseDatingCandidate(now)
 	low := base
-	low.User.ID = uuid.MustParse("11111111-1111-1111-1111-111111111111")
+	low.Profile.UserID = uuid.MustParse("11111111-1111-1111-1111-111111111111")
 	low.SharedInterestCount = 0
 	high := base
-	high.User.ID = uuid.MustParse("22222222-2222-2222-2222-222222222222")
+	high.Profile.UserID = uuid.MustParse("22222222-2222-2222-2222-222222222222")
 	high.SharedInterestCount = 4
 
 	ranked := rankDatingCandidates(datingViewerFeatures{}, []datingCandidate{low, high}, now)
-	if ranked[0].User.ID != high.User.ID {
-		t.Fatalf("expected shared-interest candidate first, got %s", ranked[0].User.ID)
+	if ranked[0].Profile.UserID != high.Profile.UserID {
+		t.Fatalf("expected shared-interest candidate first, got %s", ranked[0].Profile.UserID)
 	}
 }
 
@@ -29,15 +28,15 @@ func TestRankDatingCandidatesPrefersRecentActivity(t *testing.T) {
 	recentActiveAt := now.Add(-12 * time.Hour)
 	staleActiveAt := now.Add(-120 * 24 * time.Hour)
 	recent := baseDatingCandidate(now)
-	recent.User.ID = uuid.MustParse("11111111-1111-1111-1111-111111111111")
+	recent.Profile.UserID = uuid.MustParse("11111111-1111-1111-1111-111111111111")
 	recent.LastActiveAt = &recentActiveAt
 	stale := baseDatingCandidate(now)
-	stale.User.ID = uuid.MustParse("22222222-2222-2222-2222-222222222222")
+	stale.Profile.UserID = uuid.MustParse("22222222-2222-2222-2222-222222222222")
 	stale.LastActiveAt = &staleActiveAt
 
 	ranked := rankDatingCandidates(datingViewerFeatures{}, []datingCandidate{stale, recent}, now)
-	if ranked[0].User.ID != recent.User.ID {
-		t.Fatalf("expected recently active candidate first, got %s", ranked[0].User.ID)
+	if ranked[0].Profile.UserID != recent.Profile.UserID {
+		t.Fatalf("expected recently active candidate first, got %s", ranked[0].Profile.UserID)
 	}
 }
 
@@ -46,29 +45,15 @@ func TestRankDatingCandidatesPrefersCloserDistance(t *testing.T) {
 	nearDistance := 5.0
 	farDistance := 45.0
 	near := baseDatingCandidate(now)
-	near.User.ID = uuid.MustParse("11111111-1111-1111-1111-111111111111")
+	near.Profile.UserID = uuid.MustParse("11111111-1111-1111-1111-111111111111")
 	near.DistanceKm = &nearDistance
 	far := baseDatingCandidate(now)
-	far.User.ID = uuid.MustParse("22222222-2222-2222-2222-222222222222")
+	far.Profile.UserID = uuid.MustParse("22222222-2222-2222-2222-222222222222")
 	far.DistanceKm = &farDistance
 
 	ranked := rankDatingCandidates(datingViewerFeatures{}, []datingCandidate{far, near}, now)
-	if ranked[0].User.ID != near.User.ID {
-		t.Fatalf("expected nearer candidate first, got %s", ranked[0].User.ID)
-	}
-}
-
-func TestScoreDatingCandidateDoesNotBoostPlus(t *testing.T) {
-	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
-	free := baseDatingCandidate(now)
-	free.User.IsPlus = false
-	plus := baseDatingCandidate(now)
-	plus.User.IsPlus = true
-
-	freeScore := scoreDatingCandidate(datingViewerFeatures{}, free, now)
-	plusScore := scoreDatingCandidate(datingViewerFeatures{}, plus, now)
-	if freeScore != plusScore {
-		t.Fatalf("plus score = %f, free score = %f; want equal", plusScore, freeScore)
+	if ranked[0].Profile.UserID != near.Profile.UserID {
+		t.Fatalf("expected nearer candidate first, got %s", ranked[0].Profile.UserID)
 	}
 }
 
@@ -102,7 +87,7 @@ func TestScoreDatingCandidatePenalizesRecentImpression(t *testing.T) {
 func TestMergeDatingCandidatesDedupesAndKeepsIncomingLike(t *testing.T) {
 	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
 	first := baseDatingCandidate(now)
-	first.User.ID = uuid.MustParse("11111111-1111-1111-1111-111111111111")
+	first.Profile.UserID = uuid.MustParse("11111111-1111-1111-1111-111111111111")
 	first.Source = "nearby"
 	second := first
 	second.Source = "incoming_like"
@@ -123,8 +108,9 @@ func TestMergeDatingCandidatesDedupesAndKeepsIncomingLike(t *testing.T) {
 func baseDatingCandidate(now time.Time) datingCandidate {
 	lastActiveAt := now.Add(-48 * time.Hour)
 	return datingCandidate{
-		User: user.User{
+		Profile: DatingProfile{
 			ID:        uuid.MustParse("99999999-9999-9999-9999-999999999999"),
+			UserID:    uuid.MustParse("99999999-9999-9999-9999-999999999999"),
 			Username:  "casey",
 			CreatedAt: now.Add(-180 * 24 * time.Hour),
 		},

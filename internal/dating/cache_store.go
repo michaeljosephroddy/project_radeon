@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/project_radeon/api/internal/user"
 	appcache "github.com/project_radeon/api/pkg/cache"
 )
 
@@ -27,7 +26,55 @@ func NewCachedStore(inner Querier, store appcache.Store) Querier {
 	return &cachedStore{inner: inner, cache: store}
 }
 
-func (s *cachedStore) Discover(ctx context.Context, params DiscoverParams) ([]user.User, error) {
+func (s *cachedStore) GetMyProfile(ctx context.Context, userID uuid.UUID) (*DatingProfile, error) {
+	return s.inner.GetMyProfile(ctx, userID)
+}
+
+func (s *cachedStore) GetProfile(ctx context.Context, viewerID, profileID uuid.UUID) (*DatingProfile, error) {
+	return s.inner.GetProfile(ctx, viewerID, profileID)
+}
+
+func (s *cachedStore) UpdateMyProfile(ctx context.Context, userID uuid.UUID, input UpdateProfileInput) (*DatingProfile, error) {
+	profile, err := s.inner.UpdateMyProfile(ctx, userID, input)
+	if err != nil {
+		return nil, err
+	}
+	_ = s.cache.BumpVersions(ctx, s.viewerVersionKey(userID), s.globalVersionKey())
+	return profile, nil
+}
+
+func (s *cachedStore) ListInterests(ctx context.Context) ([]string, error) {
+	return s.inner.ListInterests(ctx)
+}
+
+func (s *cachedStore) AddPhoto(ctx context.Context, userID uuid.UUID, imageURL string, width, height int) (*DatingProfile, error) {
+	profile, err := s.inner.AddPhoto(ctx, userID, imageURL, width, height)
+	if err != nil {
+		return nil, err
+	}
+	_ = s.cache.BumpVersions(ctx, s.viewerVersionKey(userID), s.globalVersionKey())
+	return profile, nil
+}
+
+func (s *cachedStore) DeletePhoto(ctx context.Context, userID, photoID uuid.UUID) (*DatingProfile, error) {
+	profile, err := s.inner.DeletePhoto(ctx, userID, photoID)
+	if err != nil {
+		return nil, err
+	}
+	_ = s.cache.BumpVersions(ctx, s.viewerVersionKey(userID), s.globalVersionKey())
+	return profile, nil
+}
+
+func (s *cachedStore) ReorderPhotos(ctx context.Context, userID uuid.UUID, photoIDs []uuid.UUID) (*DatingProfile, error) {
+	profile, err := s.inner.ReorderPhotos(ctx, userID, photoIDs)
+	if err != nil {
+		return nil, err
+	}
+	_ = s.cache.BumpVersions(ctx, s.viewerVersionKey(userID), s.globalVersionKey())
+	return profile, nil
+}
+
+func (s *cachedStore) Discover(ctx context.Context, params DiscoverParams) ([]DatingProfile, error) {
 	store, ok := s.inner.(*pgStore)
 	if !ok || !s.cache.Enabled() || strings.TrimSpace(params.CursorRequestID) == "" {
 		return s.inner.Discover(ctx, params)
@@ -78,7 +125,7 @@ func (s *cachedStore) Discover(ctx context.Context, params DiscoverParams) ([]us
 		return nil, err
 	}
 
-	return store.discoverUsersFromRankedCandidates(ctx, params, ranked)
+	return store.discoverProfilesFromRankedCandidates(ctx, params, ranked)
 }
 
 func (s *cachedStore) CountDiscover(ctx context.Context, params DiscoverParams) (int, error) {

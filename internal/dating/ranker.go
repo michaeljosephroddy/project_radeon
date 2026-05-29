@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/project_radeon/api/internal/user"
 )
 
 const (
@@ -31,7 +30,7 @@ type datingViewerFeatures struct {
 }
 
 type datingCandidate struct {
-	User                user.User
+	Profile             DatingProfile
 	DistanceKm          *float64
 	SharedInterestCount int
 	SobrietyBand        *int
@@ -90,14 +89,14 @@ func mergeDatingCandidates(groups ...[]datingCandidate) []datingCandidate {
 	seen := make(map[uuid.UUID]int)
 	for _, group := range groups {
 		for _, candidate := range group {
-			if index, ok := seen[candidate.User.ID]; ok {
+			if index, ok := seen[candidate.Profile.UserID]; ok {
 				merged[index] = mergeDatingCandidateFeatures(merged[index], candidate)
 				continue
 			}
 			if len(merged) >= datingRankedWindowMax {
 				continue
 			}
-			seen[candidate.User.ID] = len(merged)
+			seen[candidate.Profile.UserID] = len(merged)
 			merged = append(merged, candidate)
 		}
 	}
@@ -137,7 +136,7 @@ func rankDatingCandidates(viewer datingViewerFeatures, candidates []datingCandid
 		if candidates[left].LastActiveAt == nil && candidates[right].LastActiveAt != nil {
 			return false
 		}
-		return candidates[left].User.ID.String() > candidates[right].User.ID.String()
+		return candidates[left].Profile.UserID.String() > candidates[right].Profile.UserID.String()
 	})
 
 	return candidates
@@ -155,7 +154,7 @@ func scoreDatingCandidate(viewer datingViewerFeatures, candidate datingCandidate
 	}
 	score += datingCompletenessWeight * minDatingFloat(float64(candidate.ProfileCompleteness)/8.0, 1.0)
 	score += datingSobrietyWeight * datingSobrietyScore(viewer.SobrietyBand, candidate.SobrietyBand)
-	score += datingFreshnessWeight * datingFreshnessScore(candidate.User.CreatedAt, now)
+	score += datingFreshnessWeight * datingFreshnessScore(candidate.Profile.CreatedAt, now)
 	score *= datingRecentImpressionMultiplier(candidate.RecentImpressionAt, now)
 	return score
 }

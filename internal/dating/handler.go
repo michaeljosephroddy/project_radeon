@@ -1,19 +1,27 @@
 package dating
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
+	_ "image/jpeg"
+	_ "image/png"
+	"io"
+	"log"
+	"mime/multipart"
 	"net/http"
+	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
-	"github.com/project_radeon/api/internal/user"
 	"github.com/project_radeon/api/pkg/middleware"
 	"github.com/project_radeon/api/pkg/pagination"
 	"github.com/project_radeon/api/pkg/response"
@@ -29,7 +37,14 @@ type datingDiscoverCursor struct {
 }
 
 type Querier interface {
-	Discover(ctx context.Context, params DiscoverParams) ([]user.User, error)
+	GetMyProfile(ctx context.Context, userID uuid.UUID) (*DatingProfile, error)
+	GetProfile(ctx context.Context, viewerID, profileID uuid.UUID) (*DatingProfile, error)
+	UpdateMyProfile(ctx context.Context, userID uuid.UUID, input UpdateProfileInput) (*DatingProfile, error)
+	ListInterests(ctx context.Context) ([]string, error)
+	AddPhoto(ctx context.Context, userID uuid.UUID, imageURL string, width, height int) (*DatingProfile, error)
+	DeletePhoto(ctx context.Context, userID, photoID uuid.UUID) (*DatingProfile, error)
+	ReorderPhotos(ctx context.Context, userID uuid.UUID, photoIDs []uuid.UUID) (*DatingProfile, error)
+	Discover(ctx context.Context, params DiscoverParams) ([]DatingProfile, error)
 	CountDiscover(ctx context.Context, params DiscoverParams) (int, error)
 	ListLikes(ctx context.Context, userID uuid.UUID, before *string, limit int) ([]DatingLike, error)
 	CountLikes(ctx context.Context, userID uuid.UUID) (int, error)
@@ -43,13 +58,229 @@ type Notifier interface {
 	NotifyDatingMatch(ctx context.Context, matchID, chatID, actorID, recipientID uuid.UUID) error
 }
 
+type Uploader interface {
+	Upload(ctx context.Context, key, contentType string, body io.Reader) (string, error)
+}
+
 type Handler struct {
 	db       Querier
 	notifier Notifier
+	uploader Uploader
 }
 
-func NewHandler(db Querier, notifier Notifier) *Handler {
-	return &Handler{db: db, notifier: notifier}
+func NewHandler(db Querier, notifier Notifier, uploaders ...Uploader) *Handler {
+	var uploader Uploader
+	if len(uploaders) > 0 {
+		uploader = uploaders[0]
+	}
+	return &Handler{db: db, notifier: notifier, uploader: uploader}
+}
+
+func (h *Handler) GetMyProfile(w http.ResponseWriter, r *http.Request) {
+	profile, err := h.db.GetMyProfile(r.Context(), middleware.CurrentUserID(r))
+	if err != nil {
+		writeDatingError(w, err)
+		return
+	}
+	response.Success(w, http.StatusOK, profile)
+}
+
+func (h *Handler) GetProfile(w http.ResponseWriter, r *http.Request) {
+	profileID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		response.Error(w, http.StatusBadRequest, "invalid dating profile id")
+		return
+	}
+	profile, err := h.db.GetProfile(r.Context(), middleware.CurrentUserID(r), profileID)
+	if err != nil {
+		writeDatingError(w, err)
+		return
+	}
+	response.Success(w, http.StatusOK, profile)
+}
+
+func (h *Handler) UpdateMyProfile(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		response.Error(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	var input struct {
+		Bio                 *string   `json:"bio"`
+		RelationshipGoal    *string   `json:"relationship_goal"`
+		InterestedInGenders *[]string `json:"interested_in_genders"`
+		HeightCm            *int      `json:"height_cm"`
+		Work                *string   `json:"work"`
+		Education           *string   `json:"education"`
+		KidsStatus          *string   `json:"kids_status"`
+		Interests           *[]string `json:"interests"`
+		AgeMin              *int      `json:"age_min"`
+		AgeMax              *int      `json:"age_max"`
+		DistanceKm          *int      `json:"distance_km"`
+		Paused              *bool     `json:"paused"`
+		Complete            bool      `json:"complete"`
+	}
+	if err := json.Unmarshal(body, &input); err != nil {
+		response.Error(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	var rawFields map[string]json.RawMessage
+	if err := json.Unmarshal(body, &rawFields); err != nil {
+		response.Error(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	update := UpdateProfileInput{
+		Bio:              trimOptionalString(input.Bio),
+		RelationshipGoal: normalizeRelationshipGoal(input.RelationshipGoal),
+		Work:             trimOptionalString(input.Work),
+		Education:        trimOptionalString(input.Education),
+		KidsStatus:       normalizeKidsStatus(input.KidsStatus),
+		AgeMin:           input.AgeMin,
+		AgeMax:           input.AgeMax,
+		DistanceKm:       input.DistanceKm,
+		Paused:           input.Paused,
+		Complete:         input.Complete,
+	}
+	if _, ok := rawFields["height_cm"]; ok {
+		update.HeightCm = input.HeightCm
+		update.ReplaceHeight = true
+	}
+	if input.InterestedInGenders != nil {
+		genders, ok := normalizeDatingGenders(*input.InterestedInGenders)
+		if !ok {
+			response.Error(w, http.StatusBadRequest, "interested_in_genders contains an unsupported gender")
+			return
+		}
+		update.InterestedInGenders = genders
+		update.ReplaceGenders = true
+	}
+	if update.RelationshipGoal != nil && !validRelationshipGoal(*update.RelationshipGoal) {
+		response.Error(w, http.StatusBadRequest, "relationship_goal is invalid")
+		return
+	}
+	if update.HeightCm != nil && (*update.HeightCm < 90 || *update.HeightCm > 230) {
+		response.Error(w, http.StatusBadRequest, "height_cm must be between 90 and 230")
+		return
+	}
+	if update.Work != nil && len([]rune(*update.Work)) > 80 {
+		response.Error(w, http.StatusBadRequest, "work must be 80 characters or fewer")
+		return
+	}
+	if update.Education != nil && len([]rune(*update.Education)) > 80 {
+		response.Error(w, http.StatusBadRequest, "education must be 80 characters or fewer")
+		return
+	}
+	if update.KidsStatus != nil && !validKidsStatus(*update.KidsStatus) {
+		response.Error(w, http.StatusBadRequest, "kids_status is invalid")
+		return
+	}
+	if input.Interests != nil {
+		interests, ok, err := h.normalizeDatingInterests(r.Context(), *input.Interests)
+		if err != nil {
+			log.Printf("update dating profile interests lookup failed for user %s: %v", middleware.CurrentUserID(r), err)
+			response.Error(w, http.StatusInternalServerError, "could not load interests")
+			return
+		}
+		if !ok {
+			response.Error(w, http.StatusBadRequest, "interests contains an invalid value")
+			return
+		}
+		update.Interests = interests
+		update.ReplaceInterests = true
+	}
+	if input.AgeMin != nil && (*input.AgeMin < 18 || *input.AgeMin > 100) {
+		response.Error(w, http.StatusBadRequest, "age_min must be between 18 and 100")
+		return
+	}
+	if input.AgeMax != nil && (*input.AgeMax < 18 || *input.AgeMax > 100) {
+		response.Error(w, http.StatusBadRequest, "age_max must be between 18 and 100")
+		return
+	}
+	if input.AgeMin != nil && input.AgeMax != nil && *input.AgeMin > *input.AgeMax {
+		response.Error(w, http.StatusBadRequest, "age_min cannot be greater than age_max")
+		return
+	}
+	if input.DistanceKm != nil && (*input.DistanceKm < 0 || *input.DistanceKm > 500) {
+		response.Error(w, http.StatusBadRequest, "distance_km must be between 0 and 500")
+		return
+	}
+
+	profile, err := h.db.UpdateMyProfile(r.Context(), middleware.CurrentUserID(r), update)
+	if err != nil {
+		writeDatingError(w, err)
+		return
+	}
+	response.Success(w, http.StatusOK, profile)
+}
+
+func (h *Handler) UploadProfilePhoto(w http.ResponseWriter, r *http.Request) {
+	if h.uploader == nil {
+		response.Error(w, http.StatusInternalServerError, "image uploads are not configured")
+		return
+	}
+	userID := middleware.CurrentUserID(r)
+	imageFile, err := readUploadedDatingImage(r, "photo")
+	if err != nil {
+		response.Error(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	imageConfig, _, err := image.DecodeConfig(bytes.NewReader(imageFile.body))
+	if err != nil {
+		response.Error(w, http.StatusBadRequest, "could not decode image")
+		return
+	}
+	key := fmt.Sprintf("dating-profiles/%s/%s%s", userID, uuid.New(), imageFile.extension)
+	imageURL, err := h.uploader.Upload(r.Context(), key, imageFile.contentType, bytes.NewReader(imageFile.body))
+	if err != nil {
+		log.Printf("dating profile photo upload failed for user %s: %v", userID, err)
+		response.Error(w, http.StatusInternalServerError, "could not upload image")
+		return
+	}
+	profile, err := h.db.AddPhoto(r.Context(), userID, imageURL, imageConfig.Width, imageConfig.Height)
+	if err != nil {
+		writeDatingError(w, err)
+		return
+	}
+	response.Success(w, http.StatusOK, profile)
+}
+
+func (h *Handler) DeleteProfilePhoto(w http.ResponseWriter, r *http.Request) {
+	photoID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		response.Error(w, http.StatusBadRequest, "invalid photo id")
+		return
+	}
+	profile, err := h.db.DeletePhoto(r.Context(), middleware.CurrentUserID(r), photoID)
+	if err != nil {
+		writeDatingError(w, err)
+		return
+	}
+	response.Success(w, http.StatusOK, profile)
+}
+
+func (h *Handler) ReorderProfilePhotos(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		PhotoIDs []string `json:"photo_ids"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		response.Error(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	photoIDs := make([]uuid.UUID, 0, len(input.PhotoIDs))
+	for _, raw := range input.PhotoIDs {
+		photoID, err := uuid.Parse(strings.TrimSpace(raw))
+		if err != nil {
+			response.Error(w, http.StatusBadRequest, "photo_ids must contain valid photo ids")
+			return
+		}
+		photoIDs = append(photoIDs, photoID)
+	}
+	profile, err := h.db.ReorderPhotos(r.Context(), middleware.CurrentUserID(r), photoIDs)
+	if err != nil {
+		writeDatingError(w, err)
+		return
+	}
+	response.Success(w, http.StatusOK, profile)
 }
 
 func (h *Handler) Discover(w http.ResponseWriter, r *http.Request) {
@@ -60,16 +291,16 @@ func (h *Handler) Discover(w http.ResponseWriter, r *http.Request) {
 	}
 	params.CurrentUserID = middleware.CurrentUserID(r)
 
-	users, err := h.db.Discover(r.Context(), params)
+	profiles, err := h.db.Discover(r.Context(), params)
 	if err != nil {
 		writeDatingError(w, err)
 		return
 	}
 
 	limit := params.Limit
-	hasMore := len(users) > limit
+	hasMore := len(profiles) > limit
 	if hasMore {
-		users = users[:limit]
+		profiles = profiles[:limit]
 	}
 
 	var nextCursor *string
@@ -78,8 +309,8 @@ func (h *Handler) Discover(w http.ResponseWriter, r *http.Request) {
 		nextCursor = &next
 	}
 
-	response.Success(w, http.StatusOK, pagination.CursorResponse[user.User]{
-		Items:      users,
+	response.Success(w, http.StatusOK, pagination.CursorResponse[DatingProfile]{
+		Items:      profiles,
 		Limit:      limit,
 		HasMore:    hasMore,
 		NextCursor: nextCursor,
@@ -118,14 +349,14 @@ func (h *Handler) ListLikes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	users := make([]user.User, 0, len(likes))
+	profiles := make([]DatingProfile, 0, len(likes))
 	for _, like := range likes {
-		users = append(users, like.User)
+		profiles = append(profiles, like.Profile)
 	}
 
 	hasMore := len(likes) > params.Limit
 	if hasMore {
-		users = users[:params.Limit]
+		profiles = profiles[:params.Limit]
 		likes = likes[:params.Limit]
 	}
 
@@ -135,8 +366,8 @@ func (h *Handler) ListLikes(w http.ResponseWriter, r *http.Request) {
 		nextCursor = &value
 	}
 
-	response.Success(w, http.StatusOK, pagination.CursorResponse[user.User]{
-		Items:      users,
+	response.Success(w, http.StatusOK, pagination.CursorResponse[DatingProfile]{
+		Items:      profiles,
 		Limit:      params.Limit,
 		HasMore:    hasMore,
 		NextCursor: nextCursor,
@@ -157,17 +388,22 @@ func (h *Handler) RecordAction(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.CurrentUserID(r)
 
 	var input struct {
-		TargetUserID string `json:"target_user_id"`
-		Action       string `json:"action"`
+		TargetProfileID string `json:"target_profile_id"`
+		TargetUserID    string `json:"target_user_id"`
+		Action          string `json:"action"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 		response.Error(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 
-	targetID, err := uuid.Parse(strings.TrimSpace(input.TargetUserID))
+	targetRaw := strings.TrimSpace(input.TargetProfileID)
+	if targetRaw == "" {
+		targetRaw = strings.TrimSpace(input.TargetUserID)
+	}
+	targetID, err := uuid.Parse(targetRaw)
 	if err != nil {
-		response.Error(w, http.StatusBadRequest, "target_user_id must be a valid user id")
+		response.Error(w, http.StatusBadRequest, "target_profile_id must be a valid dating profile id")
 		return
 	}
 
@@ -184,7 +420,7 @@ func (h *Handler) RecordAction(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if result.Matched && result.Match != nil && result.Match.ChatID != nil && h.notifier != nil {
-		_ = h.notifier.NotifyDatingMatch(r.Context(), result.Match.ID, *result.Match.ChatID, userID, targetID)
+		_ = h.notifier.NotifyDatingMatch(r.Context(), result.Match.ID, *result.Match.ChatID, userID, result.Match.Profile.UserID)
 	}
 
 	status := http.StatusOK
@@ -250,6 +486,8 @@ func writeDatingError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, ErrNotFound):
 		response.Error(w, http.StatusNotFound, "dating resource not found")
+	case errors.Is(err, ErrProfileIncomplete):
+		response.Error(w, http.StatusUnprocessableEntity, "complete your Dating profile before using Dating")
 	case errors.Is(err, ErrDatingDisabled):
 		response.Error(w, http.StatusForbidden, "turn on Dating mode to use Dating")
 	case errors.Is(err, ErrTargetUnavailable):
@@ -261,6 +499,149 @@ func writeDatingError(w http.ResponseWriter, err error) {
 	default:
 		response.Error(w, http.StatusInternalServerError, "dating request failed")
 	}
+}
+
+type uploadedDatingImage struct {
+	body        []byte
+	contentType string
+	extension   string
+}
+
+func readUploadedDatingImage(r *http.Request, fieldName string) (*uploadedDatingImage, error) {
+	if err := r.ParseMultipartForm(20 << 20); err != nil {
+		return nil, errors.New("could not read image")
+	}
+	file, header, err := r.FormFile(fieldName)
+	if err != nil {
+		return nil, errors.New("photo field is required")
+	}
+	defer file.Close()
+
+	if header.Size > 20<<20 {
+		return nil, errors.New("image must be 20MB or smaller")
+	}
+	body, err := io.ReadAll(io.LimitReader(file, 20<<20+1))
+	if err != nil {
+		return nil, errors.New("could not read image")
+	}
+	if len(body) > 20<<20 {
+		return nil, errors.New("image must be 20MB or smaller")
+	}
+	contentType := http.DetectContentType(body)
+	extension, ok := datingImageExtension(contentType, header)
+	if !ok {
+		return nil, errors.New("image must be a JPEG or PNG image")
+	}
+	return &uploadedDatingImage{body: body, contentType: contentType, extension: extension}, nil
+}
+
+func datingImageExtension(contentType string, header *multipart.FileHeader) (string, bool) {
+	switch contentType {
+	case "image/jpeg":
+		return ".jpg", true
+	case "image/png":
+		return ".png", true
+	}
+	ext := strings.ToLower(filepath.Ext(header.Filename))
+	if ext == ".jpg" || ext == ".jpeg" {
+		return ".jpg", contentType == "image/jpeg"
+	}
+	if ext == ".png" {
+		return ".png", contentType == "image/png"
+	}
+	return "", false
+}
+
+func trimOptionalString(value *string) *string {
+	if value == nil {
+		return nil
+	}
+	trimmed := strings.TrimSpace(*value)
+	return &trimmed
+}
+
+func normalizeRelationshipGoal(value *string) *string {
+	if value == nil {
+		return nil
+	}
+	normalized := strings.TrimSpace(strings.ToLower(*value))
+	return &normalized
+}
+
+func validRelationshipGoal(value string) bool {
+	switch value {
+	case "", "long_term", "life_partner", "casual", "open_to_explore":
+		return true
+	default:
+		return false
+	}
+}
+
+func normalizeKidsStatus(value *string) *string {
+	if value == nil {
+		return nil
+	}
+	normalized := strings.TrimSpace(strings.ToLower(*value))
+	return &normalized
+}
+
+func validKidsStatus(value string) bool {
+	switch value {
+	case "", "have_kids", "dont_have_kids", "prefer_not_to_say":
+		return true
+	default:
+		return false
+	}
+}
+
+func (h *Handler) normalizeDatingInterests(ctx context.Context, values []string) ([]string, bool, error) {
+	if len(values) > 5 {
+		return nil, false, nil
+	}
+	allowedInterests, err := h.db.ListInterests(ctx)
+	if err != nil {
+		return nil, false, err
+	}
+	allowedSet := make(map[string]struct{}, len(allowedInterests))
+	for _, interest := range allowedInterests {
+		allowedSet[interest] = struct{}{}
+	}
+
+	seen := make(map[string]struct{}, len(values))
+	normalized := make([]string, 0, len(values))
+	for _, raw := range values {
+		interest := strings.TrimSpace(raw)
+		if interest == "" {
+			return nil, false, nil
+		}
+		if _, exists := allowedSet[interest]; !exists {
+			return nil, false, nil
+		}
+		if _, exists := seen[interest]; exists {
+			return nil, false, nil
+		}
+		seen[interest] = struct{}{}
+		normalized = append(normalized, interest)
+	}
+	sort.Strings(normalized)
+	return normalized, true, nil
+}
+
+func normalizeDatingGenders(values []string) ([]string, bool) {
+	seen := map[string]bool{}
+	normalized := make([]string, 0, len(values))
+	for _, value := range values {
+		gender := strings.TrimSpace(strings.ToLower(value))
+		if gender == "" || seen[gender] {
+			continue
+		}
+		if gender != "woman" && gender != "man" && gender != "non_binary" {
+			return nil, false
+		}
+		seen[gender] = true
+		normalized = append(normalized, gender)
+	}
+	return normalized, true
 }
 
 func parseDiscoverRequest(r *http.Request) (DiscoverParams, error) {
