@@ -10,7 +10,6 @@ import (
 var (
 	ErrNotFound         = errors.New("not found")
 	ErrForbidden        = errors.New("forbidden")
-	ErrInviteRequired   = errors.New("invite required")
 	ErrOwnerCannotLeave = errors.New("owner cannot leave")
 	ErrConflict         = errors.New("conflict")
 )
@@ -20,19 +19,11 @@ const SystemGroupKeyCommunitySupport = "community_support"
 type GroupVisibility string
 
 const (
-	GroupVisibilityPublic           GroupVisibility = "public"
-	GroupVisibilityApprovalRequired GroupVisibility = "approval_required"
-	GroupVisibilityInviteOnly       GroupVisibility = "invite_only"
-	GroupVisibilityPrivateHidden    GroupVisibility = "private_hidden"
+	GroupVisibilityPublic GroupVisibility = "public"
 )
 
 func (v GroupVisibility) Valid() bool {
-	switch v {
-	case GroupVisibilityPublic, GroupVisibilityApprovalRequired, GroupVisibilityInviteOnly, GroupVisibilityPrivateHidden:
-		return true
-	default:
-		return false
-	}
+	return v == GroupVisibilityPublic
 }
 
 type GroupRole string
@@ -86,15 +77,12 @@ type Group struct {
 	MemberCount         int                 `json:"member_count"`
 	PostCount           int                 `json:"post_count"`
 	MediaCount          int                 `json:"media_count"`
-	PendingRequestCount int                 `json:"pending_request_count"`
 	IsSystem            bool                `json:"is_system"`
 	SystemKey           *string             `json:"system_key,omitempty"`
 	LockedSettings      bool                `json:"locked_settings"`
 	ViewerRole          *GroupRole          `json:"viewer_role,omitempty"`
 	ViewerStatus        *MembershipStatus   `json:"viewer_status,omitempty"`
-	HasPendingRequest   bool                `json:"has_pending_request"`
 	CanPost             bool                `json:"can_post"`
-	CanInvite           bool                `json:"can_invite"`
 	CanManageMembers    bool                `json:"can_manage_members"`
 	CanManageSettings   bool                `json:"can_manage_settings"`
 	CanModerateContent  bool                `json:"can_moderate_content"`
@@ -259,7 +247,6 @@ type ListGroupsParams struct {
 	Country         string
 	Tag             string
 	RecoveryPathway string
-	Visibility      string
 	GroupType       string
 	MemberScope     string
 	Before          *time.Time
@@ -269,53 +256,6 @@ type ListGroupsParams struct {
 type JoinGroupResult struct {
 	State string `json:"state"`
 	Group *Group `json:"group,omitempty"`
-}
-
-type CreateGroupInviteInput struct {
-	ExpiresAt        *time.Time
-	MaxUses          *int
-	RequiresApproval bool
-}
-
-type GroupInvite struct {
-	ID               uuid.UUID  `json:"id"`
-	GroupID          uuid.UUID  `json:"group_id"`
-	Token            string     `json:"token,omitempty"`
-	ExpiresAt        *time.Time `json:"expires_at,omitempty"`
-	MaxUses          *int       `json:"max_uses,omitempty"`
-	UseCount         int        `json:"use_count"`
-	RequiresApproval bool       `json:"requires_approval"`
-	RevokedAt        *time.Time `json:"revoked_at,omitempty"`
-	CreatedAt        time.Time  `json:"created_at"`
-}
-
-type GroupInvitePreview struct {
-	Token            string          `json:"token"`
-	GroupID          uuid.UUID       `json:"group_id"`
-	GroupName        string          `json:"group_name"`
-	GroupSlug        string          `json:"group_slug"`
-	GroupAvatarURL   *string         `json:"group_avatar_url,omitempty"`
-	Visibility       GroupVisibility `json:"visibility"`
-	RequiresApproval bool            `json:"requires_approval"`
-	ExpiresAt        *time.Time      `json:"expires_at,omitempty"`
-	MaxUses          *int            `json:"max_uses,omitempty"`
-	UseCount         int             `json:"use_count"`
-	ViewerStatus     string          `json:"viewer_status"`
-	CreatedAt        time.Time       `json:"created_at"`
-}
-
-type GroupJoinRequest struct {
-	ID         uuid.UUID  `json:"id"`
-	GroupID    uuid.UUID  `json:"group_id"`
-	UserID     uuid.UUID  `json:"user_id"`
-	Username   string     `json:"username"`
-	AvatarURL  *string    `json:"avatar_url,omitempty"`
-	Message    *string    `json:"message,omitempty"`
-	Status     string     `json:"status"`
-	ReviewedBy *uuid.UUID `json:"reviewed_by,omitempty"`
-	ReviewedAt *time.Time `json:"reviewed_at,omitempty"`
-	CreatedAt  time.Time  `json:"created_at"`
-	UpdatedAt  time.Time  `json:"updated_at"`
 }
 
 type GroupAdminThread struct {

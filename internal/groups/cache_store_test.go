@@ -45,9 +45,7 @@ func (s *countingGroupStore) group(viewerID uuid.UUID) Group {
 		ViewerStatus:      &status,
 		CreatedAt:         time.Now().UTC().Add(-24 * time.Hour),
 		UpdatedAt:         time.Now().UTC(),
-		HasPendingRequest: viewerID == uuid.Nil,
 		CanPost:           true,
-		CanInvite:         false,
 	}
 }
 
@@ -133,27 +131,6 @@ func (s *countingGroupStore) PinPost(_ context.Context, viewerID, _ uuid.UUID, _
 
 func (s *countingGroupStore) DeletePost(_ context.Context, _ uuid.UUID, _ uuid.UUID, _ uuid.UUID) error {
 	return nil
-}
-
-func (s *countingGroupStore) CreateInvite(_ context.Context, _ uuid.UUID, groupID uuid.UUID, _ CreateGroupInviteInput) (*GroupInvite, error) {
-	return &GroupInvite{ID: uuid.New(), GroupID: groupID}, nil
-}
-
-func (s *countingGroupStore) GetInvitePreview(_ context.Context, _ uuid.UUID, token string) (*GroupInvitePreview, error) {
-	return &GroupInvitePreview{Token: token, GroupID: s.groupID, GroupName: "Cached Recovery Group", GroupSlug: "cached-recovery-group", Visibility: GroupVisibilityPublic}, nil
-}
-
-func (s *countingGroupStore) AcceptInvite(_ context.Context, viewerID uuid.UUID, _ string) (*JoinGroupResult, error) {
-	group := s.group(viewerID)
-	return &JoinGroupResult{State: "member", Group: &group}, nil
-}
-
-func (s *countingGroupStore) ListJoinRequests(_ context.Context, _ uuid.UUID, _ uuid.UUID) ([]GroupJoinRequest, error) {
-	return []GroupJoinRequest{}, nil
-}
-
-func (s *countingGroupStore) ReviewJoinRequest(_ context.Context, _ uuid.UUID, groupID, requestID uuid.UUID, _ bool) (*GroupJoinRequest, error) {
-	return &GroupJoinRequest{ID: requestID, GroupID: groupID, UserID: uuid.New()}, nil
 }
 
 func (s *countingGroupStore) ContactAdmins(_ context.Context, viewerID, groupID uuid.UUID, subject, _ string) (*GroupAdminThread, error) {

@@ -249,9 +249,6 @@ func (s *pgStore) DeleteCurrentUser(ctx context.Context, userID uuid.UUID) error
 	if _, err := tx.Exec(ctx, `DELETE FROM group_memberships WHERE user_id = $1`, userID); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(ctx, `DELETE FROM group_join_requests WHERE user_id = $1`, userID); err != nil {
-		return err
-	}
 
 	tag, err := tx.Exec(ctx,
 		`UPDATE users

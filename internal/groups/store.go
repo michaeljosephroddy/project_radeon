@@ -2,10 +2,6 @@ package groups
 
 import (
 	"context"
-	"crypto/rand"
-	"crypto/sha256"
-	"encoding/base64"
-	"encoding/hex"
 	"regexp"
 	"strings"
 	"time"
@@ -31,11 +27,6 @@ type Store interface {
 	ToggleReaction(ctx context.Context, viewerID, groupID, postID uuid.UUID) (*GroupPost, error)
 	PinPost(ctx context.Context, viewerID, groupID, postID uuid.UUID, pinned bool) (*GroupPost, error)
 	DeletePost(ctx context.Context, viewerID, groupID, postID uuid.UUID) error
-	CreateInvite(ctx context.Context, viewerID, groupID uuid.UUID, input CreateGroupInviteInput) (*GroupInvite, error)
-	GetInvitePreview(ctx context.Context, viewerID uuid.UUID, token string) (*GroupInvitePreview, error)
-	AcceptInvite(ctx context.Context, viewerID uuid.UUID, token string) (*JoinGroupResult, error)
-	ListJoinRequests(ctx context.Context, viewerID, groupID uuid.UUID) ([]GroupJoinRequest, error)
-	ReviewJoinRequest(ctx context.Context, viewerID, groupID, requestID uuid.UUID, approve bool) (*GroupJoinRequest, error)
 	ContactAdmins(ctx context.Context, viewerID, groupID uuid.UUID, subject, body string) (*GroupAdminThread, error)
 	ListAdminThreads(ctx context.Context, viewerID, groupID uuid.UUID, before *time.Time, limit int) ([]GroupAdminThread, error)
 	GetAdminThread(ctx context.Context, viewerID, groupID, threadID uuid.UUID) (*GroupAdminThread, error)
@@ -118,15 +109,8 @@ func (s *pgStore) ListGroups(ctx context.Context, viewerID uuid.UUID, params Lis
 			g.id, g.owner_id, g.name, g.slug, g.description, g.rules, g.avatar_url, g.cover_url,
 			g.visibility, g.posting_permission, g.allow_anonymous_posts, g.city, g.country,
 			g.tags, g.recovery_pathways, g.member_count, g.post_count, g.media_count,
-			g.pending_request_count, g.is_system, g.system_key, g.locked_settings, g.created_at, g.updated_at,
-			gm.role, gm.status,
-			EXISTS (
-				SELECT 1
-				FROM group_join_requests gjr
-				WHERE gjr.group_id = g.id
-					AND gjr.user_id = $1
-					AND gjr.status = 'pending'
-			) AS has_pending_request
+			g.is_system, g.system_key, g.locked_settings, g.created_at, g.updated_at,
+			gm.role, gm.status
 		FROM groups g
 		LEFT JOIN group_memberships gm
 			ON gm.group_id = g.id
@@ -134,22 +118,21 @@ func (s *pgStore) ListGroups(ctx context.Context, viewerID uuid.UUID, params Lis
 		WHERE g.deleted_at IS NULL
 			AND (
 				($2 = 'joined' AND gm.status = 'active')
-				OR ($2 <> 'joined' AND (g.visibility IN ('public', 'approval_required') OR gm.status = 'active'))
+				OR ($2 <> 'joined' AND (g.visibility = 'public' OR gm.status = 'active'))
 			)
 			AND ($3 = '' OR g.name ILIKE '%' || $3 || '%' OR COALESCE(g.description, '') ILIKE '%' || $3 || '%')
 			AND ($4 = '' OR COALESCE(g.city, '') ILIKE '%' || $4 || '%')
 			AND ($5 = '' OR COALESCE(g.country, '') ILIKE '%' || $5 || '%')
 			AND ($6 = '' OR $6 = ANY(g.tags))
 			AND ($7 = '' OR $7 = ANY(g.recovery_pathways))
-			AND ($8 = '' OR g.visibility = $8)
 			AND (
-				$9 = ''
-				OR ($9 = 'support' AND g.system_key = $10)
-				OR ($9 = 'standard' AND g.system_key IS NULL)
+				$8 = ''
+				OR ($8 = 'support' AND g.system_key = $9)
+				OR ($8 = 'standard' AND g.system_key IS NULL)
 			)
-			AND ($11::timestamptz IS NULL OR g.created_at < $11)
+			AND ($10::timestamptz IS NULL OR g.created_at < $10)
 		ORDER BY g.created_at DESC
-		LIMIT $12`,
+		LIMIT $11`,
 		viewerID,
 		normalizeMemberScope(params.MemberScope),
 		strings.TrimSpace(params.Query),
@@ -157,7 +140,6 @@ func (s *pgStore) ListGroups(ctx context.Context, viewerID uuid.UUID, params Lis
 		strings.TrimSpace(params.Country),
 		strings.TrimSpace(params.Tag),
 		strings.TrimSpace(params.RecoveryPathway),
-		normalizeVisibilityFilter(params.Visibility),
 		normalizeGroupTypeFilter(params.GroupType),
 		SystemGroupKeyCommunitySupport,
 		params.Before,
@@ -191,22 +173,15 @@ func (s *pgStore) GetGroup(ctx context.Context, viewerID, groupID uuid.UUID) (*G
 			g.id, g.owner_id, g.name, g.slug, g.description, g.rules, g.avatar_url, g.cover_url,
 			g.visibility, g.posting_permission, g.allow_anonymous_posts, g.city, g.country,
 			g.tags, g.recovery_pathways, g.member_count, g.post_count, g.media_count,
-			g.pending_request_count, g.is_system, g.system_key, g.locked_settings, g.created_at, g.updated_at,
-			gm.role, gm.status,
-			EXISTS (
-				SELECT 1
-				FROM group_join_requests gjr
-				WHERE gjr.group_id = g.id
-					AND gjr.user_id = $1
-					AND gjr.status = 'pending'
-			) AS has_pending_request
+			g.is_system, g.system_key, g.locked_settings, g.created_at, g.updated_at,
+			gm.role, gm.status
 		FROM groups g
 		LEFT JOIN group_memberships gm
 			ON gm.group_id = g.id
 			AND gm.user_id = $1
 		WHERE g.id = $2
 			AND g.deleted_at IS NULL
-			AND (g.visibility IN ('public', 'approval_required') OR gm.status = 'active')`,
+			AND (g.visibility = 'public' OR gm.status = 'active')`,
 		viewerID,
 		groupID,
 	)
@@ -295,70 +270,37 @@ func (s *pgStore) JoinGroup(ctx context.Context, viewerID, groupID uuid.UUID, me
 		return &JoinGroupResult{State: "member", Group: group}, nil
 	}
 
-	switch visibility {
-	case GroupVisibilityPublic:
-		tag, err := tx.Exec(ctx, `
-			INSERT INTO group_memberships (group_id, user_id, role, status, joined_at)
-			VALUES ($1, $2, 'member', 'active', NOW())
-			ON CONFLICT (group_id, user_id) DO NOTHING`,
-			groupID,
-			viewerID,
-		)
-		if err != nil {
-			return nil, err
-		}
-		if tag.RowsAffected() > 0 {
-			if _, err := tx.Exec(ctx, `
-				UPDATE groups
-				SET member_count = member_count + 1, updated_at = NOW()
-				WHERE id = $1`,
-				groupID,
-			); err != nil {
-				return nil, err
-			}
-		}
-		if err := tx.Commit(ctx); err != nil {
-			return nil, err
-		}
-		group, err := s.GetGroup(ctx, viewerID, groupID)
-		if err != nil {
-			return nil, err
-		}
-		return &JoinGroupResult{State: "member", Group: group}, nil
-	case GroupVisibilityApprovalRequired:
-		tag, err := tx.Exec(ctx, `
-			INSERT INTO group_join_requests (group_id, user_id, message)
-			VALUES ($1, $2, NULLIF($3, ''))
-			ON CONFLICT (group_id, user_id) WHERE status = 'pending'
-			DO UPDATE SET message = EXCLUDED.message, updated_at = NOW()`,
-			groupID,
-			viewerID,
-			strings.TrimSpace(message),
-		)
-		if err != nil {
-			return nil, err
-		}
-		if tag.RowsAffected() > 0 {
-			if _, err := tx.Exec(ctx, `
-				UPDATE groups
-				SET pending_request_count = (
-					SELECT COUNT(*)
-					FROM group_join_requests
-					WHERE group_id = $1 AND status = 'pending'
-				), updated_at = NOW()
-				WHERE id = $1`,
-				groupID,
-			); err != nil {
-				return nil, err
-			}
-		}
-		if err := tx.Commit(ctx); err != nil {
-			return nil, err
-		}
-		return &JoinGroupResult{State: "pending"}, nil
-	default:
-		return nil, ErrInviteRequired
+	if visibility != GroupVisibilityPublic {
+		return nil, ErrForbidden
 	}
+	tag, err := tx.Exec(ctx, `
+		INSERT INTO group_memberships (group_id, user_id, role, status, joined_at)
+		VALUES ($1, $2, 'member', 'active', NOW())
+		ON CONFLICT (group_id, user_id) DO NOTHING`,
+		groupID,
+		viewerID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	if tag.RowsAffected() > 0 {
+		if _, err := tx.Exec(ctx, `
+			UPDATE groups
+			SET member_count = member_count + 1, updated_at = NOW()
+			WHERE id = $1`,
+			groupID,
+		); err != nil {
+			return nil, err
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	group, err := s.GetGroup(ctx, viewerID, groupID)
+	if err != nil {
+		return nil, err
+	}
+	return &JoinGroupResult{State: "member", Group: group}, nil
 }
 
 func (s *pgStore) LeaveGroup(ctx context.Context, viewerID, groupID uuid.UUID) error {
@@ -873,330 +815,6 @@ func (s *pgStore) DeletePost(ctx context.Context, viewerID, groupID, postID uuid
 	return tx.Commit(ctx)
 }
 
-func (s *pgStore) CreateInvite(ctx context.Context, viewerID, groupID uuid.UUID, input CreateGroupInviteInput) (*GroupInvite, error) {
-	if _, err := s.requireActiveMembership(ctx, viewerID, groupID); err != nil {
-		return nil, err
-	}
-	token, err := generateInviteToken()
-	if err != nil {
-		return nil, err
-	}
-	tokenHash := hashInviteToken(token)
-	var invite GroupInvite
-	if err := s.pool.QueryRow(ctx, `
-		INSERT INTO group_invites (group_id, token_hash, created_by, expires_at, max_uses, requires_approval)
-		VALUES ($1, $2, $3, $4, $5, $6)
-		RETURNING id, group_id, expires_at, max_uses, use_count, requires_approval, revoked_at, created_at`,
-		groupID,
-		tokenHash,
-		viewerID,
-		input.ExpiresAt,
-		input.MaxUses,
-		input.RequiresApproval,
-	).Scan(
-		&invite.ID,
-		&invite.GroupID,
-		&invite.ExpiresAt,
-		&invite.MaxUses,
-		&invite.UseCount,
-		&invite.RequiresApproval,
-		&invite.RevokedAt,
-		&invite.CreatedAt,
-	); err != nil {
-		return nil, err
-	}
-	invite.Token = token
-	return &invite, nil
-}
-
-func (s *pgStore) GetInvitePreview(ctx context.Context, viewerID uuid.UUID, token string) (*GroupInvitePreview, error) {
-	tokenHash := hashInviteToken(token)
-	var preview GroupInvitePreview
-	var memberStatus *MembershipStatus
-	err := s.pool.QueryRow(ctx, `
-		SELECT
-			g.id,
-			g.name,
-			g.slug,
-			g.avatar_url,
-			g.visibility,
-			gi.requires_approval,
-			gi.expires_at,
-			gi.max_uses,
-			gi.use_count,
-			gi.created_at,
-			gm.status
-		FROM group_invites gi
-		JOIN groups g ON g.id = gi.group_id
-		LEFT JOIN group_memberships gm
-			ON gm.group_id = g.id
-			AND gm.user_id = $2
-		WHERE gi.token_hash = $1
-			AND gi.revoked_at IS NULL
-			AND (gi.expires_at IS NULL OR gi.expires_at > NOW())
-			AND (gi.max_uses IS NULL OR gi.use_count < gi.max_uses)
-			AND g.deleted_at IS NULL`,
-		tokenHash,
-		viewerID,
-	).Scan(
-		&preview.GroupID,
-		&preview.GroupName,
-		&preview.GroupSlug,
-		&preview.GroupAvatarURL,
-		&preview.Visibility,
-		&preview.RequiresApproval,
-		&preview.ExpiresAt,
-		&preview.MaxUses,
-		&preview.UseCount,
-		&preview.CreatedAt,
-		&memberStatus,
-	)
-	if err != nil {
-		if err == pgx.ErrNoRows {
-			return nil, ErrNotFound
-		}
-		return nil, err
-	}
-	preview.Token = strings.TrimSpace(token)
-	if memberStatus != nil {
-		preview.ViewerStatus = string(*memberStatus)
-	} else {
-		preview.ViewerStatus = "none"
-	}
-	return &preview, nil
-}
-
-func (s *pgStore) AcceptInvite(ctx context.Context, viewerID uuid.UUID, token string) (*JoinGroupResult, error) {
-	tokenHash := hashInviteToken(token)
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback(ctx)
-
-	var invite GroupInvite
-	err = tx.QueryRow(ctx, `
-		SELECT id, group_id, expires_at, max_uses, use_count, requires_approval, revoked_at, created_at
-		FROM group_invites
-		WHERE token_hash = $1
-		FOR UPDATE`,
-		tokenHash,
-	).Scan(&invite.ID, &invite.GroupID, &invite.ExpiresAt, &invite.MaxUses, &invite.UseCount, &invite.RequiresApproval, &invite.RevokedAt, &invite.CreatedAt)
-	if err != nil {
-		if err == pgx.ErrNoRows {
-			return nil, ErrNotFound
-		}
-		return nil, err
-	}
-	if invite.RevokedAt != nil || (invite.ExpiresAt != nil && time.Now().UTC().After(*invite.ExpiresAt)) {
-		return nil, ErrNotFound
-	}
-	if invite.MaxUses != nil && invite.UseCount >= *invite.MaxUses {
-		return nil, ErrNotFound
-	}
-
-	var existingStatus MembershipStatus
-	var hasExistingStatus bool
-	if err := tx.QueryRow(ctx, `
-		SELECT status
-		FROM group_memberships
-		WHERE group_id = $1 AND user_id = $2`,
-		invite.GroupID,
-		viewerID,
-	).Scan(&existingStatus); err != nil {
-		if err != pgx.ErrNoRows {
-			return nil, err
-		}
-	} else {
-		hasExistingStatus = true
-	}
-	if hasExistingStatus && existingStatus == MembershipStatusBanned {
-		return nil, ErrForbidden
-	}
-	if hasExistingStatus && existingStatus == MembershipStatusActive {
-		return &JoinGroupResult{State: "member"}, nil
-	}
-
-	if invite.RequiresApproval {
-		if _, err := tx.Exec(ctx, `
-			INSERT INTO group_join_requests (group_id, user_id, message)
-			VALUES ($1, $2, 'Joined from invite link')
-			ON CONFLICT (group_id, user_id) WHERE status = 'pending'
-			DO UPDATE SET updated_at = NOW()`,
-			invite.GroupID,
-			viewerID,
-		); err != nil {
-			return nil, err
-		}
-		if _, err := tx.Exec(ctx, `
-			UPDATE groups
-			SET pending_request_count = (
-				SELECT COUNT(*) FROM group_join_requests WHERE group_id = $1 AND status = 'pending'
-			), updated_at = NOW()
-			WHERE id = $1`,
-			invite.GroupID,
-		); err != nil {
-			return nil, err
-		}
-	} else {
-		if _, err := tx.Exec(ctx, `
-			INSERT INTO group_memberships (group_id, user_id, role, status, invited_by, joined_at)
-			SELECT $1, $2, 'member', 'active', created_by, NOW()
-			FROM group_invites
-			WHERE id = $3
-			ON CONFLICT (group_id, user_id) DO NOTHING`,
-			invite.GroupID,
-			viewerID,
-			invite.ID,
-		); err != nil {
-			return nil, err
-		}
-		if _, err := tx.Exec(ctx, `
-			UPDATE groups
-			SET member_count = member_count + 1, updated_at = NOW()
-			WHERE id = $1`,
-			invite.GroupID,
-		); err != nil {
-			return nil, err
-		}
-	}
-	if _, err := tx.Exec(ctx, `
-		UPDATE group_invites
-		SET use_count = use_count + 1
-		WHERE id = $1`,
-		invite.ID,
-	); err != nil {
-		return nil, err
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return nil, err
-	}
-	if invite.RequiresApproval {
-		return &JoinGroupResult{State: "pending"}, nil
-	}
-	group, err := s.GetGroup(ctx, viewerID, invite.GroupID)
-	if err != nil {
-		return nil, err
-	}
-	return &JoinGroupResult{State: "member", Group: group}, nil
-}
-
-func (s *pgStore) ListJoinRequests(ctx context.Context, viewerID, groupID uuid.UUID) ([]GroupJoinRequest, error) {
-	role, err := s.requireActiveMembership(ctx, viewerID, groupID)
-	if err != nil {
-		return nil, err
-	}
-	if !canModerate(role) {
-		return nil, ErrForbidden
-	}
-	rows, err := s.pool.Query(ctx, `
-		SELECT gjr.id, gjr.group_id, gjr.user_id, u.username, u.avatar_url, gjr.message,
-			gjr.status, gjr.reviewed_by, gjr.reviewed_at, gjr.created_at, gjr.updated_at
-		FROM group_join_requests gjr
-		JOIN users u ON u.id = gjr.user_id
-		WHERE gjr.group_id = $1 AND gjr.status = 'pending'
-		ORDER BY gjr.created_at ASC`,
-		groupID,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	requests := []GroupJoinRequest{}
-	for rows.Next() {
-		request, err := scanJoinRequest(rows)
-		if err != nil {
-			return nil, err
-		}
-		requests = append(requests, *request)
-	}
-	return requests, rows.Err()
-}
-
-func (s *pgStore) ReviewJoinRequest(ctx context.Context, viewerID, groupID, requestID uuid.UUID, approve bool) (*GroupJoinRequest, error) {
-	role, err := s.requireActiveMembership(ctx, viewerID, groupID)
-	if err != nil {
-		return nil, err
-	}
-	if !canModerate(role) {
-		return nil, ErrForbidden
-	}
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback(ctx)
-
-	status := "rejected"
-	if approve {
-		status = "approved"
-	}
-	var request GroupJoinRequest
-	err = tx.QueryRow(ctx, `
-		UPDATE group_join_requests
-		SET status = $4, reviewed_by = $3, reviewed_at = NOW(), updated_at = NOW()
-		WHERE id = $1 AND group_id = $2 AND status = 'pending'
-		RETURNING id, group_id, user_id, ''::text AS username, NULL::text AS avatar_url, message,
-			status, reviewed_by, reviewed_at, created_at, updated_at`,
-		requestID,
-		groupID,
-		viewerID,
-		status,
-	).Scan(
-		&request.ID,
-		&request.GroupID,
-		&request.UserID,
-		&request.Username,
-		&request.AvatarURL,
-		&request.Message,
-		&request.Status,
-		&request.ReviewedBy,
-		&request.ReviewedAt,
-		&request.CreatedAt,
-		&request.UpdatedAt,
-	)
-	if err != nil {
-		if err == pgx.ErrNoRows {
-			return nil, ErrNotFound
-		}
-		return nil, err
-	}
-	if approve {
-		if _, err := tx.Exec(ctx, `
-			INSERT INTO group_memberships (group_id, user_id, role, status, joined_at)
-			VALUES ($1, $2, 'member', 'active', NOW())
-			ON CONFLICT (group_id, user_id) DO NOTHING`,
-			groupID,
-			request.UserID,
-		); err != nil {
-			return nil, err
-		}
-		if _, err := tx.Exec(ctx, `
-			UPDATE groups
-			SET member_count = member_count + 1, updated_at = NOW()
-			WHERE id = $1`,
-			groupID,
-		); err != nil {
-			return nil, err
-		}
-	}
-	if _, err := tx.Exec(ctx, `
-		UPDATE groups
-		SET pending_request_count = (
-			SELECT COUNT(*) FROM group_join_requests WHERE group_id = $1 AND status = 'pending'
-		), updated_at = NOW()
-		WHERE id = $1`,
-		groupID,
-	); err != nil {
-		return nil, err
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return nil, err
-	}
-	return &request, nil
-}
-
 func (s *pgStore) ContactAdmins(ctx context.Context, viewerID, groupID uuid.UUID, subject, body string) (*GroupAdminThread, error) {
 	if _, err := s.GetGroup(ctx, viewerID, groupID); err != nil {
 		return nil, err
@@ -1542,7 +1160,6 @@ func scanGroup(row groupScanner) (*Group, error) {
 		&group.MemberCount,
 		&group.PostCount,
 		&group.MediaCount,
-		&group.PendingRequestCount,
 		&group.IsSystem,
 		&group.SystemKey,
 		&group.LockedSettings,
@@ -1550,7 +1167,6 @@ func scanGroup(row groupScanner) (*Group, error) {
 		&group.UpdatedAt,
 		&role,
 		&status,
-		&group.HasPendingRequest,
 	)
 	if err != nil {
 		if err == pgx.ErrNoRows {
@@ -2018,29 +1634,6 @@ func (s *pgStore) getComment(ctx context.Context, groupID, commentID uuid.UUID) 
 	return scanComment(row)
 }
 
-func scanJoinRequest(row groupScanner) (*GroupJoinRequest, error) {
-	var request GroupJoinRequest
-	if err := row.Scan(
-		&request.ID,
-		&request.GroupID,
-		&request.UserID,
-		&request.Username,
-		&request.AvatarURL,
-		&request.Message,
-		&request.Status,
-		&request.ReviewedBy,
-		&request.ReviewedAt,
-		&request.CreatedAt,
-		&request.UpdatedAt,
-	); err != nil {
-		if err == pgx.ErrNoRows {
-			return nil, ErrNotFound
-		}
-		return nil, err
-	}
-	return &request, nil
-}
-
 func scanAdminThread(row groupScanner) (*GroupAdminThread, error) {
 	var thread GroupAdminThread
 	if err := row.Scan(
@@ -2190,19 +1783,6 @@ func (s *pgStore) getAdminMessage(ctx context.Context, messageID uuid.UUID) (*Gr
 	))
 }
 
-func generateInviteToken() (string, error) {
-	bytes := make([]byte, 32)
-	if _, err := rand.Read(bytes); err != nil {
-		return "", err
-	}
-	return base64.RawURLEncoding.EncodeToString(bytes), nil
-}
-
-func hashInviteToken(token string) string {
-	sum := sha256.Sum256([]byte(strings.TrimSpace(token)))
-	return hex.EncodeToString(sum[:])
-}
-
 func applyViewerPermissions(group *Group) {
 	role := GroupRole("")
 	if group.ViewerRole != nil && group.ViewerStatus != nil && *group.ViewerStatus == MembershipStatusActive {
@@ -2212,7 +1792,6 @@ func applyViewerPermissions(group *Group) {
 	isMember := role != ""
 	isModerator := role == GroupRoleOwner || role == GroupRoleAdmin || role == GroupRoleModerator
 	isAdmin := role == GroupRoleOwner || role == GroupRoleAdmin
-	group.CanInvite = isMember
 	group.CanManageMembers = isAdmin
 	group.CanManageSettings = role == GroupRoleOwner || role == GroupRoleAdmin
 	group.CanModerateContent = isModerator
@@ -2237,16 +1816,6 @@ func normalizeMemberScope(scope string) string {
 		return "joined"
 	}
 	return "discover"
-}
-
-func normalizeVisibilityFilter(visibility string) string {
-	normalized := strings.TrimSpace(visibility)
-	switch GroupVisibility(normalized) {
-	case GroupVisibilityPublic, GroupVisibilityApprovalRequired, GroupVisibilityInviteOnly, GroupVisibilityPrivateHidden:
-		return normalized
-	default:
-		return ""
-	}
 }
 
 func normalizeGroupTypeFilter(groupType string) string {

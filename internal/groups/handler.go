@@ -59,8 +59,6 @@ func (h *Handler) UseModerator(service moderation.Service) {
 }
 
 type Notifier interface {
-	NotifyGroupJoinRequest(ctx context.Context, groupID, requesterID uuid.UUID) error
-	NotifyGroupJoinApproved(ctx context.Context, groupID, reviewerID, approvedUserID uuid.UUID) error
 	NotifyGroupPost(ctx context.Context, groupID, postID, authorID uuid.UUID, postType, body string) error
 	NotifyGroupComment(ctx context.Context, groupID, postID, commentID, authorID uuid.UUID, body string) error
 	NotifyGroupAdminContact(ctx context.Context, groupID, threadID, senderID uuid.UUID, body string) error
@@ -98,12 +96,6 @@ type groupPostImageRequest struct {
 	Height   int     `json:"height"`
 }
 
-type inviteRequest struct {
-	ExpiresAt        *time.Time `json:"expires_at"`
-	MaxUses          *int       `json:"max_uses"`
-	RequiresApproval bool       `json:"requires_approval"`
-}
-
 type adminContactRequest struct {
 	Subject string `json:"subject"`
 	Body    string `json:"body"`
@@ -137,7 +129,6 @@ func (h *Handler) ListGroups(w http.ResponseWriter, r *http.Request) {
 		Country:         strings.TrimSpace(r.URL.Query().Get("country")),
 		Tag:             strings.TrimSpace(r.URL.Query().Get("tag")),
 		RecoveryPathway: strings.TrimSpace(r.URL.Query().Get("recovery_pathway")),
-		Visibility:      strings.TrimSpace(r.URL.Query().Get("visibility")),
 		GroupType:       strings.TrimSpace(r.URL.Query().Get("group_type")),
 		MemberScope:     strings.TrimSpace(r.URL.Query().Get("member_scope")),
 		Before:          params.Before,
@@ -212,17 +203,10 @@ func (h *Handler) JoinGroup(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, http.StatusForbidden, "you cannot join this group")
 		return
 	}
-	if errors.Is(err, ErrInviteRequired) {
-		response.Error(w, http.StatusForbidden, "invite required")
-		return
-	}
 	if err != nil {
 		log.Printf("join group failed for %s by %s: %v", groupID, userID, err)
 		response.Error(w, http.StatusInternalServerError, "could not join group")
 		return
-	}
-	if result.State == "pending" && h.notifier != nil {
-		_ = h.notifier.NotifyGroupJoinRequest(r.Context(), groupID, userID)
 	}
 	response.Success(w, http.StatusOK, result)
 }
@@ -539,143 +523,6 @@ func (h *Handler) DeletePost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	response.Success(w, http.StatusOK, map[string]bool{"deleted": true})
-}
-
-func (h *Handler) CreateInvite(w http.ResponseWriter, r *http.Request) {
-	userID := middleware.CurrentUserID(r)
-	groupID, ok := parseGroupID(w, r)
-	if !ok {
-		return
-	}
-	var req inviteRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err.Error() != "EOF" {
-		response.Error(w, http.StatusBadRequest, "invalid request body")
-		return
-	}
-	if req.MaxUses != nil && *req.MaxUses < 1 {
-		response.ValidationError(w, map[string]string{"max_uses": "max uses must be greater than zero"})
-		return
-	}
-	invite, err := h.store.CreateInvite(r.Context(), userID, groupID, CreateGroupInviteInput{
-		ExpiresAt:        req.ExpiresAt,
-		MaxUses:          req.MaxUses,
-		RequiresApproval: req.RequiresApproval,
-	})
-	if errors.Is(err, ErrNotFound) {
-		response.Error(w, http.StatusNotFound, "group not found")
-		return
-	}
-	if errors.Is(err, ErrForbidden) {
-		response.Error(w, http.StatusForbidden, "you cannot invite to this group")
-		return
-	}
-	if err != nil {
-		log.Printf("create group invite failed for %s: %v", groupID, err)
-		response.Error(w, http.StatusInternalServerError, "could not create invite")
-		return
-	}
-	response.Success(w, http.StatusCreated, invite)
-}
-
-func (h *Handler) GetInvitePreview(w http.ResponseWriter, r *http.Request) {
-	userID := middleware.CurrentUserID(r)
-	token := strings.TrimSpace(chi.URLParam(r, "token"))
-	if token == "" {
-		response.Error(w, http.StatusBadRequest, "invalid invite token")
-		return
-	}
-	preview, err := h.store.GetInvitePreview(r.Context(), userID, token)
-	if errors.Is(err, ErrNotFound) {
-		response.Error(w, http.StatusNotFound, "invite not found")
-		return
-	}
-	if err != nil {
-		log.Printf("get group invite preview failed for %s: %v", userID, err)
-		response.Error(w, http.StatusInternalServerError, "could not fetch invite")
-		return
-	}
-	response.Success(w, http.StatusOK, preview)
-}
-
-func (h *Handler) AcceptInvite(w http.ResponseWriter, r *http.Request) {
-	userID := middleware.CurrentUserID(r)
-	token := strings.TrimSpace(chi.URLParam(r, "token"))
-	if token == "" {
-		response.Error(w, http.StatusBadRequest, "invalid invite token")
-		return
-	}
-	result, err := h.store.AcceptInvite(r.Context(), userID, token)
-	if errors.Is(err, ErrNotFound) {
-		response.Error(w, http.StatusNotFound, "invite not found")
-		return
-	}
-	if errors.Is(err, ErrForbidden) {
-		response.Error(w, http.StatusForbidden, "you cannot accept this invite")
-		return
-	}
-	if err != nil {
-		log.Printf("accept group invite failed for %s: %v", userID, err)
-		response.Error(w, http.StatusInternalServerError, "could not accept invite")
-		return
-	}
-	response.Success(w, http.StatusOK, result)
-}
-
-func (h *Handler) ListJoinRequests(w http.ResponseWriter, r *http.Request) {
-	userID := middleware.CurrentUserID(r)
-	groupID, ok := parseGroupID(w, r)
-	if !ok {
-		return
-	}
-	requests, err := h.store.ListJoinRequests(r.Context(), userID, groupID)
-	if errors.Is(err, ErrNotFound) {
-		response.Error(w, http.StatusNotFound, "group not found")
-		return
-	}
-	if errors.Is(err, ErrForbidden) {
-		response.Error(w, http.StatusForbidden, "you cannot review requests")
-		return
-	}
-	if err != nil {
-		log.Printf("list join requests failed for %s: %v", groupID, err)
-		response.Error(w, http.StatusInternalServerError, "could not fetch join requests")
-		return
-	}
-	response.Success(w, http.StatusOK, map[string]any{"items": requests})
-}
-
-func (h *Handler) ApproveJoinRequest(w http.ResponseWriter, r *http.Request) {
-	h.reviewJoinRequest(w, r, true)
-}
-
-func (h *Handler) RejectJoinRequest(w http.ResponseWriter, r *http.Request) {
-	h.reviewJoinRequest(w, r, false)
-}
-
-func (h *Handler) reviewJoinRequest(w http.ResponseWriter, r *http.Request, approve bool) {
-	userID := middleware.CurrentUserID(r)
-	groupID, requestID, ok := parseGroupAndRequestID(w, r)
-	if !ok {
-		return
-	}
-	request, err := h.store.ReviewJoinRequest(r.Context(), userID, groupID, requestID, approve)
-	if errors.Is(err, ErrNotFound) {
-		response.Error(w, http.StatusNotFound, "join request not found")
-		return
-	}
-	if errors.Is(err, ErrForbidden) {
-		response.Error(w, http.StatusForbidden, "you cannot review requests")
-		return
-	}
-	if err != nil {
-		log.Printf("review join request failed for %s: %v", requestID, err)
-		response.Error(w, http.StatusInternalServerError, "could not review join request")
-		return
-	}
-	if approve && h.notifier != nil {
-		_ = h.notifier.NotifyGroupJoinApproved(r.Context(), groupID, userID, request.UserID)
-	}
-	response.Success(w, http.StatusOK, request)
 }
 
 func (h *Handler) ContactAdmins(w http.ResponseWriter, r *http.Request) {
@@ -1034,19 +881,6 @@ func parseGroupAndPostID(w http.ResponseWriter, r *http.Request) (uuid.UUID, uui
 		return uuid.Nil, uuid.Nil, false
 	}
 	return groupID, postID, true
-}
-
-func parseGroupAndRequestID(w http.ResponseWriter, r *http.Request) (uuid.UUID, uuid.UUID, bool) {
-	groupID, ok := parseGroupID(w, r)
-	if !ok {
-		return uuid.Nil, uuid.Nil, false
-	}
-	requestID, err := uuid.Parse(chi.URLParam(r, "requestId"))
-	if err != nil {
-		response.Error(w, http.StatusBadRequest, "invalid request id")
-		return uuid.Nil, uuid.Nil, false
-	}
-	return groupID, requestID, true
 }
 
 func parseGroupAndThreadID(w http.ResponseWriter, r *http.Request) (uuid.UUID, uuid.UUID, bool) {

@@ -484,57 +484,6 @@ func (s *pgStore) CreateCommentMentionNotifications(ctx context.Context, postID,
 	return tx.Commit(ctx)
 }
 
-func (s *pgStore) CreateGroupJoinRequestNotifications(ctx context.Context, groupID, requesterID uuid.UUID) error {
-	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback(ctx)
-
-	groupName, actorUsername, err := groupNotificationContext(ctx, tx, groupID, requesterID)
-	if err != nil {
-		return err
-	}
-	recipients, err := groupAdminNotificationRecipients(ctx, tx, groupID, requesterID)
-	if err != nil {
-		return err
-	}
-	for _, recipientID := range recipients {
-		payload := groupPayload(NotificationTypeGroupJoinRequest, groupID, requesterID)
-		if err := s.createNotification(ctx, tx, recipientID, NotificationTypeGroupJoinRequest, requesterID, ResourceTypeGroup, groupID, groupName, actorUsername+" requested to join", payload); err != nil {
-			return err
-		}
-	}
-	return tx.Commit(ctx)
-}
-
-func (s *pgStore) CreateGroupJoinApprovedNotification(ctx context.Context, groupID, reviewerID, approvedUserID uuid.UUID) error {
-	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback(ctx)
-
-	groupName, _, err := groupNotificationContext(ctx, tx, groupID, reviewerID)
-	if err != nil {
-		return err
-	}
-	if reviewerID == approvedUserID {
-		return tx.Commit(ctx)
-	}
-	enabled, err := groupNotificationEnabled(ctx, tx, groupID, approvedUserID, "admin")
-	if err != nil {
-		return err
-	}
-	if enabled {
-		payload := groupPayload(NotificationTypeGroupJoinApproved, groupID, reviewerID)
-		if err := s.createNotification(ctx, tx, approvedUserID, NotificationTypeGroupJoinApproved, reviewerID, ResourceTypeGroup, groupID, groupName, "Your join request was approved", payload); err != nil {
-			return err
-		}
-	}
-	return tx.Commit(ctx)
-}
-
 func (s *pgStore) CreateGroupPostNotifications(ctx context.Context, groupID, postID, authorID uuid.UUID, postType, body string) error {
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {

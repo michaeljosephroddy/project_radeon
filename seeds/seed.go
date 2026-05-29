@@ -205,7 +205,7 @@ func seed(ctx context.Context, pool *pgxpool.Pool) error {
 			support_responses, support_requests,
 			group_admin_messages, group_admin_threads, group_reports,
 			group_reactions, group_comments, group_post_images, group_posts,
-			group_invites, group_join_requests, group_notification_preferences,
+			group_notification_preferences,
 			group_audit_events, group_memberships, groups,
 			share_comment_mentions, share_comments, share_reactions, share_quality_features,
 			post_shares, feed_hidden_posts, feed_muted_authors, feed_impressions, feed_events,
@@ -1562,7 +1562,7 @@ func insertGroups(ctx context.Context, tx pgx.Tx, users []seededUser, images *se
 			Name:             "Dublin Evening Check-ins",
 			Description:      "A moderated group for people in and around Dublin who want evening accountability.",
 			Rules:            "Keep names and stories private. Ask before giving advice. Use content warnings where needed.",
-			Visibility:       "approval_required",
+			Visibility:       "public",
 			City:             "Dublin",
 			Country:          "Ireland",
 			Tags:             []string{"local", "check-in", "evening"},
@@ -1573,9 +1573,9 @@ func insertGroups(ctx context.Context, tx pgx.Tx, users []seededUser, images *se
 		},
 		{
 			Name:             "Early Recovery Circle",
-			Description:      "Invite-only space for people building their first sober routines.",
+			Description:      "A space for people building their first sober routines.",
 			Rules:            "No screenshots. Respect anonymity. Reach out early when cravings spike.",
-			Visibility:       "invite_only",
+			Visibility:       "public",
 			City:             "Portlaoise",
 			Country:          "Ireland",
 			Tags:             []string{"early-recovery", "cravings", "routine"},
@@ -1588,7 +1588,7 @@ func insertGroups(ctx context.Context, tx pgx.Tx, users []seededUser, images *se
 			Name:             "Women in Recovery",
 			Description:      "A safer space for women to share recovery experiences and support.",
 			Rules:            "Respect identity, privacy, and boundaries. Report unsafe behavior.",
-			Visibility:       "approval_required",
+			Visibility:       "public",
 			City:             "Carlow",
 			Country:          "Ireland",
 			Tags:             []string{"women", "safety", "peer-support"},
@@ -1640,7 +1640,7 @@ func insertGroups(ctx context.Context, tx pgx.Tx, users []seededUser, images *se
 			Name:             "Toronto First 90 Days",
 			Description:      "Support for the fragile early stretch: sleep, cravings, routines, and repair.",
 			Rules:            "No pressure to count days publicly. Ask before advising. Protect anonymity.",
-			Visibility:       "approval_required",
+			Visibility:       "public",
 			City:             "Toronto",
 			Country:          "Canada",
 			Tags:             []string{"early-recovery", "cravings", "daily-support"},
@@ -1666,7 +1666,7 @@ func insertGroups(ctx context.Context, tx pgx.Tx, users []seededUser, images *se
 			Name:             "LGBTQ+ Recovery Lounge",
 			Description:      "An affirming recovery space for identity, safety, connection, and support.",
 			Rules:            "Use correct names and pronouns. No outing people. Report unsafe behavior.",
-			Visibility:       "approval_required",
+			Visibility:       "public",
 			City:             "Manchester",
 			Country:          "United Kingdom",
 			Tags:             []string{"lgbtq", "safety", "peer-support"},
@@ -1705,7 +1705,7 @@ func insertGroups(ctx context.Context, tx pgx.Tx, users []seededUser, images *se
 			Name:             "Women Rebuilding Evenings",
 			Description:      "Evening support for women creating safer routines after work and caregiving.",
 			Rules:            "Respect privacy and boundaries. Do not pressure anyone to disclose details.",
-			Visibility:       "approval_required",
+			Visibility:       "public",
 			City:             "Boston",
 			Country:          "United States",
 			Tags:             []string{"women", "evening", "safety"},
@@ -1744,7 +1744,7 @@ func insertGroups(ctx context.Context, tx pgx.Tx, users []seededUser, images *se
 			Name:             "Trauma-Informed Recovery",
 			Description:      "A slower moderated group for grounding, safety plans, and steady recovery.",
 			Rules:            "Use content warnings. No graphic detail. Support without diagnosing.",
-			Visibility:       "approval_required",
+			Visibility:       "public",
 			City:             "Edinburgh",
 			Country:          "United Kingdom",
 			Tags:             []string{"safety", "grounding", "peer-support"},
@@ -1757,7 +1757,7 @@ func insertGroups(ctx context.Context, tx pgx.Tx, users []seededUser, images *se
 			Name:             "Medication-Assisted Recovery",
 			Description:      "Peer support for people navigating recovery with prescribed medication.",
 			Rules:            "No dosing advice. No stigma. Encourage professional medical support.",
-			Visibility:       "approval_required",
+			Visibility:       "public",
 			City:             "Seattle",
 			Country:          "United States",
 			Tags:             []string{"peer-support", "stigma-free", "health"},
@@ -1767,10 +1767,10 @@ func insertGroups(ctx context.Context, tx pgx.Tx, users []seededUser, images *se
 			MemberCount:      24,
 		},
 		{
-			Name:             "Private Sponsor Pod",
-			Description:      "Private hidden seeded group for admin and visibility testing.",
-			Rules:            "Private group content stays private.",
-			Visibility:       "private_hidden",
+			Name:             "Sponsor Support Pod",
+			Description:      "Seeded sponsor support group for admin and visibility testing.",
+			Rules:            "Respect privacy and keep sponsor discussions constructive.",
+			Visibility:       "public",
 			City:             "Portlaoise",
 			Country:          "Ireland",
 			Tags:             []string{"private", "sponsor"},
@@ -1858,7 +1858,7 @@ func insertGroups(ctx context.Context, tx pgx.Tx, users []seededUser, images *se
 		if err := insertGroupContent(ctx, tx, &group, users, now, index, images); err != nil {
 			return nil, err
 		}
-		if err := insertGroupWorkflowData(ctx, tx, group, users, now, index); err != nil {
+		if err := insertGroupWorkflowData(ctx, tx, group, now, index); err != nil {
 			return nil, err
 		}
 		if err := refreshGroupCounters(ctx, tx, groupID); err != nil {
@@ -1997,38 +1997,7 @@ func insertGroupContent(ctx context.Context, tx pgx.Tx, group *seededGroup, user
 	return nil
 }
 
-func insertGroupWorkflowData(ctx context.Context, tx pgx.Tx, group seededGroup, users []seededUser, now time.Time, groupIndex int) error {
-	if group.Visibility == "approval_required" {
-		requester := users[(groupIndex*13+17)%len(users)]
-		if !containsUUID(group.MemberIDs, requester.ID) {
-			if _, err := tx.Exec(ctx, `
-				INSERT INTO group_join_requests (group_id, user_id, message, status, created_at, updated_at)
-				VALUES ($1, $2, 'I live nearby and would like to join the check-ins.', 'pending', $3, $3)
-				ON CONFLICT DO NOTHING`,
-				group.ID,
-				requester.ID,
-				now.Add(-2*time.Hour),
-			); err != nil {
-				return fmt.Errorf("insert group join request: %w", err)
-			}
-		}
-	}
-
-	tokenHash := fmt.Sprintf("seed-%s", group.ID.String())
-	if _, err := tx.Exec(ctx, `
-		INSERT INTO group_invites (group_id, token_hash, created_by, expires_at, max_uses, requires_approval, created_at)
-		VALUES ($1, $2, $3, $4, 25, $5, $6)
-		ON CONFLICT (token_hash) DO NOTHING`,
-		group.ID,
-		tokenHash,
-		group.OwnerID,
-		now.Add(30*24*time.Hour),
-		group.Visibility == "approval_required",
-		now.Add(-24*time.Hour),
-	); err != nil {
-		return fmt.Errorf("insert group invite: %w", err)
-	}
-
+func insertGroupWorkflowData(ctx context.Context, tx pgx.Tx, group seededGroup, now time.Time, _ int) error {
 	threadID := uuid.New()
 	contactUser := group.MemberIDs[minInt(2, len(group.MemberIDs)-1)]
 	if _, err := tx.Exec(ctx, `
@@ -2077,7 +2046,6 @@ func refreshGroupCounters(ctx context.Context, tx pgx.Tx, groupID uuid.UUID) err
 				JOIN group_posts gp ON gp.id = gpi.post_id
 				WHERE gpi.group_id = $1 AND gp.deleted_at IS NULL
 			),
-			pending_request_count = (SELECT COUNT(*) FROM group_join_requests WHERE group_id = $1 AND status = 'pending'),
 			updated_at = NOW()
 		WHERE id = $1`,
 		groupID,

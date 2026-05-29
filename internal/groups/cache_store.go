@@ -11,11 +11,10 @@ import (
 )
 
 const (
-	groupsListTTL       = 45 * time.Second
-	groupDetailTTL      = 90 * time.Second
-	groupCollectionTTL  = 45 * time.Second
-	groupAdminListTTL   = 30 * time.Second
-	groupJoinRequestTTL = 30 * time.Second
+	groupsListTTL      = 45 * time.Second
+	groupDetailTTL     = 90 * time.Second
+	groupCollectionTTL = 45 * time.Second
+	groupAdminListTTL  = 30 * time.Second
 )
 
 type cachedStore struct {
@@ -59,7 +58,6 @@ func (s *cachedStore) ListGroups(ctx context.Context, viewerID uuid.UUID, params
 		"country", encodeGroupCachePart(params.Country),
 		"tag", encodeGroupCachePart(params.Tag),
 		"pathway", encodeGroupCachePart(params.RecoveryPathway),
-		"visibility", encodeGroupCachePart(params.Visibility),
 		"type", encodeGroupCachePart(params.GroupType),
 		"scope", encodeGroupCachePart(params.MemberScope),
 		"before", encodeGroupOptionalTime(params.Before),
@@ -277,66 +275,6 @@ func (s *cachedStore) DeletePost(ctx context.Context, viewerID, groupID, postID 
 	}
 	s.bumpGroupVersions(ctx, groupID, viewerID)
 	return nil
-}
-
-func (s *cachedStore) CreateInvite(ctx context.Context, viewerID, groupID uuid.UUID, input CreateGroupInviteInput) (*GroupInvite, error) {
-	invite, err := s.inner.CreateInvite(ctx, viewerID, groupID, input)
-	if err != nil {
-		return nil, err
-	}
-	s.bumpGroupVersions(ctx, groupID, viewerID)
-	return invite, nil
-}
-
-func (s *cachedStore) GetInvitePreview(ctx context.Context, viewerID uuid.UUID, token string) (*GroupInvitePreview, error) {
-	return s.inner.GetInvitePreview(ctx, viewerID, token)
-}
-
-func (s *cachedStore) AcceptInvite(ctx context.Context, viewerID uuid.UUID, token string) (*JoinGroupResult, error) {
-	result, err := s.inner.AcceptInvite(ctx, viewerID, token)
-	if err != nil {
-		return nil, err
-	}
-	if result.Group != nil {
-		s.bumpGroupVersions(ctx, result.Group.ID, viewerID)
-	} else {
-		_ = s.cache.BumpVersions(ctx, s.groupsVersionKey(), s.userGroupsVersionKey(viewerID))
-	}
-	return result, nil
-}
-
-func (s *cachedStore) ListJoinRequests(ctx context.Context, viewerID, groupID uuid.UUID) ([]GroupJoinRequest, error) {
-	version, err := s.cache.GetVersion(ctx, s.groupVersionKey(groupID))
-	if err != nil {
-		return s.inner.ListJoinRequests(ctx, viewerID, groupID)
-	}
-	key := s.cache.Key(
-		"groups", "join_requests",
-		"id", groupID.String(),
-		"viewer", viewerID.String(),
-		"v", strconv.FormatInt(version, 10),
-	)
-	var requests []GroupJoinRequest
-	if err := s.cache.ReadThrough(ctx, key, groupJoinRequestTTL, &requests, func(ctx context.Context, dest any) error {
-		loaded, err := s.inner.ListJoinRequests(ctx, viewerID, groupID)
-		if err != nil {
-			return err
-		}
-		*dest.(*[]GroupJoinRequest) = loaded
-		return nil
-	}); err != nil {
-		return nil, err
-	}
-	return requests, nil
-}
-
-func (s *cachedStore) ReviewJoinRequest(ctx context.Context, viewerID, groupID, requestID uuid.UUID, approve bool) (*GroupJoinRequest, error) {
-	request, err := s.inner.ReviewJoinRequest(ctx, viewerID, groupID, requestID, approve)
-	if err != nil {
-		return nil, err
-	}
-	s.bumpGroupVersions(ctx, groupID, viewerID, request.UserID)
-	return request, nil
 }
 
 func (s *cachedStore) ContactAdmins(ctx context.Context, viewerID, groupID uuid.UUID, subject, body string) (*GroupAdminThread, error) {

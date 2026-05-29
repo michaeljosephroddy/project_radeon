@@ -89,20 +89,6 @@ func (s *Service) NotifyCommentMentions(ctx context.Context, postID, commentID, 
 	return s.store.CreateCommentMentionNotifications(ctx, postID, commentID, authorID, mentionedUserIDs, body)
 }
 
-func (s *Service) NotifyGroupJoinRequest(ctx context.Context, groupID, requesterID uuid.UUID) error {
-	go s.runGroupNotification("create group join request notifications", func(ctx context.Context) error {
-		return s.store.CreateGroupJoinRequestNotifications(ctx, groupID, requesterID)
-	})
-	return nil
-}
-
-func (s *Service) NotifyGroupJoinApproved(ctx context.Context, groupID, reviewerID, approvedUserID uuid.UUID) error {
-	go s.runGroupNotification("create group join approved notification", func(ctx context.Context) error {
-		return s.store.CreateGroupJoinApprovedNotification(ctx, groupID, reviewerID, approvedUserID)
-	})
-	return nil
-}
-
 func (s *Service) NotifyGroupPost(ctx context.Context, groupID, postID, authorID uuid.UUID, postType, body string) error {
 	go s.runGroupNotification("create group post notifications", func(ctx context.Context) error {
 		return s.store.CreateGroupPostNotifications(ctx, groupID, postID, authorID, postType, body)

@@ -15,15 +15,14 @@ import (
 )
 
 type mockStore struct {
-	create       func(ctx context.Context, ownerID uuid.UUID, input CreateGroupInput) (*Group, error)
-	list         func(ctx context.Context, viewerID uuid.UUID, params ListGroupsParams) ([]Group, error)
-	get          func(ctx context.Context, viewerID, groupID uuid.UUID) (*Group, error)
-	join         func(ctx context.Context, viewerID, groupID uuid.UUID, message string) (*JoinGroupResult, error)
-	leave        func(ctx context.Context, viewerID, groupID uuid.UUID) error
-	listMembers  func(ctx context.Context, viewerID, groupID uuid.UUID, before *time.Time, limit int) ([]GroupMember, error)
-	createPost   func(ctx context.Context, viewerID, groupID uuid.UUID, input CreateGroupPostInput) (*GroupPost, error)
-	listPosts    func(ctx context.Context, viewerID, groupID uuid.UUID, before *time.Time, limit int) ([]GroupPost, error)
-	createInvite func(ctx context.Context, viewerID, groupID uuid.UUID, input CreateGroupInviteInput) (*GroupInvite, error)
+	create      func(ctx context.Context, ownerID uuid.UUID, input CreateGroupInput) (*Group, error)
+	list        func(ctx context.Context, viewerID uuid.UUID, params ListGroupsParams) ([]Group, error)
+	get         func(ctx context.Context, viewerID, groupID uuid.UUID) (*Group, error)
+	join        func(ctx context.Context, viewerID, groupID uuid.UUID, message string) (*JoinGroupResult, error)
+	leave       func(ctx context.Context, viewerID, groupID uuid.UUID) error
+	listMembers func(ctx context.Context, viewerID, groupID uuid.UUID, before *time.Time, limit int) ([]GroupMember, error)
+	createPost  func(ctx context.Context, viewerID, groupID uuid.UUID, input CreateGroupPostInput) (*GroupPost, error)
+	listPosts   func(ctx context.Context, viewerID, groupID uuid.UUID, before *time.Time, limit int) ([]GroupPost, error)
 }
 
 func (m *mockStore) CreateGroup(ctx context.Context, ownerID uuid.UUID, input CreateGroupInput) (*Group, error) {
@@ -151,47 +150,6 @@ func (m *mockStore) DeletePost(ctx context.Context, viewerID, groupID, postID uu
 	return nil
 }
 
-func (m *mockStore) CreateInvite(ctx context.Context, viewerID, groupID uuid.UUID, input CreateGroupInviteInput) (*GroupInvite, error) {
-	if m.createInvite != nil {
-		return m.createInvite(ctx, viewerID, groupID, input)
-	}
-	return &GroupInvite{ID: uuid.New(), GroupID: groupID, Token: "token", CreatedAt: time.Now().UTC()}, nil
-}
-
-func (m *mockStore) GetInvitePreview(ctx context.Context, viewerID uuid.UUID, token string) (*GroupInvitePreview, error) {
-	return &GroupInvitePreview{
-		Token:            token,
-		GroupID:          uuid.New(),
-		GroupName:        "Dublin Recovery",
-		GroupSlug:        "dublin-recovery",
-		Visibility:       GroupVisibilityPublic,
-		RequiresApproval: false,
-		ViewerStatus:     "none",
-		CreatedAt:        time.Now().UTC(),
-	}, nil
-}
-
-func (m *mockStore) AcceptInvite(ctx context.Context, viewerID uuid.UUID, token string) (*JoinGroupResult, error) {
-	return &JoinGroupResult{State: "member"}, nil
-}
-
-func (m *mockStore) ListJoinRequests(ctx context.Context, viewerID, groupID uuid.UUID) ([]GroupJoinRequest, error) {
-	return []GroupJoinRequest{}, nil
-}
-
-func (m *mockStore) ReviewJoinRequest(ctx context.Context, viewerID, groupID, requestID uuid.UUID, approve bool) (*GroupJoinRequest, error) {
-	now := time.Now().UTC()
-	return &GroupJoinRequest{
-		ID:        requestID,
-		GroupID:   groupID,
-		UserID:    uuid.New(),
-		Username:  "sam",
-		Status:    "approved",
-		CreatedAt: now,
-		UpdatedAt: now,
-	}, nil
-}
-
 func (m *mockStore) ContactAdmins(ctx context.Context, viewerID, groupID uuid.UUID, subject, body string) (*GroupAdminThread, error) {
 	now := time.Now().UTC()
 	return &GroupAdminThread{
@@ -293,33 +251,15 @@ func TestCreateGroupDefaultsVisibilityAndPostingPermission(t *testing.T) {
 
 func TestCreateGroupRejectsInvalidVisibility(t *testing.T) {
 	h := NewHandler(&mockStore{})
-	req := withUserID(httptest.NewRequest(http.MethodPost, "/groups", strings.NewReader(`{"name":"Dublin Recovery","visibility":"secret"}`)), uuid.New())
-	rec := httptest.NewRecorder()
+	for _, visibility := range []string{"secret", "approval_required", "invite_only", "private_hidden"} {
+		req := withUserID(httptest.NewRequest(http.MethodPost, "/groups", strings.NewReader(`{"name":"Dublin Recovery","visibility":"`+visibility+`"}`)), uuid.New())
+		rec := httptest.NewRecorder()
 
-	h.CreateGroup(rec, req)
+		h.CreateGroup(rec, req)
 
-	if rec.Code != http.StatusUnprocessableEntity {
-		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
-	}
-}
-
-func TestJoinGroupReturnsInviteRequired(t *testing.T) {
-	groupID := uuid.New()
-	h := NewHandler(&mockStore{
-		join: func(_ context.Context, _ uuid.UUID, gotGroupID uuid.UUID, _ string) (*JoinGroupResult, error) {
-			if gotGroupID != groupID {
-				t.Fatalf("groupID = %s, want %s", gotGroupID, groupID)
-			}
-			return nil, ErrInviteRequired
-		},
-	})
-	req := withURLParam(withUserID(httptest.NewRequest(http.MethodPost, "/groups/"+groupID.String()+"/join", nil), uuid.New()), "id", groupID.String())
-	rec := httptest.NewRecorder()
-
-	h.JoinGroup(rec, req)
-
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+		if rec.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("visibility %q status = %d, body = %s", visibility, rec.Code, rec.Body.String())
+		}
 	}
 }
 

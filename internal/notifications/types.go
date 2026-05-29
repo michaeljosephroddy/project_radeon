@@ -10,8 +10,6 @@ import (
 const (
 	NotificationTypeChatMessage       = "chat.message"
 	NotificationTypeCommentMention    = "comment.mention"
-	NotificationTypeGroupJoinRequest  = "group.join_request"
-	NotificationTypeGroupJoinApproved = "group.join_approved"
 	NotificationTypeGroupPost         = "group.post"
 	NotificationTypeGroupComment      = "group.comment"
 	NotificationTypeGroupAdminContact = "group.admin_contact"
@@ -114,8 +112,6 @@ type Store interface {
 	MarkChatRead(ctx context.Context, chatID, userID uuid.UUID, lastReadMessageID *uuid.UUID, readAt time.Time) error
 	CreateChatMessageNotifications(ctx context.Context, chatID, messageID, senderID uuid.UUID, body string) error
 	CreateCommentMentionNotifications(ctx context.Context, postID, commentID, authorID uuid.UUID, mentionedUserIDs []uuid.UUID, body string) error
-	CreateGroupJoinRequestNotifications(ctx context.Context, groupID, requesterID uuid.UUID) error
-	CreateGroupJoinApprovedNotification(ctx context.Context, groupID, reviewerID, approvedUserID uuid.UUID) error
 	CreateGroupPostNotifications(ctx context.Context, groupID, postID, authorID uuid.UUID, postType, body string) error
 	CreateGroupCommentNotifications(ctx context.Context, groupID, postID, commentID, authorID uuid.UUID, body string) error
 	CreateGroupAdminContactNotifications(ctx context.Context, groupID, threadID, senderID uuid.UUID, body string) error
