@@ -120,6 +120,16 @@ func (h *Handler) UpdateMyProfile(w http.ResponseWriter, r *http.Request) {
 		Course              *string   `json:"course"`
 		Education           *string   `json:"education"`
 		KidsStatus          *string   `json:"kids_status"`
+		ChildrenStatus      *string   `json:"children_status"`
+		RelationshipType    *string   `json:"relationship_type"`
+		Gender              *string   `json:"gender"`
+		Sexuality           *string   `json:"sexuality"`
+		Pronouns            *string   `json:"pronouns"`
+		Ethnicity           *string   `json:"ethnicity"`
+		Pets                *string   `json:"pets"`
+		ReligiousBelief     *string   `json:"religious_belief"`
+		LanguagesSpoken     *[]string `json:"languages_spoken"`
+		PoliticalView       *string   `json:"political_view"`
 		Interests           *[]string `json:"interests"`
 		PromptAnswers       *[]struct {
 			PromptKey string `json:"prompt_key"`
@@ -150,6 +160,15 @@ func (h *Handler) UpdateMyProfile(w http.ResponseWriter, r *http.Request) {
 		Course:           trimOptionalString(input.Course),
 		Education:        trimOptionalString(input.Education),
 		KidsStatus:       normalizeKidsStatus(input.KidsStatus),
+		ChildrenStatus:   normalizeDatingOption(input.ChildrenStatus),
+		RelationshipType: normalizeDatingOption(input.RelationshipType),
+		Gender:           normalizeDatingOption(input.Gender),
+		Sexuality:        normalizeDatingOption(input.Sexuality),
+		Pronouns:         normalizeDatingOption(input.Pronouns),
+		Ethnicity:        normalizeDatingOption(input.Ethnicity),
+		Pets:             normalizeDatingOption(input.Pets),
+		ReligiousBelief:  normalizeDatingOption(input.ReligiousBelief),
+		PoliticalView:    normalizeDatingOption(input.PoliticalView),
 		AgeMin:           input.AgeMin,
 		AgeMax:           input.AgeMax,
 		DistanceKm:       input.DistanceKm,
@@ -202,6 +221,51 @@ func (h *Handler) UpdateMyProfile(w http.ResponseWriter, r *http.Request) {
 	if update.KidsStatus != nil && !validKidsStatus(*update.KidsStatus) {
 		response.Error(w, http.StatusBadRequest, "kids_status is invalid")
 		return
+	}
+	if update.ChildrenStatus != nil && !validChildrenStatus(*update.ChildrenStatus) {
+		response.Error(w, http.StatusBadRequest, "children_status is invalid")
+		return
+	}
+	if update.RelationshipType != nil && !validRelationshipType(*update.RelationshipType) {
+		response.Error(w, http.StatusBadRequest, "relationship_type is invalid")
+		return
+	}
+	if update.Gender != nil && !validDatingProfileGender(*update.Gender) {
+		response.Error(w, http.StatusBadRequest, "gender is invalid")
+		return
+	}
+	if update.Sexuality != nil && !validSexuality(*update.Sexuality) {
+		response.Error(w, http.StatusBadRequest, "sexuality is invalid")
+		return
+	}
+	if update.Pronouns != nil && !validPronouns(*update.Pronouns) {
+		response.Error(w, http.StatusBadRequest, "pronouns is invalid")
+		return
+	}
+	if update.Ethnicity != nil && !validEthnicity(*update.Ethnicity) {
+		response.Error(w, http.StatusBadRequest, "ethnicity is invalid")
+		return
+	}
+	if update.Pets != nil && !validPets(*update.Pets) {
+		response.Error(w, http.StatusBadRequest, "pets is invalid")
+		return
+	}
+	if update.ReligiousBelief != nil && !validReligiousBelief(*update.ReligiousBelief) {
+		response.Error(w, http.StatusBadRequest, "religious_belief is invalid")
+		return
+	}
+	if update.PoliticalView != nil && !validPoliticalView(*update.PoliticalView) {
+		response.Error(w, http.StatusBadRequest, "political_view is invalid")
+		return
+	}
+	if input.LanguagesSpoken != nil {
+		languages, ok := normalizeLanguagesSpoken(*input.LanguagesSpoken)
+		if !ok {
+			response.Error(w, http.StatusBadRequest, "languages_spoken contains an invalid value")
+			return
+		}
+		update.LanguagesSpoken = languages
+		update.ReplaceLanguages = true
 	}
 	if input.Interests != nil {
 		interests, ok, err := h.normalizeDatingInterests(r.Context(), *input.Interests)
@@ -588,6 +652,16 @@ func publicDatingProfile(profile DatingProfile) PublicDatingProfile {
 		Course:           profile.Course,
 		Education:        profile.Education,
 		KidsStatus:       profile.KidsStatus,
+		ChildrenStatus:   profile.ChildrenStatus,
+		RelationshipType: profile.RelationshipType,
+		Gender:           profile.Gender,
+		Sexuality:        profile.Sexuality,
+		Pronouns:         profile.Pronouns,
+		Ethnicity:        profile.Ethnicity,
+		Pets:             profile.Pets,
+		ReligiousBelief:  profile.ReligiousBelief,
+		LanguagesSpoken:  profile.LanguagesSpoken,
+		PoliticalView:    profile.PoliticalView,
 		Interests:        profile.Interests,
 		Photos:           profile.Photos,
 		PromptAnswers:    profile.PromptAnswers,
@@ -726,11 +800,19 @@ func normalizeRelationshipGoal(value *string) *string {
 
 func validRelationshipGoal(value string) bool {
 	switch value {
-	case "", "long_term", "life_partner", "casual", "open_to_explore":
+	case "", "long_term", "life_partner", "short_term_open_to_long_term", "still_figuring_it_out", "new_sober_connections":
 		return true
 	default:
 		return false
 	}
+}
+
+func normalizeDatingOption(value *string) *string {
+	if value == nil {
+		return nil
+	}
+	normalized := strings.TrimSpace(strings.ToLower(*value))
+	return &normalized
 }
 
 func normalizeKidsStatus(value *string) *string {
@@ -744,6 +826,122 @@ func normalizeKidsStatus(value *string) *string {
 func validKidsStatus(value string) bool {
 	switch value {
 	case "", "have_kids", "dont_have_kids", "prefer_not_to_say":
+		return true
+	default:
+		return false
+	}
+}
+
+func validRelationshipType(value string) bool {
+	switch value {
+	case "", "monogamous", "open_relationship", "other":
+		return true
+	default:
+		return false
+	}
+}
+
+func validDatingProfileGender(value string) bool {
+	switch value {
+	case "", "woman", "man", "non_binary", "other":
+		return true
+	default:
+		return false
+	}
+}
+
+func validSexuality(value string) bool {
+	switch value {
+	case "", "straight", "gay", "lesbian", "bisexual", "other":
+		return true
+	default:
+		return false
+	}
+}
+
+func validPronouns(value string) bool {
+	switch value {
+	case "", "she_her", "he_him", "they_them", "other":
+		return true
+	default:
+		return false
+	}
+}
+
+func validEthnicity(value string) bool {
+	switch value {
+	case "", "asian", "black", "hispanic_latino", "middle_eastern", "mixed", "native_indigenous", "white", "other":
+		return true
+	default:
+		return false
+	}
+}
+
+func validChildrenStatus(value string) bool {
+	switch value {
+	case "", "have_children", "have_children_want_more", "have_children_dont_want_more", "want_children", "dont_want_children", "open_to_children", "not_sure":
+		return true
+	default:
+		return false
+	}
+}
+
+func validPets(value string) bool {
+	switch value {
+	case "", "have_pets", "want_pets", "like_pets", "allergic_to_pets", "not_a_pet_person":
+		return true
+	default:
+		return false
+	}
+}
+
+func validReligiousBelief(value string) bool {
+	switch value {
+	case "", "agnostic", "atheist", "buddhist", "christian", "hindu", "jewish", "muslim", "sikh", "spiritual", "other":
+		return true
+	default:
+		return false
+	}
+}
+
+func validPoliticalView(value string) bool {
+	switch value {
+	case "", "liberal", "moderate", "conservative", "not_political", "other":
+		return true
+	default:
+		return false
+	}
+}
+
+func normalizeLanguagesSpoken(values []string) ([]string, bool) {
+	if len(values) > 5 {
+		return nil, false
+	}
+	seen := make(map[string]struct{}, len(values))
+	languages := make([]string, 0, len(values))
+	for _, value := range values {
+		language := strings.TrimSpace(strings.ToLower(value))
+		if !validLanguage(language) {
+			return nil, false
+		}
+		if _, exists := seen[language]; exists {
+			continue
+		}
+		seen[language] = struct{}{}
+		languages = append(languages, language)
+	}
+	return languages, true
+}
+
+func validLanguage(value string) bool {
+	switch value {
+	case "english", "irish", "spanish", "french", "german", "italian", "portuguese", "dutch",
+		"polish", "romanian", "lithuanian", "latvian", "estonian", "russian", "ukrainian",
+		"czech", "slovak", "hungarian", "greek", "turkish", "arabic", "hebrew",
+		"persian_farsi", "hindi", "urdu", "punjabi", "bengali", "gujarati", "tamil",
+		"telugu", "malayalam", "marathi", "nepali", "mandarin", "cantonese", "japanese",
+		"korean", "vietnamese", "thai", "indonesian", "malay", "filipino_tagalog",
+		"swahili", "yoruba", "igbo", "amharic", "somali", "afrikaans", "other":
 		return true
 	default:
 		return false

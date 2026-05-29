@@ -82,6 +82,16 @@ type DatingProfile struct {
 	Course              *string              `json:"course,omitempty"`
 	Education           *string              `json:"education,omitempty"`
 	KidsStatus          string               `json:"kids_status"`
+	ChildrenStatus      string               `json:"children_status"`
+	RelationshipType    string               `json:"relationship_type"`
+	Gender              string               `json:"gender"`
+	Sexuality           string               `json:"sexuality"`
+	Pronouns            string               `json:"pronouns"`
+	Ethnicity           string               `json:"ethnicity"`
+	Pets                string               `json:"pets"`
+	ReligiousBelief     string               `json:"religious_belief"`
+	LanguagesSpoken     []string             `json:"languages_spoken"`
+	PoliticalView       string               `json:"political_view"`
 	Interests           []string             `json:"interests"`
 	AgeMin              int                  `json:"age_min"`
 	AgeMax              int                  `json:"age_max"`
@@ -111,6 +121,16 @@ type PublicDatingProfile struct {
 	Course           *string              `json:"course,omitempty"`
 	Education        *string              `json:"education,omitempty"`
 	KidsStatus       string               `json:"kids_status"`
+	ChildrenStatus   string               `json:"children_status"`
+	RelationshipType string               `json:"relationship_type"`
+	Gender           string               `json:"gender"`
+	Sexuality        string               `json:"sexuality"`
+	Pronouns         string               `json:"pronouns"`
+	Ethnicity        string               `json:"ethnicity"`
+	Pets             string               `json:"pets"`
+	ReligiousBelief  string               `json:"religious_belief"`
+	LanguagesSpoken  []string             `json:"languages_spoken"`
+	PoliticalView    string               `json:"political_view"`
 	Interests        []string             `json:"interests"`
 	Photos           []DatingPhoto        `json:"photos"`
 	PromptAnswers    []DatingPromptAnswer `json:"prompt_answers"`
@@ -137,6 +157,17 @@ type UpdateProfileInput struct {
 	Course               *string
 	Education            *string
 	KidsStatus           *string
+	ChildrenStatus       *string
+	RelationshipType     *string
+	Gender               *string
+	Sexuality            *string
+	Pronouns             *string
+	Ethnicity            *string
+	Pets                 *string
+	ReligiousBelief      *string
+	LanguagesSpoken      []string
+	ReplaceLanguages     bool
+	PoliticalView        *string
 	Interests            []string
 	ReplaceInterests     bool
 	PromptAnswers        []DatingPromptAnswerInput
