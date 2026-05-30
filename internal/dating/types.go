@@ -92,6 +92,9 @@ type DatingProfile struct {
 	ReligiousBelief     string               `json:"religious_belief"`
 	LanguagesSpoken     []string             `json:"languages_spoken"`
 	PoliticalView       string               `json:"political_view"`
+	DrinkingStatus      string               `json:"drinking_status"`
+	SmokingStatus       string               `json:"smoking_status"`
+	DrugUseStatus       string               `json:"drug_use_status"`
 	Interests           []string             `json:"interests"`
 	AgeMin              int                  `json:"age_min"`
 	AgeMax              int                  `json:"age_max"`
@@ -131,6 +134,9 @@ type PublicDatingProfile struct {
 	ReligiousBelief  string               `json:"religious_belief"`
 	LanguagesSpoken  []string             `json:"languages_spoken"`
 	PoliticalView    string               `json:"political_view"`
+	DrinkingStatus   string               `json:"drinking_status"`
+	SmokingStatus    string               `json:"smoking_status"`
+	DrugUseStatus    string               `json:"drug_use_status"`
 	Interests        []string             `json:"interests"`
 	Photos           []DatingPhoto        `json:"photos"`
 	PromptAnswers    []DatingPromptAnswer `json:"prompt_answers"`
@@ -168,6 +174,9 @@ type UpdateProfileInput struct {
 	LanguagesSpoken      []string
 	ReplaceLanguages     bool
 	PoliticalView        *string
+	DrinkingStatus       *string
+	SmokingStatus        *string
+	DrugUseStatus        *string
 	Interests            []string
 	ReplaceInterests     bool
 	PromptAnswers        []DatingPromptAnswerInput
