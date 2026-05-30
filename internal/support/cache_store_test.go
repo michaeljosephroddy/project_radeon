@@ -95,6 +95,10 @@ func (s *stubQuerier) GetActiveSupportSignalForUser(context.Context, uuid.UUID, 
 	return nil, ErrNotFound
 }
 
+func (s *stubQuerier) GetActiveSupportSignal(context.Context, uuid.UUID, uuid.UUID) (*SupportSignal, error) {
+	return nil, ErrNotFound
+}
+
 func (s *stubQuerier) ListActiveSupportSignals(context.Context, uuid.UUID, *time.Time, int) ([]SupportSignal, error) {
 	return nil, nil
 }

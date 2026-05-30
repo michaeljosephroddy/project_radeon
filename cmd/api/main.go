@@ -303,6 +303,7 @@ func main() {
 		r.Post("/support/requests/{id}/offers/{offerId}/cancel", supportHandler.CancelSupportOffer)
 		r.Get("/support/signals/active", supportHandler.ListActiveSupportSignals)
 		r.Get("/support/signals/mine", supportHandler.GetMySupportSignal)
+		r.Get("/support/signals/{id}", supportHandler.GetSupportSignal)
 		r.Post("/support/signals", supportHandler.CreateSupportSignal)
 		r.Post("/support/signals/{id}/respond", supportHandler.RespondToSupportSignal)
 		r.Post("/support/signals/{id}/resolve", supportHandler.ResolveSupportSignal)

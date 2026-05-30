@@ -38,6 +38,22 @@ func (s *pgStore) GetActiveSupportSignalForUser(ctx context.Context, viewerID, u
 	))
 }
 
+func (s *pgStore) GetActiveSupportSignal(ctx context.Context, viewerID, signalID uuid.UUID) (*SupportSignal, error) {
+	return scanSupportSignal(s.pool.QueryRow(ctx, supportSignalSelect()+`
+		WHERE ss.id = $2
+			AND ss.status = 'active'
+			AND ss.expires_at > NOW()
+			AND u.deleted_at IS NULL
+			AND NOT EXISTS (
+				SELECT 1 FROM user_blocks ub
+				WHERE (ub.blocker_id = $1 AND ub.blocked_id = ss.user_id)
+					OR (ub.blocker_id = ss.user_id AND ub.blocked_id = $1)
+			)
+		LIMIT 1`,
+		viewerID, signalID,
+	))
+}
+
 func (s *pgStore) ListActiveSupportSignals(ctx context.Context, viewerID uuid.UUID, before *time.Time, limit int) ([]SupportSignal, error) {
 	rows, err := s.pool.Query(ctx, supportSignalSelect()+`
 		WHERE ss.status = 'active'
