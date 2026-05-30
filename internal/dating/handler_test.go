@@ -342,6 +342,15 @@ func TestUpdateMyProfileAcceptsDatingDetails(t *testing.T) {
 			if input.KidsStatus != nil {
 				profile.KidsStatus = *input.KidsStatus
 			}
+			if input.DrinkingStatus != nil {
+				profile.DrinkingStatus = *input.DrinkingStatus
+			}
+			if input.SmokingStatus != nil {
+				profile.SmokingStatus = *input.SmokingStatus
+			}
+			if input.DrugUseStatus != nil {
+				profile.DrugUseStatus = *input.DrugUseStatus
+			}
 			profile.Interests = input.Interests
 			return &profile, nil
 		},
@@ -354,6 +363,9 @@ func TestUpdateMyProfileAcceptsDatingDetails(t *testing.T) {
 		"school": "Trinity",
 		"course": "BA Psychology",
 		"kids_status": "dont_have_kids",
+		"drinking_status": "sometimes",
+		"smoking_status": "no",
+		"drug_use_status": "prefer_not_to_say",
 		"interests": ["Hiking", "Coffee"]
 	}`)), fixedUser)
 	rec := httptest.NewRecorder()
@@ -375,8 +387,29 @@ func TestUpdateMyProfileAcceptsDatingDetails(t *testing.T) {
 	if got.KidsStatus == nil || *got.KidsStatus != "dont_have_kids" {
 		t.Fatalf("kids status = %v", got.KidsStatus)
 	}
+	if got.DrinkingStatus == nil || *got.DrinkingStatus != "sometimes" {
+		t.Fatalf("drinking status = %v", got.DrinkingStatus)
+	}
+	if got.SmokingStatus == nil || *got.SmokingStatus != "no" {
+		t.Fatalf("smoking status = %v", got.SmokingStatus)
+	}
+	if got.DrugUseStatus == nil || *got.DrugUseStatus != "prefer_not_to_say" {
+		t.Fatalf("drug use status = %v", got.DrugUseStatus)
+	}
 	if !got.ReplaceInterests || len(got.Interests) != 2 || got.Interests[0] != "Coffee" || got.Interests[1] != "Hiking" {
 		t.Fatalf("interests = %v replace %v", got.Interests, got.ReplaceInterests)
+	}
+}
+
+func TestUpdateMyProfileRejectsInvalidViceStatus(t *testing.T) {
+	h := NewHandler(&mockQuerier{}, nil)
+	req := withUserID(httptest.NewRequest(http.MethodPatch, "/dating/profile", strings.NewReader(`{"drinking_status":"daily"}`)), fixedUser)
+	rec := httptest.NewRecorder()
+
+	h.UpdateMyProfile(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body %s", rec.Code, rec.Body.String())
 	}
 }
 

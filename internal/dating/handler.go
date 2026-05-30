@@ -130,6 +130,9 @@ func (h *Handler) UpdateMyProfile(w http.ResponseWriter, r *http.Request) {
 		ReligiousBelief     *string   `json:"religious_belief"`
 		LanguagesSpoken     *[]string `json:"languages_spoken"`
 		PoliticalView       *string   `json:"political_view"`
+		DrinkingStatus      *string   `json:"drinking_status"`
+		SmokingStatus       *string   `json:"smoking_status"`
+		DrugUseStatus       *string   `json:"drug_use_status"`
 		Interests           *[]string `json:"interests"`
 		PromptAnswers       *[]struct {
 			PromptKey string `json:"prompt_key"`
@@ -169,6 +172,9 @@ func (h *Handler) UpdateMyProfile(w http.ResponseWriter, r *http.Request) {
 		Pets:             normalizeDatingOption(input.Pets),
 		ReligiousBelief:  normalizeDatingOption(input.ReligiousBelief),
 		PoliticalView:    normalizeDatingOption(input.PoliticalView),
+		DrinkingStatus:   normalizeDatingOption(input.DrinkingStatus),
+		SmokingStatus:    normalizeDatingOption(input.SmokingStatus),
+		DrugUseStatus:    normalizeDatingOption(input.DrugUseStatus),
 		AgeMin:           input.AgeMin,
 		AgeMax:           input.AgeMax,
 		DistanceKm:       input.DistanceKm,
@@ -256,6 +262,18 @@ func (h *Handler) UpdateMyProfile(w http.ResponseWriter, r *http.Request) {
 	}
 	if update.PoliticalView != nil && !validPoliticalView(*update.PoliticalView) {
 		response.Error(w, http.StatusBadRequest, "political_view is invalid")
+		return
+	}
+	if update.DrinkingStatus != nil && !validViceStatus(*update.DrinkingStatus) {
+		response.Error(w, http.StatusBadRequest, "drinking_status is invalid")
+		return
+	}
+	if update.SmokingStatus != nil && !validViceStatus(*update.SmokingStatus) {
+		response.Error(w, http.StatusBadRequest, "smoking_status is invalid")
+		return
+	}
+	if update.DrugUseStatus != nil && !validViceStatus(*update.DrugUseStatus) {
+		response.Error(w, http.StatusBadRequest, "drug_use_status is invalid")
 		return
 	}
 	if input.LanguagesSpoken != nil {
@@ -662,6 +680,9 @@ func publicDatingProfile(profile DatingProfile) PublicDatingProfile {
 		ReligiousBelief:  profile.ReligiousBelief,
 		LanguagesSpoken:  profile.LanguagesSpoken,
 		PoliticalView:    profile.PoliticalView,
+		DrinkingStatus:   profile.DrinkingStatus,
+		SmokingStatus:    profile.SmokingStatus,
+		DrugUseStatus:    profile.DrugUseStatus,
 		Interests:        profile.Interests,
 		Photos:           profile.Photos,
 		PromptAnswers:    profile.PromptAnswers,
@@ -907,6 +928,15 @@ func validReligiousBelief(value string) bool {
 func validPoliticalView(value string) bool {
 	switch value {
 	case "", "liberal", "moderate", "conservative", "not_political", "other":
+		return true
+	default:
+		return false
+	}
+}
+
+func validViceStatus(value string) bool {
+	switch value {
+	case "", "yes", "sometimes", "no", "prefer_not_to_say":
 		return true
 	default:
 		return false
