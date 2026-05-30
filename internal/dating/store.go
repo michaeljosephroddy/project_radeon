@@ -1229,7 +1229,7 @@ func hasAdvancedDiscoverFilters(params DiscoverParams) bool {
 }
 
 func validateDatingPair(ctx context.Context, q querier, actorID, targetID uuid.UUID) error {
-	var actorDating, targetDating, actorComplete, targetComplete, actorPaused, targetPaused, mutualPreference, blocked, acceptedFriends bool
+	var actorDating, targetDating, actorComplete, targetComplete, actorPaused, targetPaused, mutualPreference, blocked bool
 	err := q.QueryRow(ctx,
 		`SELECT
 			EXISTS(SELECT 1 FROM users WHERE id = $1 AND deleted_at IS NULL AND connection_intents @> ARRAY['dating']::text[]),
@@ -1260,14 +1260,9 @@ func validateDatingPair(ctx context.Context, q querier, actorID, targetID uuid.U
 				SELECT 1 FROM user_blocks
 				WHERE (blocker_id = $1 AND blocked_id = $2)
 					OR (blocker_id = $2 AND blocked_id = $1)
-			),
-			EXISTS(
-				SELECT 1 FROM friendships
-				WHERE status = 'accepted'
-					AND ((user_a_id = $1 AND user_b_id = $2) OR (user_a_id = $2 AND user_b_id = $1))
 			)`,
 		actorID, targetID,
-	).Scan(&actorDating, &targetDating, &actorComplete, &targetComplete, &actorPaused, &targetPaused, &mutualPreference, &blocked, &acceptedFriends)
+	).Scan(&actorDating, &targetDating, &actorComplete, &targetComplete, &actorPaused, &targetPaused, &mutualPreference, &blocked)
 	if err != nil {
 		return err
 	}
@@ -1283,7 +1278,7 @@ func validateDatingPair(ctx context.Context, q querier, actorID, targetID uuid.U
 	if !mutualPreference {
 		return ErrTargetUnavailable
 	}
-	if blocked || acceptedFriends {
+	if blocked {
 		return ErrForbidden
 	}
 	return nil
@@ -1614,11 +1609,6 @@ const datingDiscoverWhereSQL = `
 					OR (ub.blocker_id = u.id AND ub.blocked_id = $1)
 			)
 			AND NOT EXISTS (
-				SELECT 1 FROM friendships fx
-				WHERE fx.status = 'accepted'
-					AND ((fx.user_a_id = $1 AND fx.user_b_id = u.id) OR (fx.user_b_id = $1 AND fx.user_a_id = u.id))
-			)
-			AND NOT EXISTS (
 				SELECT 1 FROM dating_actions da
 				WHERE da.actor_id = $1 AND da.target_id = u.id
 			)
@@ -1699,11 +1689,6 @@ const datingLikesWhereSQL = `
 				SELECT 1 FROM user_blocks ub
 				WHERE (ub.blocker_id = $1 AND ub.blocked_id = u.id)
 					OR (ub.blocker_id = u.id AND ub.blocked_id = $1)
-			)
-			AND NOT EXISTS (
-				SELECT 1 FROM friendships fx
-				WHERE fx.status = 'accepted'
-					AND ((fx.user_a_id = $1 AND fx.user_b_id = u.id) OR (fx.user_b_id = $1 AND fx.user_a_id = u.id))
 			)`
 
 const datingMatchSelectSQL = `SELECT
