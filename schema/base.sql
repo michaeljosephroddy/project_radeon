@@ -25,7 +25,6 @@ CREATE TABLE IF NOT EXISTS users (
     location_updated_at TIMESTAMPTZ,
     discover_lat DOUBLE PRECISION,
     discover_lng DOUBLE PRECISION,
-    connection_intents TEXT[] NOT NULL DEFAULT ARRAY['friends']::TEXT[],
     onboarding_completed_at TIMESTAMPTZ,
     identity_verification_status TEXT NOT NULL DEFAULT 'not_started',
     identity_verification_provider TEXT,
@@ -41,11 +40,6 @@ CREATE TABLE IF NOT EXISTS users (
     CONSTRAINT users_username_format_chk CHECK (username ~ '^[a-z0-9._]{3,20}$'),
     CONSTRAINT users_subscription_tier_chk CHECK (subscription_tier IN ('free', 'plus')),
     CONSTRAINT users_subscription_status_chk CHECK (subscription_status IN ('inactive', 'active', 'canceled', 'expired')),
-    CONSTRAINT users_connection_intents_chk CHECK (
-        cardinality(connection_intents) BETWEEN 1 AND 2
-        AND connection_intents <@ ARRAY['friends', 'dating']::TEXT[]
-        AND connection_intents @> ARRAY['friends']::TEXT[]
-    ),
     CONSTRAINT users_identity_verification_status_chk CHECK (
         identity_verification_status IN (
             'not_started',
@@ -78,9 +72,6 @@ CREATE INDEX IF NOT EXISTS idx_users_last_active_at_desc
 
 CREATE INDEX IF NOT EXISTS idx_users_discover_lat_lng
     ON users(discover_lat, discover_lng);
-
-CREATE INDEX IF NOT EXISTS idx_users_connection_intents
-    ON users USING GIN(connection_intents);
 
 CREATE INDEX IF NOT EXISTS idx_users_onboarding_completed_at
     ON users(onboarding_completed_at);
@@ -1455,15 +1446,15 @@ CREATE TABLE IF NOT EXISTS dating_match_views (
 
 CREATE INDEX IF NOT EXISTS idx_users_dating_geo_active
     ON users(discover_lat, discover_lng, last_active_at DESC)
-    WHERE connection_intents @> ARRAY['dating']::text[];
+    WHERE deleted_at IS NULL;
 
 CREATE INDEX IF NOT EXISTS idx_users_dating_last_active
     ON users(last_active_at DESC, profile_completeness DESC, id DESC)
-    WHERE connection_intents @> ARRAY['dating']::text[];
+    WHERE deleted_at IS NULL;
 
 CREATE INDEX IF NOT EXISTS idx_users_dating_created_at
     ON users(created_at DESC, id DESC)
-    WHERE connection_intents @> ARRAY['dating']::text[];
+    WHERE deleted_at IS NULL;
 
 CREATE INDEX IF NOT EXISTS idx_dating_profiles_user_completed_paused
     ON dating_profiles(user_id, completed_at, paused);

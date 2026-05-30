@@ -14,7 +14,6 @@ const (
 	discoverSourceInterest = "interests"
 	discoverSourceSobriety = "sobriety"
 	discoverSourceActive   = "active"
-	discoverSourceIntent   = "intent"
 )
 
 const (
@@ -25,12 +24,11 @@ const (
 )
 
 type discoverViewerFeatures struct {
-	UserID            uuid.UUID
-	InterestIDs       []uuid.UUID
-	ConnectionIntents []string
-	SobrietyBand      *int
-	Lat               *float64
-	Lng               *float64
+	UserID       uuid.UUID
+	InterestIDs  []uuid.UUID
+	SobrietyBand *int
+	Lat          *float64
+	Lng          *float64
 }
 
 type discoverCandidate struct {
@@ -40,6 +38,7 @@ type discoverCandidate struct {
 	MutualFriendCount   int
 	SobrietyBand        *int
 	LastActiveAt        *time.Time
+	CreatedAt           time.Time
 	ProfileCompleteness int
 	Sources             []string
 	Score               float64
@@ -166,7 +165,6 @@ func discoverPrimarySource(candidate discoverCandidate) string {
 	priority := []string{
 		discoverSourceMutual,
 		discoverSourceInterest,
-		discoverSourceIntent,
 		discoverSourceNearby,
 		discoverSourceSobriety,
 		discoverSourceActive,
@@ -201,6 +199,7 @@ func mergeDiscoverCandidates(groups ...[]discoverCandidate) []discoverCandidate 
 			existing.ProfileCompleteness = maxInt(existing.ProfileCompleteness, candidate.ProfileCompleteness)
 			existing.SobrietyBand = preferBand(existing.SobrietyBand, candidate.SobrietyBand)
 			existing.LastActiveAt = preferTime(existing.LastActiveAt, candidate.LastActiveAt)
+			existing.CreatedAt = preferCreatedAt(existing.CreatedAt, candidate.CreatedAt)
 			existing.DistanceKm = preferDistance(existing.DistanceKm, candidate.DistanceKm)
 			existing.Sources = dedupeSources(append(existing.Sources, candidate.Sources...))
 			merged[candidate.ID] = existing
@@ -265,6 +264,16 @@ func preferTime(left, right *time.Time) *time.Time {
 		return left
 	}
 	if right.After(*left) {
+		return right
+	}
+	return left
+}
+
+func preferCreatedAt(left, right time.Time) time.Time {
+	if left.IsZero() {
+		return right
+	}
+	if right.After(left) {
 		return right
 	}
 	return left

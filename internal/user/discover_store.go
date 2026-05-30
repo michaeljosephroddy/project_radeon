@@ -44,16 +44,12 @@ func (s *pgStore) discoverRankedCandidatesV2(ctx context.Context, params Discove
 	if err != nil {
 		return nil, err
 	}
-	intent, err := s.discoverIntentCandidates(ctx, params, viewer, filters, poolLimit)
-	if err != nil {
-		return nil, err
-	}
 	active, err := s.discoverActiveFallbackCandidates(ctx, params, filters, poolLimit)
 	if err != nil {
 		return nil, err
 	}
 
-	candidates := mergeDiscoverCandidates(nearby, mutual, interest, sobriety, intent, active)
+	candidates := mergeDiscoverCandidates(nearby, mutual, interest, sobriety, active)
 	if len(candidates) == 0 {
 		return nil, nil
 	}
@@ -110,6 +106,7 @@ func (s *pgStore) discoverUsersPageFromCandidates(ctx context.Context, params Di
 	visibleLimit := discoverVisibleLimit(params)
 	if visibleLimit > 0 && len(page) > visibleLimit {
 		page = page[:visibleLimit]
+		users = users[:visibleLimit]
 	}
 
 	s.recordDiscoverImpressionsAsync(params.CurrentUserID, page, shownAt)
@@ -124,7 +121,7 @@ func (s *pgStore) countDiscoverUsersV2(ctx context.Context, params DiscoverUsers
 		`SELECT COUNT(*)
 		FROM users u
 		WHERE `+discoverEligibilitySQL("u")+`
-			AND ($16 = '' OR u.username ILIKE '%' || $16 || '%')`,
+			AND ($12 = '' OR u.username ILIKE '%' || $12 || '%')`,
 		discoverBaseArgs(params, filters, &params.Query)...,
 	).Scan(&count)
 	if err != nil {
@@ -137,14 +134,12 @@ func (s *pgStore) loadDiscoverViewerFeatures(ctx context.Context, viewerID uuid.
 	viewer := discoverViewerFeatures{UserID: viewerID}
 
 	var interestIDs []uuid.UUID
-	var connectionIntents []string
 	var sobrietyBand *int
 	var lat *float64
 	var lng *float64
 	err := s.pool.QueryRow(ctx,
 		`SELECT
 			COALESCE(array_agg(ui.interest_id) FILTER (WHERE ui.interest_id IS NOT NULL), '{}') AS interest_ids,
-			u.connection_intents,
 			u.sobriety_band,
 			u.discover_lat,
 			u.discover_lng
@@ -152,15 +147,14 @@ func (s *pgStore) loadDiscoverViewerFeatures(ctx context.Context, viewerID uuid.
 		LEFT JOIN user_interests ui ON ui.user_id = u.id
 		WHERE u.id = $1
 			AND u.deleted_at IS NULL
-		GROUP BY u.id, u.connection_intents, u.sobriety_band, u.discover_lat, u.discover_lng`,
+		GROUP BY u.id, u.sobriety_band, u.discover_lat, u.discover_lng`,
 		viewerID,
-	).Scan(&interestIDs, &connectionIntents, &sobrietyBand, &lat, &lng)
+	).Scan(&interestIDs, &sobrietyBand, &lat, &lng)
 	if err != nil {
 		return discoverViewerFeatures{}, err
 	}
 
 	viewer.InterestIDs = interestIDs
-	viewer.ConnectionIntents = connectionIntents
 	viewer.SobrietyBand = sobrietyBand
 	viewer.Lat = lat
 	viewer.Lng = lng
@@ -180,11 +174,12 @@ func (s *pgStore) discoverNearbyCandidates(ctx context.Context, params DiscoverU
 			0::int AS mutual_friend_count,
 			u.sobriety_band,
 			u.last_active_at,
+			u.created_at,
 			u.profile_completeness
 		FROM users u
 		WHERE `+discoverEligibilitySQL("u")+`
 		ORDER BY distance_km ASC NULLS LAST, u.last_active_at DESC, u.id
-		LIMIT $16`,
+		LIMIT $12`,
 		append(discoverBaseArgs(params, filters, nil), limit)...,
 	)
 	if err != nil {
@@ -213,6 +208,7 @@ func (s *pgStore) discoverMutualCandidates(ctx context.Context, params DiscoverU
 			COUNT(DISTINCT vf.friend_id)::int AS mutual_friend_count,
 			u.sobriety_band,
 			u.last_active_at,
+			u.created_at,
 			u.profile_completeness
 		FROM viewer_friends vf
 		JOIN friendships f2
@@ -224,9 +220,9 @@ func (s *pgStore) discoverMutualCandidates(ctx context.Context, params DiscoverU
 				ELSE f2.user_a_id
 			END
 		WHERE `+discoverEligibilitySQL("u")+`
-		GROUP BY u.id, distance_km, u.sobriety_band, u.last_active_at, u.profile_completeness
+		GROUP BY u.id, distance_km, u.sobriety_band, u.last_active_at, u.created_at, u.profile_completeness
 		ORDER BY mutual_friend_count DESC, u.last_active_at DESC, u.id
-		LIMIT $16`,
+		LIMIT $12`,
 		append(discoverBaseArgs(params, filters, nil), limit)...,
 	)
 	if err != nil {
@@ -254,14 +250,15 @@ func (s *pgStore) discoverInterestCandidates(ctx context.Context, params Discove
 			0::int AS mutual_friend_count,
 			u.sobriety_band,
 			u.last_active_at,
+			u.created_at,
 			u.profile_completeness
 		FROM users u
 		JOIN user_interests ui ON ui.user_id = u.id
 		WHERE ` + discoverEligibilitySQL("u") + `
-			AND ui.interest_id = ANY($16::uuid[])
-		GROUP BY u.id, distance_km, u.sobriety_band, u.last_active_at, u.profile_completeness
+			AND ui.interest_id = ANY($12::uuid[])
+		GROUP BY u.id, distance_km, u.sobriety_band, u.last_active_at, u.created_at, u.profile_completeness
 		ORDER BY shared_interest_count DESC, u.last_active_at DESC, u.id
-		LIMIT $17`
+		LIMIT $13`
 		args = append(baseArgs, viewer.InterestIDs, limit)
 	} else {
 		query = `SELECT
@@ -271,15 +268,16 @@ func (s *pgStore) discoverInterestCandidates(ctx context.Context, params Discove
 			0::int AS mutual_friend_count,
 			u.sobriety_band,
 			u.last_active_at,
+			u.created_at,
 			u.profile_completeness
 		FROM users u
 		JOIN user_interests ui ON ui.user_id = u.id
 		JOIN interests i ON i.id = ui.interest_id
 		WHERE ` + discoverEligibilitySQL("u") + `
-			AND i.name = ANY($16::text[])
-		GROUP BY u.id, distance_km, u.sobriety_band, u.last_active_at, u.profile_completeness
+			AND i.name = ANY($12::text[])
+		GROUP BY u.id, distance_km, u.sobriety_band, u.last_active_at, u.created_at, u.profile_completeness
 		ORDER BY shared_interest_count DESC, u.last_active_at DESC, u.id
-		LIMIT $17`
+		LIMIT $13`
 		args = append(baseArgs, nullableTextArray(params.Interests), limit)
 	}
 
@@ -310,12 +308,13 @@ func (s *pgStore) discoverSobrietyCandidates(ctx context.Context, params Discove
 			0::int AS mutual_friend_count,
 			u.sobriety_band,
 			u.last_active_at,
+			u.created_at,
 			u.profile_completeness
 		FROM users u
 		WHERE `+discoverEligibilitySQL("u")+`
 			AND u.sobriety_band IS NOT NULL
-		ORDER BY ABS(u.sobriety_band - $16::int) ASC, u.last_active_at DESC, u.id
-		LIMIT $17`,
+		ORDER BY ABS(u.sobriety_band - $12::int) ASC, u.last_active_at DESC, u.id
+		LIMIT $13`,
 		append(discoverBaseArgs(params, filters, nil), *targetBand, limit)...,
 	)
 	if err != nil {
@@ -324,50 +323,6 @@ func (s *pgStore) discoverSobrietyCandidates(ctx context.Context, params Discove
 	defer rows.Close()
 
 	return scanDiscoverCandidates(rows, discoverSourceSobriety)
-}
-
-func (s *pgStore) discoverIntentCandidates(ctx context.Context, params DiscoverUsersParams, viewer discoverViewerFeatures, filters discoverFilters, limit int) ([]discoverCandidate, error) {
-	intents := make([]string, 0, 1)
-	if params.Intent != "" {
-		intents = []string{params.Intent}
-	} else if containsDiscoverIntent(viewer.ConnectionIntents, "dating") {
-		intents = []string{"dating"}
-	}
-	if len(intents) == 0 {
-		return nil, nil
-	}
-
-	rows, err := s.pool.Query(ctx,
-		`SELECT
-			u.id,
-			`+discoverDistanceSQL("u")+` AS distance_km,
-			0::int AS shared_interest_count,
-			0::int AS mutual_friend_count,
-			u.sobriety_band,
-			u.last_active_at,
-			u.profile_completeness
-		FROM users u
-		WHERE `+discoverEligibilitySQL("u")+`
-			AND u.connection_intents && $16::text[]
-		ORDER BY u.last_active_at DESC, u.profile_completeness DESC, u.id
-		LIMIT $17`,
-		append(discoverBaseArgs(params, filters, nil), intents, limit)...,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	return scanDiscoverCandidates(rows, discoverSourceIntent)
-}
-
-func containsDiscoverIntent(intents []string, target string) bool {
-	for _, intent := range intents {
-		if intent == target {
-			return true
-		}
-	}
-	return false
 }
 
 func (s *pgStore) discoverActiveFallbackCandidates(ctx context.Context, params DiscoverUsersParams, filters discoverFilters, limit int) ([]discoverCandidate, error) {
@@ -379,11 +334,12 @@ func (s *pgStore) discoverActiveFallbackCandidates(ctx context.Context, params D
 			0::int AS mutual_friend_count,
 			u.sobriety_band,
 			u.last_active_at,
+			u.created_at,
 			u.profile_completeness
 		FROM users u
 		WHERE `+discoverEligibilitySQL("u")+`
 		ORDER BY u.last_active_at DESC, u.created_at DESC, u.id
-		LIMIT $16`,
+		LIMIT $12`,
 		append(discoverBaseArgs(params, filters, nil), limit)...,
 	)
 	if err != nil {
@@ -412,7 +368,6 @@ func (s *pgStore) hydrateDiscoverUsers(ctx context.Context, candidates []discove
 			u.country,
 			u.bio,
 			COALESCE(interest_names.items, '{}') AS interests,
-			u.connection_intents,
 			u.gender,
 			CASE
 				WHEN u.birth_date IS NULL THEN NULL
@@ -437,7 +392,58 @@ func (s *pgStore) hydrateDiscoverUsers(ctx context.Context, candidates []discove
 		return nil, err
 	}
 	defer rows.Close()
-	return scanUsers(rows)
+	users, err := scanUsers(rows)
+	if err != nil {
+		return nil, err
+	}
+
+	activeSignals, err := s.loadActiveSupportSignalUserIDs(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	candidateByID := make(map[uuid.UUID]discoverCandidate, len(candidates))
+	for _, candidate := range candidates {
+		candidateByID[candidate.ID] = candidate
+	}
+	for index := range users {
+		candidate, ok := candidateByID[users[index].ID]
+		if !ok {
+			continue
+		}
+		users[index].DistanceKm = candidate.DistanceKm
+		if _, found := activeSignals[users[index].ID]; found {
+			users[index].HasActiveReachOut = true
+		}
+	}
+	return users, nil
+}
+
+func (s *pgStore) loadActiveSupportSignalUserIDs(ctx context.Context, userIDs []uuid.UUID) (map[uuid.UUID]struct{}, error) {
+	if len(userIDs) == 0 {
+		return nil, nil
+	}
+	rows, err := s.pool.Query(ctx,
+		`SELECT DISTINCT user_id
+		FROM support_signals
+		WHERE user_id = ANY($1::uuid[])
+			AND status = 'active'
+			AND expires_at > NOW()`,
+		userIDs,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	signals := make(map[uuid.UUID]struct{})
+	for rows.Next() {
+		var userID uuid.UUID
+		if err := rows.Scan(&userID); err != nil {
+			return nil, err
+		}
+		signals[userID] = struct{}{}
+	}
+	return signals, rows.Err()
 }
 
 func (s *pgStore) loadRecentDiscoverImpressions(ctx context.Context, viewerID uuid.UUID, candidateIDs []uuid.UUID) (map[uuid.UUID]time.Time, error) {
@@ -532,6 +538,7 @@ func scanDiscoverCandidates(rows interface {
 			&candidate.MutualFriendCount,
 			&sobrietyBand,
 			&lastActiveAt,
+			&candidate.CreatedAt,
 			&candidate.ProfileCompleteness,
 		); err != nil {
 			return nil, err
@@ -557,9 +564,6 @@ func discoverBaseArgs(params DiscoverUsersParams, filters discoverFilters, query
 	args := []any{
 		params.CurrentUserID,
 		params.City,
-		params.Gender,
-		params.AgeMin,
-		params.AgeMax,
 		filters.SobrietyMinBand,
 		filters.Bounds.MinLat,
 		filters.Bounds.MaxLat,
@@ -569,7 +573,6 @@ func discoverBaseArgs(params DiscoverUsersParams, filters discoverFilters, query
 		params.Lng,
 		params.DistanceKm,
 		nullableTextArray(params.Interests),
-		params.Intent,
 	}
 	if query != nil {
 		args = append(args, *query)
@@ -594,46 +597,42 @@ func discoverEligibilitySQL(alias string) string {
 					OR (ub.blocker_id = %[1]s.id AND ub.blocked_id = $1)
 			)
 			AND ($2 = '' OR COALESCE(%[1]s.current_city, %[1]s.city) ILIKE $2)
-			AND ($3 = '' OR %[1]s.gender = $3)
-			AND ($4::int IS NULL OR (%[1]s.birth_date IS NOT NULL AND %[1]s.birth_date <= CURRENT_DATE - make_interval(years => $4::int)))
-			AND ($5::int IS NULL OR (%[1]s.birth_date IS NOT NULL AND %[1]s.birth_date > CURRENT_DATE - make_interval(years => ($5::int + 1))))
-			AND ($6::int IS NULL OR (%[1]s.sobriety_band IS NOT NULL AND %[1]s.sobriety_band >= $6::int))
+			AND ($3::int IS NULL OR (%[1]s.sobriety_band IS NOT NULL AND %[1]s.sobriety_band >= $3::int))
 			AND (
-				$13::int IS NULL
-				OR $13::int <= 0
-				OR $11::float8 IS NULL
-				OR $12::float8 IS NULL
+				$10::int IS NULL
+				OR $10::int <= 0
+				OR $8::float8 IS NULL
+				OR $9::float8 IS NULL
 				OR (
 					%[1]s.discover_lat IS NOT NULL
 					AND %[1]s.discover_lng IS NOT NULL
-					AND ($7::float8 IS NULL OR %[1]s.discover_lat BETWEEN $7::float8 AND $8::float8)
-					AND ($9::float8 IS NULL OR %[1]s.discover_lng BETWEEN $9::float8 AND $10::float8)
-					AND %[2]s <= $13::float8
+					AND ($4::float8 IS NULL OR %[1]s.discover_lat BETWEEN $4::float8 AND $5::float8)
+					AND ($6::float8 IS NULL OR %[1]s.discover_lng BETWEEN $6::float8 AND $7::float8)
+					AND %[2]s <= $10::float8
 				)
 			)
 			AND (
-				$14::text[] IS NULL
+				$11::text[] IS NULL
 				OR EXISTS (
 					SELECT 1
 					FROM user_interests ui
 					JOIN interests i ON i.id = ui.interest_id
 					WHERE ui.user_id = %[1]s.id
-						AND i.name = ANY($14::text[])
+						AND i.name = ANY($11::text[])
 				)
-			)
-			AND ($15 = '' OR %[1]s.connection_intents @> ARRAY[$15]::text[])`, alias, distanceExpr)
+			)`, alias, distanceExpr)
 }
 
 func discoverDistanceSQL(alias string) string {
 	return fmt.Sprintf(`CASE
-			WHEN $11::float8 IS NOT NULL
-				AND $12::float8 IS NOT NULL
+			WHEN $8::float8 IS NOT NULL
+				AND $9::float8 IS NOT NULL
 				AND %[1]s.discover_lat IS NOT NULL
 				AND %[1]s.discover_lng IS NOT NULL
 			THEN 2.0 * 6371.0 * ASIN(SQRT(
-				POWER(SIN(RADIANS((%[1]s.discover_lat - $11::float8) / 2.0)), 2)
-				+ COS(RADIANS($11::float8)) * COS(RADIANS(%[1]s.discover_lat))
-				* POWER(SIN(RADIANS((%[1]s.discover_lng - $12::float8) / 2.0)), 2)
+				POWER(SIN(RADIANS((%[1]s.discover_lat - $8::float8) / 2.0)), 2)
+				+ COS(RADIANS($8::float8)) * COS(RADIANS(%[1]s.discover_lat))
+				* POWER(SIN(RADIANS((%[1]s.discover_lng - $9::float8) / 2.0)), 2)
 			))
 			ELSE NULL
 		END`, alias)

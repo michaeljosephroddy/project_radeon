@@ -34,11 +34,7 @@ type DiscoverUsersParams struct {
 	CurrentUserID uuid.UUID
 	City          string
 	Query         string
-	Gender        string
-	Intent        string
 	Sobriety      string
-	AgeMin        *int
-	AgeMax        *int
 	DistanceKm    *int
 	Interests     []string
 	Lat           *float64
@@ -59,11 +55,7 @@ type DiscoverPreviewResponse struct {
 }
 
 type DiscoverPreviewFilters struct {
-	Gender     string   `json:"gender,omitempty"`
-	Intent     string   `json:"intent,omitempty"`
 	Sobriety   string   `json:"sobriety,omitempty"`
-	AgeMin     *int     `json:"age_min,omitempty"`
-	AgeMax     *int     `json:"age_max,omitempty"`
 	DistanceKm *int     `json:"distance_km,omitempty"`
 	Interests  []string `json:"interests,omitempty"`
 }
@@ -77,7 +69,7 @@ type BlockedUsersCursor struct {
 type Querier interface {
 	GetUser(ctx context.Context, viewerID, userID uuid.UUID) (*User, error)
 	UsernameExistsForOthers(ctx context.Context, username string, userID uuid.UUID) (bool, error)
-	UpdateUser(ctx context.Context, userID uuid.UUID, username, city, country, gender, bio *string, soberSince *time.Time, replaceSoberSince bool, birthDate *time.Time, replaceBirthDate bool, interests []string, replaceInterests bool, connectionIntents []string, replaceConnectionIntents bool, lat, lng *float64) error
+	UpdateUser(ctx context.Context, userID uuid.UUID, username, city, country, gender, bio *string, soberSince *time.Time, replaceSoberSince bool, birthDate *time.Time, replaceBirthDate bool, interests []string, replaceInterests bool, lat, lng *float64) error
 	CompleteOnboarding(ctx context.Context, userID uuid.UUID) error
 	UpdateAvatarURL(ctx context.Context, userID uuid.UUID, avatarURL string) error
 	UpdateCurrentLocation(ctx context.Context, userID uuid.UUID, lat, lng float64, city, country string) error
@@ -124,7 +116,6 @@ type User struct {
 	Country                       *string    `json:"country"`
 	Bio                           *string    `json:"bio"`
 	Interests                     []string   `json:"interests"`
-	ConnectionIntents             []string   `json:"connection_intents"`
 	Gender                        *string    `json:"gender"`
 	BirthDate                     *string    `json:"birth_date"`
 	SoberSince                    *time.Time `json:"sober_since"`
@@ -136,6 +127,8 @@ type User struct {
 	CurrentCity                   *string    `json:"current_city,omitempty"`
 	CurrentCountry                *string    `json:"current_country,omitempty"`
 	LocationUpdatedAt             *time.Time `json:"location_updated_at,omitempty"`
+	DistanceKm                    *float64   `json:"distance_km,omitempty"`
+	HasActiveReachOut             bool       `json:"has_active_reach_out,omitempty"`
 }
 
 type BlockedUserProfile struct {
@@ -192,7 +185,6 @@ func (h *Handler) UpdateMe(w http.ResponseWriter, r *http.Request) {
 		BirthDate           *string   `json:"birth_date"`
 		SoberSince          *string   `json:"sober_since"`
 		Interests           *[]string `json:"interests"`
-		ConnectionIntents   *[]string `json:"connection_intents"`
 		Lat                 *float64  `json:"lat"`
 		Lng                 *float64  `json:"lng"`
 		OnboardingCompleted *bool     `json:"onboarding_completed"`
@@ -330,16 +322,6 @@ func (h *Handler) UpdateMe(w http.ResponseWriter, r *http.Request) {
 		slices.Sort(normalizedInterests)
 	}
 
-	normalizedIntents := make([]string, 0)
-	if input.ConnectionIntents != nil {
-		var ok bool
-		normalizedIntents, ok = normalizeConnectionIntents(*input.ConnectionIntents)
-		if !ok {
-			response.ValidationError(w, map[string]string{"connection_intents": "pick one or more valid connection intents"})
-			return
-		}
-	}
-
 	if err := h.db.UpdateUser(
 		r.Context(),
 		userID,
@@ -354,8 +336,6 @@ func (h *Handler) UpdateMe(w http.ResponseWriter, r *http.Request) {
 		input.BirthDate != nil,
 		normalizedInterests,
 		input.Interests != nil,
-		normalizedIntents,
-		input.ConnectionIntents != nil,
 		input.Lat,
 		input.Lng,
 	); err != nil {
@@ -658,42 +638,6 @@ func normalizeProfileGender(raw string) (string, bool) {
 	}
 }
 
-func normalizeConnectionIntent(raw string) (string, bool) {
-	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case "":
-		return "", true
-	case "friends", "friend":
-		return "friends", true
-	case "dating", "open_to_dating", "open to dating":
-		return "dating", true
-	default:
-		return "", false
-	}
-}
-
-func normalizeConnectionIntents(raw []string) ([]string, bool) {
-	if len(raw) == 0 || len(raw) > 2 {
-		return nil, false
-	}
-	seen := make(map[string]struct{}, len(raw))
-	for _, item := range raw {
-		intent, ok := normalizeConnectionIntent(item)
-		if !ok || intent == "" {
-			return nil, false
-		}
-		if _, exists := seen[intent]; exists {
-			return nil, false
-		}
-		seen[intent] = struct{}{}
-	}
-
-	result := []string{"friends"}
-	if _, exists := seen["dating"]; exists {
-		result = append(result, "dating")
-	}
-	return result, true
-}
-
 func normalizeUserReportReason(raw string) (string, bool) {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
 	case "unwanted_advances", "unwanted advances":
@@ -720,20 +664,6 @@ func trimOptional(value *string) *string {
 		return nil
 	}
 	return &trimmed
-}
-
-func normalizeDiscoverGender(raw string) (string, bool) {
-	if strings.TrimSpace(raw) == "" {
-		return "", true
-	}
-	normalized, ok := normalizeProfileGender(raw)
-	if ok {
-		return normalized, true
-	}
-	if strings.EqualFold(strings.TrimSpace(raw), "any") {
-		return "", true
-	}
-	return "", false
 }
 
 func normalizeSobrietyFilter(raw string) (string, bool) {
@@ -802,32 +732,13 @@ func parseDiscoverRequest(r *http.Request) (DiscoverUsersParams, error) {
 		}
 	}
 
-	var ok bool
-	request.Gender, ok = normalizeDiscoverGender(r.URL.Query().Get("gender"))
-	if !ok {
-		return DiscoverUsersParams{}, fmt.Errorf("gender must be woman, man, or non_binary")
-	}
-	request.Intent, ok = normalizeConnectionIntent(r.URL.Query().Get("intent"))
-	if !ok {
-		return DiscoverUsersParams{}, fmt.Errorf("intent must be friends or dating")
-	}
-	request.Sobriety, ok = normalizeSobrietyFilter(r.URL.Query().Get("sobriety"))
+	sobriety, ok := normalizeSobrietyFilter(r.URL.Query().Get("sobriety"))
 	if !ok {
 		return DiscoverUsersParams{}, fmt.Errorf("sobriety must be 30+ days, 90+ days, 1+ year, or 5+ years")
 	}
+	request.Sobriety = sobriety
 
 	var err error
-	request.AgeMin, err = parseOptionalIntParam(r, "age_min")
-	if err != nil {
-		return DiscoverUsersParams{}, err
-	}
-	request.AgeMax, err = parseOptionalIntParam(r, "age_max")
-	if err != nil {
-		return DiscoverUsersParams{}, err
-	}
-	if request.AgeMin != nil && request.AgeMax != nil && *request.AgeMin > *request.AgeMax {
-		return DiscoverUsersParams{}, fmt.Errorf("age_min cannot be greater than age_max")
-	}
 	request.DistanceKm, err = parseOptionalIntParam(r, "distance_km")
 	if err != nil {
 		return DiscoverUsersParams{}, err
@@ -866,38 +777,6 @@ func relaxDistance(distanceKm *int) (*int, bool) {
 	}
 }
 
-func relaxAgeBounds(ageMin, ageMax *int) (*int, *int, bool) {
-	if ageMin == nil && ageMax == nil {
-		return ageMin, ageMax, false
-	}
-
-	nextMin := cloneInt(ageMin)
-	nextMax := cloneInt(ageMax)
-	changed := false
-
-	if nextMin != nil {
-		value := *nextMin - 5
-		if value <= 18 {
-			nextMin = nil
-		} else {
-			nextMin = &value
-		}
-		changed = true
-	}
-
-	if nextMax != nil {
-		value := *nextMax + 5
-		if value >= 99 {
-			nextMax = nil
-		} else {
-			nextMax = &value
-		}
-		changed = true
-	}
-
-	return nextMin, nextMax, changed
-}
-
 func relaxSobriety(raw string) (string, bool) {
 	switch raw {
 	case "years_5":
@@ -918,20 +797,11 @@ func discoverActiveFieldNames(params DiscoverUsersParams) []string {
 	if params.DistanceKm != nil && *params.DistanceKm > 0 {
 		fields = append(fields, "distance")
 	}
-	if params.AgeMin != nil || params.AgeMax != nil {
-		fields = append(fields, "age")
-	}
 	if len(params.Interests) > 0 {
 		fields = append(fields, "interests")
 	}
-	if params.Intent != "" {
-		fields = append(fields, "intent")
-	}
 	if params.Sobriety != "" {
 		fields = append(fields, "sobriety")
-	}
-	if params.Gender != "" {
-		fields = append(fields, "gender")
 	}
 	return fields
 }
@@ -945,12 +815,6 @@ func buildBroadenedDiscoverParams(params DiscoverUsersParams) (DiscoverUsersPara
 		relaxed = append(relaxed, "distance")
 	}
 
-	if nextMin, nextMax, changed := relaxAgeBounds(params.AgeMin, params.AgeMax); changed {
-		broadened.AgeMin = nextMin
-		broadened.AgeMax = nextMax
-		relaxed = append(relaxed, "age")
-	}
-
 	if len(params.Interests) > 0 {
 		broadened.Interests = nil
 		relaxed = append(relaxed, "interests")
@@ -961,21 +825,12 @@ func buildBroadenedDiscoverParams(params DiscoverUsersParams) (DiscoverUsersPara
 		relaxed = append(relaxed, "sobriety")
 	}
 
-	if params.Intent != "" {
-		broadened.Intent = ""
-		relaxed = append(relaxed, "intent")
-	}
-
 	return broadened, relaxed
 }
 
 func discoverPreviewFiltersFromParams(params DiscoverUsersParams) DiscoverPreviewFilters {
 	return DiscoverPreviewFilters{
-		Gender:     params.Gender,
-		Intent:     params.Intent,
 		Sobriety:   params.Sobriety,
-		AgeMin:     cloneInt(params.AgeMin),
-		AgeMax:     cloneInt(params.AgeMax),
 		DistanceKm: cloneInt(params.DistanceKm),
 		Interests:  append([]string{}, params.Interests...),
 	}

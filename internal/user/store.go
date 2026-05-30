@@ -29,7 +29,6 @@ const discoverProfileCompletenessExpr = `(
 		WHEN EXISTS (SELECT 1 FROM user_interests ui WHERE ui.user_id = u.id) THEN 1
 		ELSE 0
 	  END
-	+ CASE WHEN cardinality(u.connection_intents) > 0 THEN 1 ELSE 0 END
 )::smallint`
 
 // NewPgStore wraps a pgxpool.Pool as the production Querier implementation.
@@ -57,7 +56,6 @@ func (s *pgStore) GetUser(ctx context.Context, viewerID, userID uuid.UUID) (*Use
 			u.country,
 			u.bio,
 			COALESCE(interest_names.items, '{}') AS interests,
-			u.connection_intents,
 			u.gender,
 			CASE
 				WHEN u.birth_date IS NULL THEN NULL
@@ -112,7 +110,7 @@ func (s *pgStore) GetUser(ctx context.Context, viewerID, userID uuid.UUID) (*Use
 	).Scan(
 		&u.ID, &u.Username, &u.AvatarURL, &u.IsPlus, &u.SubscriptionTier, &u.SubscriptionStatus,
 		&u.OnboardingCompletedAt, &u.IdentityVerificationStatus, &u.IdentityVerifiedAt, &u.IdentityVerificationLastError,
-		&u.City, &u.Country, &u.Bio, &u.Interests, &u.ConnectionIntents, &u.Gender, &u.BirthDate, &u.SoberSince, &u.CreatedAt,
+		&u.City, &u.Country, &u.Bio, &u.Interests, &u.Gender, &u.BirthDate, &u.SoberSince, &u.CreatedAt,
 		&u.FriendshipStatus, &u.FriendCount, &u.IncomingFriendRequestCt, &u.OutgoingFriendRequestCt,
 		&u.CurrentCity, &u.CurrentCountry, &u.LocationUpdatedAt,
 	)
@@ -134,7 +132,7 @@ func (s *pgStore) UsernameExistsForOthers(ctx context.Context, username string, 
 	return exists, err
 }
 
-func (s *pgStore) UpdateUser(ctx context.Context, userID uuid.UUID, username, city, country, gender, bio *string, soberSince *time.Time, replaceSoberSince bool, birthDate *time.Time, replaceBirthDate bool, interests []string, replaceInterests bool, connectionIntents []string, replaceConnectionIntents bool, lat, lng *float64) error {
+func (s *pgStore) UpdateUser(ctx context.Context, userID uuid.UUID, username, city, country, gender, bio *string, soberSince *time.Time, replaceSoberSince bool, birthDate *time.Time, replaceBirthDate bool, interests []string, replaceInterests bool, lat, lng *float64) error {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return err
@@ -164,13 +162,9 @@ func (s *pgStore) UpdateUser(ctx context.Context, userID uuid.UUID, username, ci
 				ELSE $9::date
 			END,
 			lat = COALESCE($11::float8, lat),
-			lng = COALESCE($12::float8, lng),
-			connection_intents = CASE
-				WHEN NOT $13 THEN connection_intents
-				ELSE $14::text[]
-			END
+			lng = COALESCE($12::float8, lng)
 		WHERE id = $10`,
-		username, city, country, gender, bio, replaceSoberSince, soberSince, replaceBirthDate, birthDate, userID, lat, lng, replaceConnectionIntents, connectionIntents,
+		username, city, country, gender, bio, replaceSoberSince, soberSince, replaceBirthDate, birthDate, userID, lat, lng,
 	)
 	if err != nil {
 		return err
@@ -275,7 +269,6 @@ func (s *pgStore) DeleteCurrentUser(ctx context.Context, userID uuid.UUID) error
 			location_updated_at = NULL,
 			discover_lat = NULL,
 			discover_lng = NULL,
-			connection_intents = ARRAY['friends']::text[],
 			onboarding_completed_at = NULL,
 			onboarding_owner_welcome_comment_id = NULL,
 			identity_verification_status = 'not_started',
@@ -510,7 +503,6 @@ func (s *pgStore) discoverBySearch(ctx context.Context, params DiscoverUsersPara
 			u.country,
 			u.bio,
 			COALESCE(interest_names.items, '{}') AS interests,
-			u.connection_intents,
 			u.gender,
 			CASE
 				WHEN u.birth_date IS NULL THEN NULL
@@ -552,59 +544,55 @@ func (s *pgStore) discoverBySearch(ctx context.Context, params DiscoverUsersPara
 			)
 			AND ($2 = '' OR COALESCE(u.current_city, u.city) ILIKE $2)
 			AND u.username ILIKE '%' || $3 || '%'
-			AND ($4 = '' OR u.gender = $4)
-			AND ($5::int IS NULL OR (u.birth_date IS NOT NULL AND u.birth_date <= CURRENT_DATE - make_interval(years => $5::int)))
-			AND ($6::int IS NULL OR (u.birth_date IS NOT NULL AND u.birth_date > CURRENT_DATE - make_interval(years => ($6::int + 1))))
-			AND ($7::int IS NULL OR (u.sober_since IS NOT NULL AND EXTRACT(EPOCH FROM (NOW() - u.sober_since::timestamptz)) / 86400.0 >= $7::float8))
+			AND ($4::int IS NULL OR (u.sober_since IS NOT NULL AND EXTRACT(EPOCH FROM (NOW() - u.sober_since::timestamptz)) / 86400.0 >= $4::float8))
 			AND (
-				$10::int IS NULL
-				OR $10::int <= 0
-				OR $8::float8 IS NULL
-				OR $9::float8 IS NULL
+				$7::int IS NULL
+				OR $7::int <= 0
+				OR $5::float8 IS NULL
+				OR $6::float8 IS NULL
 				OR (
 					u.discover_lat IS NOT NULL
 					AND u.discover_lng IS NOT NULL
 					AND 2.0 * 6371.0 * ASIN(SQRT(
-						POWER(SIN(RADIANS((u.discover_lat - $8::float8) / 2.0)), 2)
-						+ COS(RADIANS($8::float8)) * COS(RADIANS(u.discover_lat))
-						* POWER(SIN(RADIANS((u.discover_lng - $9::float8) / 2.0)), 2)
-					)) <= $10::float8
+						POWER(SIN(RADIANS((u.discover_lat - $5::float8) / 2.0)), 2)
+						+ COS(RADIANS($5::float8)) * COS(RADIANS(u.discover_lat))
+						* POWER(SIN(RADIANS((u.discover_lng - $6::float8) / 2.0)), 2)
+					)) <= $7::float8
 				)
 			)
 				AND (
-					$11::text[] IS NULL
+					$8::text[] IS NULL
 					OR EXISTS (
 					SELECT 1
 					FROM user_interests ui
 					JOIN interests i ON i.id = ui.interest_id
 					WHERE ui.user_id = u.id
-						  AND i.name = ANY($11::text[])
+						  AND i.name = ANY($8::text[])
 					)
 				)
-				AND ($16 = '' OR u.connection_intents @> ARRAY[$16]::text[])
 				AND (
-					$13::int IS NULL
+					$10::int IS NULL
 					OR (
 						CASE
 							WHEN u.username = $3 THEN 0
 							WHEN u.username ILIKE $3 || '%' THEN 1
 							ELSE 2
 						END
-					) > $13::int
+					) > $10::int
 					OR (
 						CASE
 							WHEN u.username = $3 THEN 0
 							WHEN u.username ILIKE $3 || '%' THEN 1
 							ELSE 2
 						END
-					) = $13::int AND u.created_at < $14::timestamptz
+					) = $10::int AND u.created_at < $11::timestamptz
 					OR (
 						CASE
 							WHEN u.username = $3 THEN 0
 							WHEN u.username ILIKE $3 || '%' THEN 1
 							ELSE 2
 						END
-					) = $13::int AND u.created_at = $14::timestamptz AND u.id > $15::uuid
+					) = $10::int AND u.created_at = $11::timestamptz AND u.id > $12::uuid
 				)
 			ORDER BY
 				CASE
@@ -614,8 +602,8 @@ func (s *pgStore) discoverBySearch(ctx context.Context, params DiscoverUsersPara
 				END,
 				u.created_at DESC,
 				u.id ASC
-			LIMIT $12`,
-		params.CurrentUserID, params.City, params.Query, params.Gender, params.AgeMin, params.AgeMax, sobrietyMinDays, params.Lat, params.Lng, params.DistanceKm, nullableTextArray(params.Interests), params.Limit, cursorRank, cursorCreatedAt, cursorID, params.Intent,
+			LIMIT $9`,
+		params.CurrentUserID, params.City, params.Query, sobrietyMinDays, params.Lat, params.Lng, params.DistanceKm, nullableTextArray(params.Interests), params.Limit, cursorRank, cursorCreatedAt, cursorID,
 	)
 	if err != nil {
 		return nil, err
@@ -632,7 +620,7 @@ func scanUsers(rows interface {
 	var users []User
 	for rows.Next() {
 		var u User
-		if err := rows.Scan(&u.ID, &u.Username, &u.AvatarURL, &u.IsPlus, &u.SubscriptionTier, &u.SubscriptionStatus, &u.City, &u.Country, &u.Bio, &u.Interests, &u.ConnectionIntents, &u.Gender, &u.BirthDate, &u.SoberSince, &u.CreatedAt, &u.FriendshipStatus); err != nil {
+		if err := rows.Scan(&u.ID, &u.Username, &u.AvatarURL, &u.IsPlus, &u.SubscriptionTier, &u.SubscriptionStatus, &u.City, &u.Country, &u.Bio, &u.Interests, &u.Gender, &u.BirthDate, &u.SoberSince, &u.CreatedAt, &u.FriendshipStatus); err != nil {
 			return nil, err
 		}
 		users = append(users, u)

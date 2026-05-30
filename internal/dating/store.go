@@ -43,7 +43,6 @@ func (s *pgStore) ensureDatingProfile(ctx context.Context, userID uuid.UUID) err
 			SELECT 1 FROM users
 			WHERE id = $1
 				AND deleted_at IS NULL
-				AND connection_intents @> ARRAY['dating']::text[]
 		)`,
 		userID,
 	).Scan(&hasDating); err != nil {
@@ -542,7 +541,6 @@ func (s *pgStore) loadDatingViewerFeatures(ctx context.Context, userID uuid.UUID
 		JOIN dating_profiles dp ON dp.user_id = u.id
 		WHERE u.id = $1
 			AND u.deleted_at IS NULL
-			AND u.connection_intents @> ARRAY['dating']::text[]
 			AND dp.completed_at IS NOT NULL
 			AND dp.paused = FALSE`,
 		userID,
@@ -1175,10 +1173,13 @@ func (s *pgStore) userHasDating(ctx context.Context, userID uuid.UUID) (bool, er
 	var ok bool
 	err := s.pool.QueryRow(ctx,
 		`SELECT EXISTS(
-			SELECT 1 FROM users
-			WHERE id = $1
-				AND deleted_at IS NULL
-				AND connection_intents @> ARRAY['dating']::text[]
+			SELECT 1
+			FROM users u
+			JOIN dating_profiles dp ON dp.user_id = u.id
+			WHERE u.id = $1
+				AND u.deleted_at IS NULL
+				AND dp.completed_at IS NOT NULL
+				AND dp.paused = FALSE
 		)`,
 		userID,
 	).Scan(&ok)
@@ -1232,8 +1233,8 @@ func validateDatingPair(ctx context.Context, q querier, actorID, targetID uuid.U
 	var actorDating, targetDating, actorComplete, targetComplete, actorPaused, targetPaused, mutualPreference, blocked bool
 	err := q.QueryRow(ctx,
 		`SELECT
-			EXISTS(SELECT 1 FROM users WHERE id = $1 AND deleted_at IS NULL AND connection_intents @> ARRAY['dating']::text[]),
-			EXISTS(SELECT 1 FROM users WHERE id = $2 AND deleted_at IS NULL AND connection_intents @> ARRAY['dating']::text[]),
+			EXISTS(SELECT 1 FROM users WHERE id = $1 AND deleted_at IS NULL),
+			EXISTS(SELECT 1 FROM users WHERE id = $2 AND deleted_at IS NULL),
 			EXISTS(SELECT 1 FROM dating_profiles WHERE user_id = $1 AND completed_at IS NOT NULL),
 			EXISTS(SELECT 1 FROM dating_profiles WHERE user_id = $2 AND completed_at IS NOT NULL),
 			EXISTS(SELECT 1 FROM dating_profiles WHERE user_id = $1 AND paused = TRUE),
@@ -1581,7 +1582,6 @@ const datingRecentImpressionSuppressionSQL = `
 const datingDiscoverWhereSQL = `
 		WHERE u.id != $1
 			AND u.deleted_at IS NULL
-			AND u.connection_intents @> ARRAY['dating']::text[]
 			AND dp.completed_at IS NOT NULL
 			AND dp.paused = FALSE
 			AND EXISTS (
@@ -1589,7 +1589,6 @@ const datingDiscoverWhereSQL = `
 				JOIN dating_profiles viewer_dp ON viewer_dp.user_id = viewer.id
 				WHERE viewer.id = $1
 					AND viewer.deleted_at IS NULL
-					AND viewer.connection_intents @> ARRAY['dating']::text[]
 					AND viewer_dp.completed_at IS NOT NULL
 					AND viewer_dp.paused = FALSE
 					AND (
@@ -1673,7 +1672,6 @@ const datingLikesWhereSQL = `
 		WHERE da.target_id = $1
 			AND da.action = 'like'
 			AND u.deleted_at IS NULL
-			AND u.connection_intents @> ARRAY['dating']::text[]
 			AND dp.completed_at IS NOT NULL
 			AND dp.paused = FALSE
 			AND NOT EXISTS (
