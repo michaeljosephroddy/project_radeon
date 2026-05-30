@@ -10,18 +10,20 @@ import (
 )
 
 const (
-	datingDistanceWeight     = 0.30
-	datingActivityWeight     = 0.20
-	datingInterestWeight     = 0.18
-	datingIncomingLikeWeight = 0.15
-	datingCompletenessWeight = 0.07
-	datingSobrietyWeight     = 0.05
-	datingFreshnessWeight    = 0.05
-	datingRankedWindowMax    = 500
-	datingRankedWindowMin    = 100
-	datingSourceWindowMin    = 60
-	datingSourceWindowMax    = 150
-	datingImpressionCooldown = 72 * time.Hour
+	datingDistanceWeight       = 0.30
+	datingActivityWeight       = 0.20
+	datingInterestWeight       = 0.18
+	datingIncomingLikeWeight   = 0.15
+	datingSpotlightWeight      = 0.22
+	datingSuperSpotlightWeight = 0.32
+	datingCompletenessWeight   = 0.07
+	datingSobrietyWeight       = 0.05
+	datingFreshnessWeight      = 0.05
+	datingRankedWindowMax      = 500
+	datingRankedWindowMin      = 100
+	datingSourceWindowMin      = 60
+	datingSourceWindowMax      = 150
+	datingImpressionCooldown   = 72 * time.Hour
 )
 
 type datingViewerFeatures struct {
@@ -38,6 +40,7 @@ type datingCandidate struct {
 	LastActiveAt        *time.Time
 	RecentImpressionAt  *time.Time
 	IncomingLike        bool
+	ActiveSpotlightKind *string
 	Source              string
 	Score               float64
 }
@@ -107,6 +110,11 @@ func mergeDatingCandidateFeatures(existing, incoming datingCandidate) datingCand
 	if incoming.IncomingLike {
 		existing.IncomingLike = true
 	}
+	if existing.ActiveSpotlightKind == nil && incoming.ActiveSpotlightKind != nil {
+		existing.ActiveSpotlightKind = incoming.ActiveSpotlightKind
+	} else if existing.ActiveSpotlightKind != nil && incoming.ActiveSpotlightKind != nil && *incoming.ActiveSpotlightKind == SpotlightKindSuper {
+		existing.ActiveSpotlightKind = incoming.ActiveSpotlightKind
+	}
 	if existing.DistanceKm == nil || (incoming.DistanceKm != nil && *incoming.DistanceKm < *existing.DistanceKm) {
 		existing.DistanceKm = incoming.DistanceKm
 	}
@@ -163,6 +171,14 @@ func scoreDatingCandidate(viewer datingViewerFeatures, candidate datingCandidate
 	score += datingInterestWeight * minDatingFloat(float64(candidate.SharedInterestCount)/4.0, 1.0)
 	if candidate.IncomingLike {
 		score += datingIncomingLikeWeight
+	}
+	if candidate.ActiveSpotlightKind != nil {
+		switch *candidate.ActiveSpotlightKind {
+		case SpotlightKindSuper:
+			score += datingSuperSpotlightWeight
+		case SpotlightKindStandard:
+			score += datingSpotlightWeight
+		}
 	}
 	score += datingCompletenessWeight * minDatingFloat(float64(candidate.ProfileCompleteness)/8.0, 1.0)
 	score += datingSobrietyWeight * datingSobrietyScore(viewer.SobrietyBand, candidate.SobrietyBand)

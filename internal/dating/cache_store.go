@@ -101,6 +101,17 @@ func (s *cachedStore) Discover(ctx context.Context, params DiscoverParams) ([]Da
 		"age_max", cacheIntPart(params.AgeMax),
 		"distance_km", cacheIntPart(params.DistanceKm),
 		"interests", cacheStringSlicePart(params.Interests),
+		"relationship_goal", cacheStringPart(params.RelationshipGoal),
+		"height_min_cm", cacheIntPart(params.HeightMinCm),
+		"height_max_cm", cacheIntPart(params.HeightMaxCm),
+		"family_plans", cacheStringPart(params.FamilyPlans),
+		"drinking_status", cacheStringPart(params.DrinkingStatus),
+		"smoking_status", cacheStringPart(params.SmokingStatus),
+		"drug_use_status", cacheStringPart(params.DrugUseStatus),
+		"sober_lifestyle", cacheStringPart(params.SoberLifestyle),
+		"recovery_approach", cacheStringPart(params.RecoveryApproach),
+		"nightlife_comfort", cacheStringPart(params.NightlifeComfort),
+		"substance_boundary", cacheStringPart(params.SubstanceBoundary),
 		"lat", cacheFloatPart(params.Lat),
 		"lng", cacheFloatPart(params.Lng),
 		"ranked_limit", strconv.Itoa(datingRankedWindowMax),
@@ -176,6 +187,19 @@ func (s *cachedStore) Unmatch(ctx context.Context, userID, matchID uuid.UUID) (*
 	}
 	_ = s.cache.BumpVersions(ctx, s.viewerVersionKey(userID), s.globalVersionKey())
 	return match, nil
+}
+
+func (s *cachedStore) GetSpotlightStatus(ctx context.Context, userID uuid.UUID) (*SpotlightStatus, error) {
+	return s.inner.GetSpotlightStatus(ctx, userID)
+}
+
+func (s *cachedStore) ActivateSpotlight(ctx context.Context, userID uuid.UUID, kind string) (*SpotlightStatus, error) {
+	status, err := s.inner.ActivateSpotlight(ctx, userID, kind)
+	if err != nil {
+		return nil, err
+	}
+	_ = s.cache.BumpVersions(ctx, s.viewerVersionKey(userID), s.globalVersionKey())
+	return status, nil
 }
 
 func (s *cachedStore) LogEvents(ctx context.Context, userID uuid.UUID, events []DatingEventInput) error {

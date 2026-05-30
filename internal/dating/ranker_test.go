@@ -70,6 +70,27 @@ func TestScoreDatingCandidateBoostsIncomingLike(t *testing.T) {
 	}
 }
 
+func TestScoreDatingCandidateBoostsActiveSpotlight(t *testing.T) {
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	base := baseDatingCandidate(now)
+	spotlightKind := SpotlightKindStandard
+	superKind := SpotlightKindSuper
+	spotlight := base
+	spotlight.ActiveSpotlightKind = &spotlightKind
+	superSpotlight := base
+	superSpotlight.ActiveSpotlightKind = &superKind
+
+	baseScore := scoreDatingCandidate(datingViewerFeatures{}, base, now)
+	spotlightScore := scoreDatingCandidate(datingViewerFeatures{}, spotlight, now)
+	superSpotlightScore := scoreDatingCandidate(datingViewerFeatures{}, superSpotlight, now)
+	if spotlightScore <= baseScore {
+		t.Fatalf("spotlight score = %f, base score = %f; want spotlight higher", spotlightScore, baseScore)
+	}
+	if superSpotlightScore <= spotlightScore {
+		t.Fatalf("super spotlight score = %f, spotlight score = %f; want super higher", superSpotlightScore, spotlightScore)
+	}
+}
+
 func TestScoreDatingCandidatePenalizesRecentImpression(t *testing.T) {
 	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
 	recentImpressionAt := now.Add(-2 * time.Hour)
