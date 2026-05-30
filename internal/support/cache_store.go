@@ -264,6 +264,10 @@ func (s *cachedStore) GetActiveSupportSignalForUser(ctx context.Context, viewerI
 	return s.inner.GetActiveSupportSignalForUser(ctx, viewerID, userID)
 }
 
+func (s *cachedStore) GetActiveSupportSignal(ctx context.Context, viewerID, signalID uuid.UUID) (*SupportSignal, error) {
+	return s.inner.GetActiveSupportSignal(ctx, viewerID, signalID)
+}
+
 func (s *cachedStore) ListActiveSupportSignals(ctx context.Context, viewerID uuid.UUID, before *time.Time, limit int) ([]SupportSignal, error) {
 	return s.inner.ListActiveSupportSignals(ctx, viewerID, before, limit)
 }

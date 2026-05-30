@@ -36,6 +36,7 @@ type Querier interface {
 	DeclineSupportOffer(ctx context.Context, requesterID, requestID, offerID uuid.UUID) error
 	CancelSupportOffer(ctx context.Context, responderID, requestID, offerID uuid.UUID) error
 	CountSupportSignalsSince(ctx context.Context, userID uuid.UUID, since time.Time) (int, error)
+	GetActiveSupportSignal(ctx context.Context, viewerID, signalID uuid.UUID) (*SupportSignal, error)
 	GetActiveSupportSignalForUser(ctx context.Context, viewerID, userID uuid.UUID) (*SupportSignal, error)
 	ListActiveSupportSignals(ctx context.Context, viewerID uuid.UUID, before *time.Time, limit int) ([]SupportSignal, error)
 	CreateSupportSignal(ctx context.Context, userID uuid.UUID, input CreateSupportSignalInput, expiresAt time.Time) (*SupportSignal, error)
@@ -317,6 +318,26 @@ func (h *Handler) GetMySupportSignal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	response.Success(w, http.StatusOK, map[string]any{"signal": signal})
+}
+
+func (h *Handler) GetSupportSignal(w http.ResponseWriter, r *http.Request) {
+	userID := middleware.CurrentUserID(r)
+	signalID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		response.Error(w, http.StatusBadRequest, "invalid reach out signal id")
+		return
+	}
+
+	signal, err := h.db.GetActiveSupportSignal(r.Context(), userID, signalID)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			response.Error(w, http.StatusNotFound, "reach out signal not found")
+			return
+		}
+		response.Error(w, http.StatusInternalServerError, "could not fetch reach out signal")
+		return
+	}
+	response.Success(w, http.StatusOK, signal)
 }
 
 func (h *Handler) CreateSupportSignal(w http.ResponseWriter, r *http.Request) {

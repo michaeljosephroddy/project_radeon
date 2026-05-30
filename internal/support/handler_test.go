@@ -33,6 +33,7 @@ type mockQuerier struct {
 	declineSupportOffer           func(ctx context.Context, requesterID, requestID, offerID uuid.UUID) error
 	cancelSupportOffer            func(ctx context.Context, responderID, requestID, offerID uuid.UUID) error
 	countSupportSignalsSince      func(ctx context.Context, userID uuid.UUID, since time.Time) (int, error)
+	getActiveSupportSignal        func(ctx context.Context, viewerID, signalID uuid.UUID) (*SupportSignal, error)
 	createSupportSignal           func(ctx context.Context, userID uuid.UUID, input CreateSupportSignalInput, expiresAt time.Time) (*SupportSignal, error)
 }
 
@@ -140,6 +141,12 @@ func (m *mockQuerier) CountSupportSignalsSince(ctx context.Context, userID uuid.
 }
 func (m *mockQuerier) GetActiveSupportSignalForUser(ctx context.Context, viewerID, userID uuid.UUID) (*SupportSignal, error) {
 	return nil, ErrNotFound
+}
+func (m *mockQuerier) GetActiveSupportSignal(ctx context.Context, viewerID, signalID uuid.UUID) (*SupportSignal, error) {
+	if m.getActiveSupportSignal != nil {
+		return m.getActiveSupportSignal(ctx, viewerID, signalID)
+	}
+	return &SupportSignal{ID: signalID, UserID: fixedOther, Reason: "need_to_talk", Status: "active"}, nil
 }
 func (m *mockQuerier) ListActiveSupportSignals(ctx context.Context, viewerID uuid.UUID, before *time.Time, limit int) ([]SupportSignal, error) {
 	return nil, nil
@@ -309,6 +316,47 @@ func TestRespondToSupportSignalRejectsInvalidID(t *testing.T) {
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+}
+
+func TestGetSupportSignalRejectsInvalidID(t *testing.T) {
+	h := NewHandler(&mockQuerier{})
+	rec := httptest.NewRecorder()
+
+	h.GetSupportSignal(rec, authedRequestWithID(http.MethodGet, "", "bad"))
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+}
+
+func TestGetSupportSignalNotFound(t *testing.T) {
+	h := NewHandler(&mockQuerier{
+		getActiveSupportSignal: func(_ context.Context, _, _ uuid.UUID) (*SupportSignal, error) {
+			return nil, ErrNotFound
+		},
+	})
+	rec := httptest.NewRecorder()
+
+	h.GetSupportSignal(rec, authedRequestWithID(http.MethodGet, "", fixedRequest.String()))
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNotFound)
+	}
+}
+
+func TestGetSupportSignalSuccess(t *testing.T) {
+	h := NewHandler(&mockQuerier{
+		getActiveSupportSignal: func(_ context.Context, _, signalID uuid.UUID) (*SupportSignal, error) {
+			return &SupportSignal{ID: signalID, UserID: fixedOther, Reason: "need_to_talk", Status: "active"}, nil
+		},
+	})
+	rec := httptest.NewRecorder()
+
+	h.GetSupportSignal(rec, authedRequestWithID(http.MethodGet, "", fixedRequest.String()))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
 	}
 }
 
