@@ -75,8 +75,10 @@ func (h *Handler) UpdatePreferences(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var input struct {
-		ChatMessages    *bool `json:"chat_messages"`
-		CommentMentions *bool `json:"comment_mentions"`
+		ChatMessages         *bool `json:"chat_messages"`
+		CommentMentions      *bool `json:"comment_mentions"`
+		ReachOutAlerts       *bool `json:"reach_out_alerts"`
+		ReachOutHelperAlerts *bool `json:"reach_out_helper_alerts"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 		response.Error(w, http.StatusBadRequest, "invalid request body")
@@ -84,14 +86,22 @@ func (h *Handler) UpdatePreferences(w http.ResponseWriter, r *http.Request) {
 	}
 
 	next := Preferences{
-		ChatMessages:    current.ChatMessages,
-		CommentMentions: current.CommentMentions,
+		ChatMessages:         current.ChatMessages,
+		CommentMentions:      current.CommentMentions,
+		ReachOutAlerts:       current.ReachOutAlerts,
+		ReachOutHelperAlerts: current.ReachOutHelperAlerts,
 	}
 	if input.ChatMessages != nil {
 		next.ChatMessages = *input.ChatMessages
 	}
 	if input.CommentMentions != nil {
 		next.CommentMentions = *input.CommentMentions
+	}
+	if input.ReachOutAlerts != nil {
+		next.ReachOutAlerts = *input.ReachOutAlerts
+	}
+	if input.ReachOutHelperAlerts != nil {
+		next.ReachOutHelperAlerts = *input.ReachOutHelperAlerts
 	}
 
 	updated, err := h.service.UpdatePreferences(r.Context(), userID, next)

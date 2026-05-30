@@ -8,16 +8,18 @@ import (
 )
 
 const (
-	NotificationTypeChatMessage       = "chat.message"
-	NotificationTypeCommentMention    = "comment.mention"
-	NotificationTypeGroupPost         = "group.post"
-	NotificationTypeGroupComment      = "group.comment"
-	NotificationTypeGroupAdminContact = "group.admin_contact"
-	NotificationTypeGroupAdminReply   = "group.admin_reply"
-	NotificationTypeGroupReport       = "group.report"
-	NotificationTypeGroupReportStatus = "group.report_status"
-	NotificationTypeSupportOffer      = "support.offer"
-	NotificationTypeDatingMatch       = "dating.match"
+	NotificationTypeChatMessage           = "chat.message"
+	NotificationTypeCommentMention        = "comment.mention"
+	NotificationTypeGroupPost             = "group.post"
+	NotificationTypeGroupComment          = "group.comment"
+	NotificationTypeGroupAdminContact     = "group.admin_contact"
+	NotificationTypeGroupAdminReply       = "group.admin_reply"
+	NotificationTypeGroupReport           = "group.report"
+	NotificationTypeGroupReportStatus     = "group.report_status"
+	NotificationTypeSupportOffer          = "support.offer"
+	NotificationTypeSupportSignal         = "support.signal"
+	NotificationTypeSupportSignalResponse = "support.signal_response"
+	NotificationTypeDatingMatch           = "dating.match"
 
 	ResourceTypeChat             = "chat"
 	ResourceTypeComment          = "comment"
@@ -27,6 +29,7 @@ const (
 	ResourceTypeGroupAdminThread = "group_admin_thread"
 	ResourceTypeGroupReport      = "group_report"
 	ResourceTypeSupportOffer     = "support_offer"
+	ResourceTypeSupportSignal    = "support_signal"
 	ResourceTypeDatingMatch      = "dating_match"
 )
 
@@ -38,8 +41,10 @@ type RegisterDeviceInput struct {
 }
 
 type Preferences struct {
-	ChatMessages    bool `json:"chat_messages"`
-	CommentMentions bool `json:"comment_mentions"`
+	ChatMessages         bool `json:"chat_messages"`
+	CommentMentions      bool `json:"comment_mentions"`
+	ReachOutAlerts       bool `json:"reach_out_alerts"`
+	ReachOutHelperAlerts bool `json:"reach_out_helper_alerts"`
 }
 
 type Notification struct {
@@ -119,6 +124,8 @@ type Store interface {
 	CreateGroupReportNotifications(ctx context.Context, groupID, reportID, reporterID uuid.UUID, targetType, reason string) error
 	CreateGroupReportStatusNotification(ctx context.Context, groupID, reportID, reviewerID, reporterID uuid.UUID, status string) error
 	CreateSupportOfferNotification(ctx context.Context, requestID, offerID, responderID, requesterID uuid.UUID) error
+	CreateSupportSignalNotifications(ctx context.Context, signalID, requesterID uuid.UUID) error
+	CreateSupportSignalResponseNotification(ctx context.Context, signalID, responderID, requesterID, chatID uuid.UUID) error
 	CreateDatingMatchNotification(ctx context.Context, matchID, chatID, actorID, recipientID uuid.UUID) error
 	ClaimPendingDeliveries(ctx context.Context, limit int, now time.Time) ([]deliveryJob, error)
 	MarkDeliverySent(ctx context.Context, deliveryID uuid.UUID, providerMessageID string, sentAt time.Time) error

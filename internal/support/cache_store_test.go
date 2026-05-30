@@ -87,6 +87,34 @@ func (s *stubQuerier) CancelSupportOffer(context.Context, uuid.UUID, uuid.UUID, 
 	return nil
 }
 
+func (s *stubQuerier) CountSupportSignalsSince(context.Context, uuid.UUID, time.Time) (int, error) {
+	return 0, nil
+}
+
+func (s *stubQuerier) GetActiveSupportSignalForUser(context.Context, uuid.UUID, uuid.UUID) (*SupportSignal, error) {
+	return nil, ErrNotFound
+}
+
+func (s *stubQuerier) ListActiveSupportSignals(context.Context, uuid.UUID, *time.Time, int) ([]SupportSignal, error) {
+	return nil, nil
+}
+
+func (s *stubQuerier) CreateSupportSignal(context.Context, uuid.UUID, CreateSupportSignalInput, time.Time) (*SupportSignal, error) {
+	return &SupportSignal{}, nil
+}
+
+func (s *stubQuerier) ResolveSupportSignal(context.Context, uuid.UUID, uuid.UUID) (*SupportSignal, error) {
+	return &SupportSignal{}, nil
+}
+
+func (s *stubQuerier) CancelSupportSignal(context.Context, uuid.UUID, uuid.UUID) (*SupportSignal, error) {
+	return &SupportSignal{}, nil
+}
+
+func (s *stubQuerier) RespondToSupportSignal(context.Context, uuid.UUID, uuid.UUID) (*SupportSignalResponseResult, error) {
+	return &SupportSignalResponseResult{ChatID: uuid.New()}, nil
+}
+
 var requestOwnerID = uuid.New()
 
 func TestCachedStoreInvalidatesSupportRequestAfterOffer(t *testing.T) {

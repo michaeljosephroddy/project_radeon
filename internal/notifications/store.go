@@ -91,11 +91,11 @@ func (s *pgStore) GetPreferences(ctx context.Context, userID uuid.UUID) (*Prefer
 
 	var prefs Preferences
 	if err := s.pool.QueryRow(ctx,
-		`SELECT chat_messages, comment_mentions
+		`SELECT chat_messages, comment_mentions, reach_out_alerts, reach_out_helper_alerts
 		FROM notification_preferences
 		WHERE user_id = $1`,
 		userID,
-	).Scan(&prefs.ChatMessages, &prefs.CommentMentions); err != nil {
+	).Scan(&prefs.ChatMessages, &prefs.CommentMentions, &prefs.ReachOutAlerts, &prefs.ReachOutHelperAlerts); err != nil {
 		return nil, err
 	}
 	return &prefs, nil
@@ -103,15 +103,17 @@ func (s *pgStore) GetPreferences(ctx context.Context, userID uuid.UUID) (*Prefer
 
 func (s *pgStore) UpdatePreferences(ctx context.Context, userID uuid.UUID, input Preferences) (*Preferences, error) {
 	if err := s.pool.QueryRow(ctx,
-		`INSERT INTO notification_preferences (user_id, chat_messages, comment_mentions, created_at, updated_at)
-		VALUES ($1, $2, $3, NOW(), NOW())
+		`INSERT INTO notification_preferences (user_id, chat_messages, comment_mentions, reach_out_alerts, reach_out_helper_alerts, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, NOW(), NOW())
 		ON CONFLICT (user_id) DO UPDATE
 		SET chat_messages = EXCLUDED.chat_messages,
 			comment_mentions = EXCLUDED.comment_mentions,
+			reach_out_alerts = EXCLUDED.reach_out_alerts,
+			reach_out_helper_alerts = EXCLUDED.reach_out_helper_alerts,
 			updated_at = NOW()
-		RETURNING chat_messages, comment_mentions`,
-		userID, input.ChatMessages, input.CommentMentions,
-	).Scan(&input.ChatMessages, &input.CommentMentions); err != nil {
+		RETURNING chat_messages, comment_mentions, reach_out_alerts, reach_out_helper_alerts`,
+		userID, input.ChatMessages, input.CommentMentions, input.ReachOutAlerts, input.ReachOutHelperAlerts,
+	).Scan(&input.ChatMessages, &input.CommentMentions, &input.ReachOutAlerts, &input.ReachOutHelperAlerts); err != nil {
 		return nil, err
 	}
 	return &input, nil
@@ -792,6 +794,126 @@ func (s *pgStore) CreateSupportOfferNotification(ctx context.Context, requestID,
 	return tx.Commit(ctx)
 }
 
+func (s *pgStore) CreateSupportSignalNotifications(ctx context.Context, signalID, requesterID uuid.UUID) error {
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	var username string
+	var reason string
+	if err := tx.QueryRow(ctx,
+		`SELECT u.username, ss.reason
+		FROM support_signals ss
+		JOIN users u ON u.id = ss.user_id
+		WHERE ss.id = $1
+			AND ss.user_id = $2
+			AND u.deleted_at IS NULL`,
+		signalID, requesterID,
+	).Scan(&username, &reason); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return tx.Commit(ctx)
+		}
+		return err
+	}
+
+	rows, err := tx.Query(ctx,
+		`WITH friends AS (
+			SELECT CASE WHEN f.user_a_id = $1 THEN f.user_b_id ELSE f.user_a_id END AS user_id
+			FROM friendships f
+			WHERE f.status = 'accepted'
+				AND (f.user_a_id = $1 OR f.user_b_id = $1)
+		)
+		SELECT u.id
+		FROM users u
+		LEFT JOIN friends f ON f.user_id = u.id
+		LEFT JOIN notification_preferences np ON np.user_id = u.id
+		WHERE u.id <> $1
+			AND u.deleted_at IS NULL
+			AND (
+				(f.user_id IS NOT NULL AND COALESCE(np.reach_out_alerts, TRUE))
+				OR (f.user_id IS NULL AND COALESCE(np.reach_out_helper_alerts, FALSE))
+			)
+			AND NOT EXISTS (
+				SELECT 1 FROM user_blocks ub
+				WHERE (ub.blocker_id = $1 AND ub.blocked_id = u.id)
+					OR (ub.blocker_id = u.id AND ub.blocked_id = $1)
+			)
+		ORDER BY (f.user_id IS NOT NULL) DESC, u.created_at DESC
+		LIMIT 100`,
+		requesterID,
+	)
+	if err != nil {
+		return err
+	}
+
+	recipientIDs := []uuid.UUID{}
+	body := supportSignalNotificationBody(username, reason)
+	for rows.Next() {
+		var recipientID uuid.UUID
+		if err := rows.Scan(&recipientID); err != nil {
+			rows.Close()
+			return err
+		}
+		recipientIDs = append(recipientIDs, recipientID)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+
+	for _, recipientID := range recipientIDs {
+		payload := supportSignalPayload(signalID, requesterID, reason)
+		if err := s.createNotification(ctx, tx, recipientID, NotificationTypeSupportSignal, requesterID, ResourceTypeSupportSignal, signalID, "Reach Out", body, payload); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
+}
+
+func (s *pgStore) CreateSupportSignalResponseNotification(ctx context.Context, signalID, responderID, requesterID, chatID uuid.UUID) error {
+	if responderID == requesterID {
+		return nil
+	}
+
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	var responderUsername string
+	if err := tx.QueryRow(ctx,
+		`SELECT username FROM users WHERE id = $1 AND deleted_at IS NULL`,
+		responderID,
+	).Scan(&responderUsername); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return tx.Commit(ctx)
+		}
+		return err
+	}
+
+	payload := supportSignalResponsePayload(signalID, responderID, chatID)
+	returnErr := s.createNotification(
+		ctx,
+		tx,
+		requesterID,
+		NotificationTypeSupportSignalResponse,
+		responderID,
+		ResourceTypeSupportSignal,
+		signalID,
+		"Someone replied",
+		responderUsername+" replied to your Reach Out",
+		payload,
+	)
+	if returnErr != nil {
+		return returnErr
+	}
+	return tx.Commit(ctx)
+}
+
 func (s *pgStore) CreateDatingMatchNotification(ctx context.Context, matchID, chatID, actorID, recipientID uuid.UUID) error {
 	if actorID == recipientID {
 		return nil
@@ -904,6 +1026,53 @@ func groupPayload(notificationType string, groupID, actorID uuid.UUID) map[strin
 		"group_id":        groupID.String(),
 		"notification_id": "",
 		"actor_user_id":   actorID.String(),
+	}
+}
+
+func supportSignalPayload(signalID, actorID uuid.UUID, reason string) map[string]any {
+	return map[string]any{
+		"type":              NotificationTypeSupportSignal,
+		"support_signal_id": signalID.String(),
+		"actor_user_id":     actorID.String(),
+		"reason":            reason,
+		"notification_id":   "",
+	}
+}
+
+func supportSignalResponsePayload(signalID, actorID, chatID uuid.UUID) map[string]any {
+	return map[string]any{
+		"type":              NotificationTypeSupportSignalResponse,
+		"support_signal_id": signalID.String(),
+		"chat_id":           chatID.String(),
+		"actor_user_id":     actorID.String(),
+		"notification_id":   "",
+	}
+}
+
+func supportSignalNotificationBody(username, reason string) string {
+	label := supportSignalReasonLabel(reason)
+	if label == "" {
+		return username + " is reaching out for sober support."
+	}
+	return username + " is reaching out: " + label + "."
+}
+
+func supportSignalReasonLabel(reason string) string {
+	switch reason {
+	case "cravings":
+		return "Cravings"
+	case "relapse_risk":
+		return "Relapse risk"
+	case "overwhelmed":
+		return "Feeling overwhelmed"
+	case "lonely":
+		return "Feeling lonely"
+	case "risky_place":
+		return "Risky place"
+	case "need_to_talk":
+		return "Needs to talk"
+	default:
+		return ""
 	}
 }
 

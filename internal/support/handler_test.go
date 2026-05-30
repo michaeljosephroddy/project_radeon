@@ -32,6 +32,8 @@ type mockQuerier struct {
 	listSupportReplies            func(ctx context.Context, requestID uuid.UUID, cursor *SupportReplyCursor, limit int) ([]SupportReply, error)
 	declineSupportOffer           func(ctx context.Context, requesterID, requestID, offerID uuid.UUID) error
 	cancelSupportOffer            func(ctx context.Context, responderID, requestID, offerID uuid.UUID) error
+	countSupportSignalsSince      func(ctx context.Context, userID uuid.UUID, since time.Time) (int, error)
+	createSupportSignal           func(ctx context.Context, userID uuid.UUID, input CreateSupportSignalInput, expiresAt time.Time) (*SupportSignal, error)
 }
 
 func (m *mockQuerier) CountOpenSupportRequests(ctx context.Context, userID uuid.UUID) (int, error) {
@@ -130,6 +132,33 @@ func (m *mockQuerier) CancelSupportOffer(ctx context.Context, responderID, reque
 	}
 	return nil
 }
+func (m *mockQuerier) CountSupportSignalsSince(ctx context.Context, userID uuid.UUID, since time.Time) (int, error) {
+	if m.countSupportSignalsSince != nil {
+		return m.countSupportSignalsSince(ctx, userID, since)
+	}
+	return 0, nil
+}
+func (m *mockQuerier) GetActiveSupportSignalForUser(ctx context.Context, viewerID, userID uuid.UUID) (*SupportSignal, error) {
+	return nil, ErrNotFound
+}
+func (m *mockQuerier) ListActiveSupportSignals(ctx context.Context, viewerID uuid.UUID, before *time.Time, limit int) ([]SupportSignal, error) {
+	return nil, nil
+}
+func (m *mockQuerier) CreateSupportSignal(ctx context.Context, userID uuid.UUID, input CreateSupportSignalInput, expiresAt time.Time) (*SupportSignal, error) {
+	if m.createSupportSignal != nil {
+		return m.createSupportSignal(ctx, userID, input, expiresAt)
+	}
+	return &SupportSignal{ID: uuid.New(), UserID: userID, Reason: input.Reason, Status: "active", ExpiresAt: expiresAt}, nil
+}
+func (m *mockQuerier) ResolveSupportSignal(ctx context.Context, userID, signalID uuid.UUID) (*SupportSignal, error) {
+	return &SupportSignal{ID: signalID, UserID: userID, Status: "resolved"}, nil
+}
+func (m *mockQuerier) CancelSupportSignal(ctx context.Context, userID, signalID uuid.UUID) (*SupportSignal, error) {
+	return &SupportSignal{ID: signalID, UserID: userID, Status: "cancelled"}, nil
+}
+func (m *mockQuerier) RespondToSupportSignal(ctx context.Context, userID, signalID uuid.UUID) (*SupportSignalResponseResult, error) {
+	return &SupportSignalResponseResult{Signal: &SupportSignal{ID: signalID, UserID: fixedOther, Status: "active"}, ChatID: uuid.New()}, nil
+}
 
 var (
 	fixedUser    = uuid.MustParse("00000000-0000-0000-0000-000000000001")
@@ -223,6 +252,63 @@ func TestEncodeSupportFeedCursorProducesRoundTripPayload(t *testing.T) {
 
 	if decoded != cursor {
 		t.Fatalf("decoded cursor = %#v, want %#v", decoded, cursor)
+	}
+}
+
+func TestCreateSupportSignalRejectsInvalidReason(t *testing.T) {
+	h := NewHandler(&mockQuerier{})
+	rec := httptest.NewRecorder()
+
+	h.CreateSupportSignal(rec, authedRequest(http.MethodPost, `{"reason":"bad"}`))
+
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnprocessableEntity)
+	}
+}
+
+func TestCreateSupportSignalRejectsDailyLimit(t *testing.T) {
+	h := NewHandler(&mockQuerier{
+		countSupportSignalsSince: func(_ context.Context, _ uuid.UUID, _ time.Time) (int, error) {
+			return 3, nil
+		},
+	})
+	rec := httptest.NewRecorder()
+
+	h.CreateSupportSignal(rec, authedRequest(http.MethodPost, `{"reason":"need_to_talk"}`))
+
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusTooManyRequests)
+	}
+}
+
+func TestCreateSupportSignalNormalizesInput(t *testing.T) {
+	var seen CreateSupportSignalInput
+	h := NewHandler(&mockQuerier{
+		createSupportSignal: func(_ context.Context, userID uuid.UUID, input CreateSupportSignalInput, expiresAt time.Time) (*SupportSignal, error) {
+			seen = input
+			return &SupportSignal{ID: fixedRequest, UserID: userID, Reason: input.Reason, Status: "active", ExpiresAt: expiresAt}, nil
+		},
+	})
+	rec := httptest.NewRecorder()
+
+	h.CreateSupportSignal(rec, authedRequest(http.MethodPost, `{"reason":" need_to_talk "}`))
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusCreated)
+	}
+	if seen.Reason != "need_to_talk" {
+		t.Fatalf("reason = %q, want need_to_talk", seen.Reason)
+	}
+}
+
+func TestRespondToSupportSignalRejectsInvalidID(t *testing.T) {
+	h := NewHandler(&mockQuerier{})
+	rec := httptest.NewRecorder()
+
+	h.RespondToSupportSignal(rec, authedRequestWithID(http.MethodPost, "", "bad"))
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
 	}
 }
 

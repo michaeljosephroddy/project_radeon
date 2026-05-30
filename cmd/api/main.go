@@ -301,6 +301,12 @@ func main() {
 		r.Post("/support/requests/{id}/offers/{offerId}/accept", supportHandler.AcceptSupportOffer)
 		r.Post("/support/requests/{id}/offers/{offerId}/decline", supportHandler.DeclineSupportOffer)
 		r.Post("/support/requests/{id}/offers/{offerId}/cancel", supportHandler.CancelSupportOffer)
+		r.Get("/support/signals/active", supportHandler.ListActiveSupportSignals)
+		r.Get("/support/signals/mine", supportHandler.GetMySupportSignal)
+		r.Post("/support/signals", supportHandler.CreateSupportSignal)
+		r.Post("/support/signals/{id}/respond", supportHandler.RespondToSupportSignal)
+		r.Post("/support/signals/{id}/resolve", supportHandler.ResolveSupportSignal)
+		r.Post("/support/signals/{id}/cancel", supportHandler.CancelSupportSignal)
 
 		// Chats
 		r.Get("/chats", chatsHandler.ListChats)

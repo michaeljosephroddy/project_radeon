@@ -138,6 +138,20 @@ func (s *Service) NotifySupportOffer(ctx context.Context, requestID, offerID, re
 	return nil
 }
 
+func (s *Service) NotifySupportSignal(ctx context.Context, signalID, requesterID uuid.UUID) error {
+	go s.runGroupNotification("create reach out signal notifications", func(ctx context.Context) error {
+		return s.store.CreateSupportSignalNotifications(ctx, signalID, requesterID)
+	})
+	return nil
+}
+
+func (s *Service) NotifySupportSignalResponse(ctx context.Context, signalID, responderID, requesterID, chatID uuid.UUID) error {
+	go s.runGroupNotification("create reach out response notification", func(ctx context.Context) error {
+		return s.store.CreateSupportSignalResponseNotification(ctx, signalID, responderID, requesterID, chatID)
+	})
+	return nil
+}
+
 func (s *Service) NotifyDatingMatch(ctx context.Context, matchID, chatID, actorID, recipientID uuid.UUID) error {
 	go s.runGroupNotification("create dating match notification", func(ctx context.Context) error {
 		return s.store.CreateDatingMatchNotification(ctx, matchID, chatID, actorID, recipientID)

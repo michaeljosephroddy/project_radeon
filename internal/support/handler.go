@@ -35,6 +35,13 @@ type Querier interface {
 	ListSupportReplies(ctx context.Context, requestID uuid.UUID, cursor *SupportReplyCursor, limit int) ([]SupportReply, error)
 	DeclineSupportOffer(ctx context.Context, requesterID, requestID, offerID uuid.UUID) error
 	CancelSupportOffer(ctx context.Context, responderID, requestID, offerID uuid.UUID) error
+	CountSupportSignalsSince(ctx context.Context, userID uuid.UUID, since time.Time) (int, error)
+	GetActiveSupportSignalForUser(ctx context.Context, viewerID, userID uuid.UUID) (*SupportSignal, error)
+	ListActiveSupportSignals(ctx context.Context, viewerID uuid.UUID, before *time.Time, limit int) ([]SupportSignal, error)
+	CreateSupportSignal(ctx context.Context, userID uuid.UUID, input CreateSupportSignalInput, expiresAt time.Time) (*SupportSignal, error)
+	ResolveSupportSignal(ctx context.Context, userID, signalID uuid.UUID) (*SupportSignal, error)
+	CancelSupportSignal(ctx context.Context, userID, signalID uuid.UUID) (*SupportSignal, error)
+	RespondToSupportSignal(ctx context.Context, userID, signalID uuid.UUID) (*SupportSignalResponseResult, error)
 }
 
 type Handler struct {
@@ -50,6 +57,8 @@ type ChatBroadcaster interface {
 
 type SupportNotifier interface {
 	NotifySupportOffer(ctx context.Context, requestID, offerID, responderID, requesterID uuid.UUID) error
+	NotifySupportSignal(ctx context.Context, signalID, requesterID uuid.UUID) error
+	NotifySupportSignalResponse(ctx context.Context, signalID, responderID, requesterID, chatID uuid.UUID) error
 }
 
 var validSupportTypes = map[string]bool{
@@ -84,6 +93,15 @@ var validSupportTopics = map[string]bool{
 	"relationships":     true,
 	"practical_support": true,
 	"general":           true,
+}
+
+var validSupportSignalReasons = map[string]bool{
+	"cravings":     true,
+	"relapse_risk": true,
+	"overwhelmed":  true,
+	"lonely":       true,
+	"risky_place":  true,
+	"need_to_talk": true,
 }
 
 var validPreferredGenders = map[string]bool{
@@ -166,6 +184,39 @@ type SupportRequest struct {
 	FeedScore           float64          `json:"-"`
 }
 
+type SupportSignal struct {
+	ID            uuid.UUID  `json:"id"`
+	UserID        uuid.UUID  `json:"user_id"`
+	Username      string     `json:"username"`
+	AvatarURL     *string    `json:"avatar_url,omitempty"`
+	City          *string    `json:"city,omitempty"`
+	Reason        string     `json:"reason"`
+	Status        string     `json:"status"`
+	ExpiresAt     time.Time  `json:"expires_at"`
+	ResponseCount int        `json:"response_count"`
+	CreatedAt     time.Time  `json:"created_at"`
+	ResolvedAt    *time.Time `json:"resolved_at,omitempty"`
+	CancelledAt   *time.Time `json:"cancelled_at,omitempty"`
+	IsOwnSignal   bool       `json:"is_own_signal"`
+	IsFriend      bool       `json:"is_friend"`
+}
+
+type CreateSupportSignalInput struct {
+	Reason string `json:"reason"`
+}
+
+type SupportSignalsPage struct {
+	Items      []SupportSignal `json:"items"`
+	Limit      int             `json:"limit"`
+	HasMore    bool            `json:"has_more"`
+	NextCursor *string         `json:"next_cursor,omitempty"`
+}
+
+type SupportSignalResponseResult struct {
+	Signal *SupportSignal `json:"signal"`
+	ChatID uuid.UUID      `json:"chat_id"`
+}
+
 type SupportLocation struct {
 	City           *string  `json:"city,omitempty"`
 	Region         *string  `json:"region,omitempty"`
@@ -233,6 +284,151 @@ type SupportRequestsPage struct {
 
 type AcceptSupportOfferResult struct {
 	Request *SupportRequest `json:"request"`
+}
+
+func (h *Handler) ListActiveSupportSignals(w http.ResponseWriter, r *http.Request) {
+	userID := middleware.CurrentUserID(r)
+	params := pagination.ParseCursor(r, 20, 50)
+
+	signals, err := h.db.ListActiveSupportSignals(r.Context(), userID, params.Before, params.Limit+1)
+	if err != nil {
+		response.Error(w, http.StatusInternalServerError, "could not fetch reach out signals")
+		return
+	}
+
+	page := pagination.CursorSlice(signals, params.Limit, func(signal SupportSignal) time.Time { return signal.CreatedAt })
+	response.Success(w, http.StatusOK, SupportSignalsPage{
+		Items:      page.Items,
+		Limit:      page.Limit,
+		HasMore:    page.HasMore,
+		NextCursor: page.NextCursor,
+	})
+}
+
+func (h *Handler) GetMySupportSignal(w http.ResponseWriter, r *http.Request) {
+	userID := middleware.CurrentUserID(r)
+	signal, err := h.db.GetActiveSupportSignalForUser(r.Context(), userID, userID)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			response.Success(w, http.StatusOK, map[string]any{"signal": nil})
+			return
+		}
+		response.Error(w, http.StatusInternalServerError, "could not fetch reach out signal")
+		return
+	}
+	response.Success(w, http.StatusOK, map[string]any{"signal": signal})
+}
+
+func (h *Handler) CreateSupportSignal(w http.ResponseWriter, r *http.Request) {
+	userID := middleware.CurrentUserID(r)
+	var input CreateSupportSignalInput
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		response.Error(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	input = normalizeCreateSupportSignalInput(input)
+	if errs := validateCreateSupportSignalInput(input); len(errs) > 0 {
+		response.ValidationError(w, errs)
+		return
+	}
+	recentCount, err := h.db.CountSupportSignalsSince(r.Context(), userID, time.Now().UTC().Add(-24*time.Hour))
+	if err != nil {
+		response.Error(w, http.StatusInternalServerError, "could not validate reach out signal")
+		return
+	}
+	if recentCount >= 3 {
+		response.Error(w, http.StatusTooManyRequests, "you've used your reach out signals for today")
+		return
+	}
+
+	signal, err := h.db.CreateSupportSignal(r.Context(), userID, input, time.Now().UTC().Add(2*time.Hour))
+	if err != nil {
+		if errors.Is(err, ErrConflict) {
+			response.Error(w, http.StatusConflict, "you already have an active reach out signal")
+			return
+		}
+		response.Error(w, http.StatusInternalServerError, "could not create reach out signal")
+		return
+	}
+	if h.notifier != nil {
+		_ = h.notifier.NotifySupportSignal(r.Context(), signal.ID, userID)
+	}
+	response.Success(w, http.StatusCreated, signal)
+}
+
+func (h *Handler) RespondToSupportSignal(w http.ResponseWriter, r *http.Request) {
+	userID := middleware.CurrentUserID(r)
+	signalID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		response.Error(w, http.StatusBadRequest, "invalid reach out signal id")
+		return
+	}
+
+	result, err := h.db.RespondToSupportSignal(r.Context(), userID, signalID)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			response.Error(w, http.StatusNotFound, "reach out signal not found")
+			return
+		}
+		if errors.Is(err, ErrConflict) {
+			response.Error(w, http.StatusConflict, "reach out signal is no longer active")
+			return
+		}
+		response.Error(w, http.StatusInternalServerError, "could not respond to reach out signal")
+		return
+	}
+	if h.chatBroadcaster != nil {
+		_ = h.chatBroadcaster.BroadcastChatUpdate(r.Context(), result.ChatID)
+	}
+	if h.notifier != nil && result.Signal != nil {
+		_ = h.notifier.NotifySupportSignalResponse(r.Context(), signalID, userID, result.Signal.UserID, result.ChatID)
+	}
+	response.Success(w, http.StatusOK, result)
+}
+
+func (h *Handler) ResolveSupportSignal(w http.ResponseWriter, r *http.Request) {
+	h.updateSupportSignalStatus(w, r, "resolve")
+}
+
+func (h *Handler) CancelSupportSignal(w http.ResponseWriter, r *http.Request) {
+	h.updateSupportSignalStatus(w, r, "cancel")
+}
+
+func (h *Handler) updateSupportSignalStatus(w http.ResponseWriter, r *http.Request, action string) {
+	userID := middleware.CurrentUserID(r)
+	signalID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		response.Error(w, http.StatusBadRequest, "invalid reach out signal id")
+		return
+	}
+	var signal *SupportSignal
+	if action == "resolve" {
+		signal, err = h.db.ResolveSupportSignal(r.Context(), userID, signalID)
+	} else {
+		signal, err = h.db.CancelSupportSignal(r.Context(), userID, signalID)
+	}
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			response.Error(w, http.StatusNotFound, "reach out signal not found")
+			return
+		}
+		response.Error(w, http.StatusInternalServerError, "could not update reach out signal")
+		return
+	}
+	response.Success(w, http.StatusOK, signal)
+}
+
+func normalizeCreateSupportSignalInput(input CreateSupportSignalInput) CreateSupportSignalInput {
+	input.Reason = strings.TrimSpace(input.Reason)
+	return input
+}
+
+func validateCreateSupportSignalInput(input CreateSupportSignalInput) map[string]string {
+	errs := map[string]string{}
+	if !validSupportSignalReasons[input.Reason] {
+		errs["reason"] = "invalid"
+	}
+	return errs
 }
 
 // CreateSupportRequest creates a unified support request for the authenticated user.

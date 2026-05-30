@@ -256,6 +256,34 @@ func (s *cachedStore) CancelSupportOffer(ctx context.Context, responderID, reque
 	return nil
 }
 
+func (s *cachedStore) CountSupportSignalsSince(ctx context.Context, userID uuid.UUID, since time.Time) (int, error) {
+	return s.inner.CountSupportSignalsSince(ctx, userID, since)
+}
+
+func (s *cachedStore) GetActiveSupportSignalForUser(ctx context.Context, viewerID, userID uuid.UUID) (*SupportSignal, error) {
+	return s.inner.GetActiveSupportSignalForUser(ctx, viewerID, userID)
+}
+
+func (s *cachedStore) ListActiveSupportSignals(ctx context.Context, viewerID uuid.UUID, before *time.Time, limit int) ([]SupportSignal, error) {
+	return s.inner.ListActiveSupportSignals(ctx, viewerID, before, limit)
+}
+
+func (s *cachedStore) CreateSupportSignal(ctx context.Context, userID uuid.UUID, input CreateSupportSignalInput, expiresAt time.Time) (*SupportSignal, error) {
+	return s.inner.CreateSupportSignal(ctx, userID, input, expiresAt)
+}
+
+func (s *cachedStore) ResolveSupportSignal(ctx context.Context, userID, signalID uuid.UUID) (*SupportSignal, error) {
+	return s.inner.ResolveSupportSignal(ctx, userID, signalID)
+}
+
+func (s *cachedStore) CancelSupportSignal(ctx context.Context, userID, signalID uuid.UUID) (*SupportSignal, error) {
+	return s.inner.CancelSupportSignal(ctx, userID, signalID)
+}
+
+func (s *cachedStore) RespondToSupportSignal(ctx context.Context, userID, signalID uuid.UUID) (*SupportSignalResponseResult, error) {
+	return s.inner.RespondToSupportSignal(ctx, userID, signalID)
+}
+
 func (s *cachedStore) myRequestsVersionKey(userID uuid.UUID) string {
 	return s.cache.Key("ver", "support", "mine", userID.String())
 }
