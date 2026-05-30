@@ -243,6 +243,16 @@ func (s *pgStore) UpdateMyProfile(ctx context.Context, userID uuid.UUID, input U
 			drinking_status = CASE WHEN $28::text IS NULL THEN drinking_status ELSE $28::text END,
 			smoking_status = CASE WHEN $29::text IS NULL THEN smoking_status ELSE $29::text END,
 			drug_use_status = CASE WHEN $30::text IS NULL THEN drug_use_status ELSE $30::text END,
+			zodiac = CASE WHEN $31::text IS NULL THEN zodiac ELSE $31::text END,
+			family_plans = CASE WHEN $32::text IS NULL THEN family_plans ELSE $32::text END,
+			communication_style = CASE WHEN $33::text IS NULL THEN communication_style ELSE $33::text END,
+			love_style = CASE WHEN $34::text IS NULL THEN love_style ELSE $34::text END,
+			workout = CASE WHEN $35::text IS NULL THEN workout ELSE $35::text END,
+			social_media = CASE WHEN $36::text IS NULL THEN social_media ELSE $36::text END,
+			sober_lifestyle = CASE WHEN $37::text IS NULL THEN sober_lifestyle ELSE $37::text END,
+			recovery_approach = CASE WHEN $38::text IS NULL THEN recovery_approach ELSE $38::text END,
+			nightlife_comfort = CASE WHEN $39::text IS NULL THEN nightlife_comfort ELSE $39::text END,
+			substance_boundaries = CASE WHEN $40::text IS NULL THEN substance_boundaries ELSE $40::text END,
 			updated_at = NOW()
 		WHERE user_id = $1`,
 		userID,
@@ -275,6 +285,16 @@ func (s *pgStore) UpdateMyProfile(ctx context.Context, userID uuid.UUID, input U
 		input.DrinkingStatus,
 		input.SmokingStatus,
 		input.DrugUseStatus,
+		input.Zodiac,
+		input.FamilyPlans,
+		input.CommunicationStyle,
+		input.LoveStyle,
+		input.Workout,
+		input.SocialMedia,
+		input.SoberLifestyle,
+		input.RecoveryApproach,
+		input.NightlifeComfort,
+		input.SubstanceBoundaries,
 	)
 	if err != nil {
 		return nil, err
@@ -765,6 +785,11 @@ func (s *pgStore) RecordAction(ctx context.Context, actorID, targetProfileID uui
 		return nil, ErrConflict
 	}
 	if errors.Is(err, pgx.ErrNoRows) {
+		if action == ActionLike {
+			if err := enforceDailyLikeLimit(ctx, tx, actorID); err != nil {
+				return nil, err
+			}
+		}
 		if _, err := tx.Exec(ctx,
 			`INSERT INTO dating_actions (actor_id, target_id, action)
 			VALUES ($1, $2, $3)`,
@@ -790,6 +815,36 @@ func (s *pgStore) RecordAction(ctx context.Context, actorID, targetProfileID uui
 		return nil, err
 	}
 	return result, nil
+}
+
+func enforceDailyLikeLimit(ctx context.Context, q querier, actorID uuid.UUID) error {
+	var isPlus bool
+	var likesToday int
+	err := q.QueryRow(ctx, `
+		SELECT
+			(subscription_tier = 'plus' AND subscription_status = 'active') AS is_plus,
+			(
+				SELECT COUNT(*)
+				FROM dating_actions
+				WHERE actor_id = $1
+					AND action = 'like'
+					AND created_at >= date_trunc('day', NOW())
+			) AS likes_today
+		FROM users
+		WHERE id = $1
+			AND deleted_at IS NULL`,
+		actorID,
+	).Scan(&isPlus, &likesToday)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrDatingDisabled
+	}
+	if err != nil {
+		return err
+	}
+	if isPlus || likesToday < 10 {
+		return nil
+	}
+	return ErrDailyLikeLimit
 }
 
 func (s *pgStore) ListMatches(ctx context.Context, userID uuid.UUID, before *string, limit int) ([]DatingMatch, error) {
@@ -1233,6 +1288,16 @@ const datingProfileColumns = `
 			dp.drinking_status,
 			dp.smoking_status,
 			dp.drug_use_status,
+			dp.zodiac,
+			dp.family_plans,
+			dp.communication_style,
+			dp.love_style,
+			dp.workout,
+			dp.social_media,
+			dp.sober_lifestyle,
+			dp.recovery_approach,
+			dp.nightlife_comfort,
+			dp.substance_boundaries,
 			COALESCE(interest_names.items, '{}') AS interests,
 			dp.age_min,
 			dp.age_max,
@@ -1725,6 +1790,16 @@ func scanDatingProfiles(rows pgx.Rows) ([]DatingProfile, error) {
 			&profile.DrinkingStatus,
 			&profile.SmokingStatus,
 			&profile.DrugUseStatus,
+			&profile.Zodiac,
+			&profile.FamilyPlans,
+			&profile.CommunicationStyle,
+			&profile.LoveStyle,
+			&profile.Workout,
+			&profile.SocialMedia,
+			&profile.SoberLifestyle,
+			&profile.RecoveryApproach,
+			&profile.NightlifeComfort,
+			&profile.SubstanceBoundaries,
 			&profile.Interests,
 			&profile.AgeMin,
 			&profile.AgeMax,

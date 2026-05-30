@@ -133,6 +133,16 @@ func (h *Handler) UpdateMyProfile(w http.ResponseWriter, r *http.Request) {
 		DrinkingStatus      *string   `json:"drinking_status"`
 		SmokingStatus       *string   `json:"smoking_status"`
 		DrugUseStatus       *string   `json:"drug_use_status"`
+		Zodiac              *string   `json:"zodiac"`
+		FamilyPlans         *string   `json:"family_plans"`
+		CommunicationStyle  *string   `json:"communication_style"`
+		LoveStyle           *string   `json:"love_style"`
+		Workout             *string   `json:"workout"`
+		SocialMedia         *string   `json:"social_media"`
+		SoberLifestyle      *string   `json:"sober_lifestyle"`
+		RecoveryApproach    *string   `json:"recovery_approach"`
+		NightlifeComfort    *string   `json:"nightlife_comfort"`
+		SubstanceBoundaries *string   `json:"substance_boundaries"`
 		Interests           *[]string `json:"interests"`
 		PromptAnswers       *[]struct {
 			PromptKey string `json:"prompt_key"`
@@ -154,32 +164,42 @@ func (h *Handler) UpdateMyProfile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	update := UpdateProfileInput{
-		Bio:              trimOptionalString(input.Bio),
-		RelationshipGoal: normalizeRelationshipGoal(input.RelationshipGoal),
-		JobTitle:         trimOptionalString(input.JobTitle),
-		Company:          trimOptionalString(input.Company),
-		Work:             trimOptionalString(input.Work),
-		School:           trimOptionalString(input.School),
-		Course:           trimOptionalString(input.Course),
-		Education:        trimOptionalString(input.Education),
-		KidsStatus:       normalizeKidsStatus(input.KidsStatus),
-		ChildrenStatus:   normalizeDatingOption(input.ChildrenStatus),
-		RelationshipType: normalizeDatingOption(input.RelationshipType),
-		Gender:           normalizeDatingOption(input.Gender),
-		Sexuality:        normalizeDatingOption(input.Sexuality),
-		Pronouns:         normalizeDatingOption(input.Pronouns),
-		Ethnicity:        normalizeDatingOption(input.Ethnicity),
-		Pets:             normalizeDatingOption(input.Pets),
-		ReligiousBelief:  normalizeDatingOption(input.ReligiousBelief),
-		PoliticalView:    normalizeDatingOption(input.PoliticalView),
-		DrinkingStatus:   normalizeDatingOption(input.DrinkingStatus),
-		SmokingStatus:    normalizeDatingOption(input.SmokingStatus),
-		DrugUseStatus:    normalizeDatingOption(input.DrugUseStatus),
-		AgeMin:           input.AgeMin,
-		AgeMax:           input.AgeMax,
-		DistanceKm:       input.DistanceKm,
-		Paused:           input.Paused,
-		Complete:         input.Complete,
+		Bio:                 trimOptionalString(input.Bio),
+		RelationshipGoal:    normalizeRelationshipGoal(input.RelationshipGoal),
+		JobTitle:            trimOptionalString(input.JobTitle),
+		Company:             trimOptionalString(input.Company),
+		Work:                trimOptionalString(input.Work),
+		School:              trimOptionalString(input.School),
+		Course:              trimOptionalString(input.Course),
+		Education:           trimOptionalString(input.Education),
+		KidsStatus:          normalizeKidsStatus(input.KidsStatus),
+		ChildrenStatus:      normalizeDatingOption(input.ChildrenStatus),
+		RelationshipType:    normalizeDatingOption(input.RelationshipType),
+		Gender:              normalizeDatingOption(input.Gender),
+		Sexuality:           normalizeDatingOption(input.Sexuality),
+		Pronouns:            normalizeDatingOption(input.Pronouns),
+		Ethnicity:           normalizeDatingOption(input.Ethnicity),
+		Pets:                normalizeDatingOption(input.Pets),
+		ReligiousBelief:     normalizeDatingOption(input.ReligiousBelief),
+		PoliticalView:       normalizeDatingOption(input.PoliticalView),
+		DrinkingStatus:      normalizeDatingOption(input.DrinkingStatus),
+		SmokingStatus:       normalizeDatingOption(input.SmokingStatus),
+		DrugUseStatus:       normalizeDatingOption(input.DrugUseStatus),
+		Zodiac:              normalizeDatingOption(input.Zodiac),
+		FamilyPlans:         normalizeDatingOption(input.FamilyPlans),
+		CommunicationStyle:  normalizeDatingOption(input.CommunicationStyle),
+		LoveStyle:           normalizeDatingOption(input.LoveStyle),
+		Workout:             normalizeDatingOption(input.Workout),
+		SocialMedia:         normalizeDatingOption(input.SocialMedia),
+		SoberLifestyle:      normalizeDatingOption(input.SoberLifestyle),
+		RecoveryApproach:    normalizeDatingOption(input.RecoveryApproach),
+		NightlifeComfort:    normalizeDatingOption(input.NightlifeComfort),
+		SubstanceBoundaries: normalizeDatingOption(input.SubstanceBoundaries),
+		AgeMin:              input.AgeMin,
+		AgeMax:              input.AgeMax,
+		DistanceKm:          input.DistanceKm,
+		Paused:              input.Paused,
+		Complete:            input.Complete,
 	}
 	if update.JobTitle == nil {
 		update.JobTitle = update.Work
@@ -274,6 +294,46 @@ func (h *Handler) UpdateMyProfile(w http.ResponseWriter, r *http.Request) {
 	}
 	if update.DrugUseStatus != nil && !validViceStatus(*update.DrugUseStatus) {
 		response.Error(w, http.StatusBadRequest, "drug_use_status is invalid")
+		return
+	}
+	if update.Zodiac != nil && !validZodiac(*update.Zodiac) {
+		response.Error(w, http.StatusBadRequest, "zodiac is invalid")
+		return
+	}
+	if update.FamilyPlans != nil && !validFamilyPlans(*update.FamilyPlans) {
+		response.Error(w, http.StatusBadRequest, "family_plans is invalid")
+		return
+	}
+	if update.CommunicationStyle != nil && !validCommunicationStyle(*update.CommunicationStyle) {
+		response.Error(w, http.StatusBadRequest, "communication_style is invalid")
+		return
+	}
+	if update.LoveStyle != nil && !validLoveStyle(*update.LoveStyle) {
+		response.Error(w, http.StatusBadRequest, "love_style is invalid")
+		return
+	}
+	if update.Workout != nil && !validWorkout(*update.Workout) {
+		response.Error(w, http.StatusBadRequest, "workout is invalid")
+		return
+	}
+	if update.SocialMedia != nil && !validSocialMedia(*update.SocialMedia) {
+		response.Error(w, http.StatusBadRequest, "social_media is invalid")
+		return
+	}
+	if update.SoberLifestyle != nil && !validSoberLifestyle(*update.SoberLifestyle) {
+		response.Error(w, http.StatusBadRequest, "sober_lifestyle is invalid")
+		return
+	}
+	if update.RecoveryApproach != nil && !validRecoveryApproach(*update.RecoveryApproach) {
+		response.Error(w, http.StatusBadRequest, "recovery_approach is invalid")
+		return
+	}
+	if update.NightlifeComfort != nil && !validNightlifeComfort(*update.NightlifeComfort) {
+		response.Error(w, http.StatusBadRequest, "nightlife_comfort is invalid")
+		return
+	}
+	if update.SubstanceBoundaries != nil && !validSubstanceBoundaries(*update.SubstanceBoundaries) {
+		response.Error(w, http.StatusBadRequest, "substance_boundaries is invalid")
 		return
 	}
 	if input.LanguagesSpoken != nil {
@@ -744,6 +804,8 @@ func writeDatingError(w http.ResponseWriter, err error) {
 		response.Error(w, http.StatusForbidden, "dating action is not allowed")
 	case errors.Is(err, ErrConflict):
 		response.Error(w, http.StatusConflict, "dating action already recorded")
+	case errors.Is(err, ErrDailyLikeLimit):
+		response.Error(w, http.StatusPaymentRequired, "Daily Dating like limit reached. SoberSpace Plus unlocks unlimited likes")
 	case errors.Is(err, ErrPlusRequired):
 		response.Error(w, http.StatusPaymentRequired, "SoberSpace Plus is required for this Dating feature")
 	default:
@@ -937,6 +999,96 @@ func validPoliticalView(value string) bool {
 func validViceStatus(value string) bool {
 	switch value {
 	case "", "yes", "sometimes", "no", "prefer_not_to_say":
+		return true
+	default:
+		return false
+	}
+}
+
+func validZodiac(value string) bool {
+	switch value {
+	case "", "aries", "taurus", "gemini", "cancer", "leo", "virgo", "libra", "scorpio", "sagittarius", "capricorn", "aquarius", "pisces":
+		return true
+	default:
+		return false
+	}
+}
+
+func validFamilyPlans(value string) bool {
+	switch value {
+	case "", "want_children", "dont_want_children", "open_to_children", "not_sure", "prefer_not_to_say":
+		return true
+	default:
+		return false
+	}
+}
+
+func validCommunicationStyle(value string) bool {
+	switch value {
+	case "", "big_time_texter", "phone_caller", "video_chatter", "bad_texter", "better_in_person":
+		return true
+	default:
+		return false
+	}
+}
+
+func validLoveStyle(value string) bool {
+	switch value {
+	case "", "thoughtful_gestures", "quality_time", "words_of_affirmation", "physical_touch", "acts_of_service":
+		return true
+	default:
+		return false
+	}
+}
+
+func validWorkout(value string) bool {
+	switch value {
+	case "", "every_day", "often", "sometimes", "occasionally", "never":
+		return true
+	default:
+		return false
+	}
+}
+
+func validSocialMedia(value string) bool {
+	switch value {
+	case "", "influencer_status", "socially_active", "passive_scroller", "off_the_grid":
+		return true
+	default:
+		return false
+	}
+}
+
+func validSoberLifestyle(value string) bool {
+	switch value {
+	case "", "sober", "sober_curious", "in_recovery", "supportive_ally":
+		return true
+	default:
+		return false
+	}
+}
+
+func validRecoveryApproach(value string) bool {
+	switch value {
+	case "", "meetings", "therapy", "community", "private", "spiritual", "self_guided":
+		return true
+	default:
+		return false
+	}
+}
+
+func validNightlifeComfort(value string) bool {
+	switch value {
+	case "", "dry_spaces_only", "calm_venues", "okay_with_bars", "depends_on_company", "prefer_daytime":
+		return true
+	default:
+		return false
+	}
+}
+
+func validSubstanceBoundaries(value string) bool {
+	switch value {
+	case "", "no_substances_around_me", "no_drugs", "no_smoking", "ask_me_first", "flexible":
 		return true
 	default:
 		return false
