@@ -351,6 +351,15 @@ func TestUpdateMyProfileAcceptsDatingDetails(t *testing.T) {
 			if input.DrugUseStatus != nil {
 				profile.DrugUseStatus = *input.DrugUseStatus
 			}
+			if input.Zodiac != nil {
+				profile.Zodiac = *input.Zodiac
+			}
+			if input.CommunicationStyle != nil {
+				profile.CommunicationStyle = *input.CommunicationStyle
+			}
+			if input.SoberLifestyle != nil {
+				profile.SoberLifestyle = *input.SoberLifestyle
+			}
 			profile.Interests = input.Interests
 			return &profile, nil
 		},
@@ -366,6 +375,9 @@ func TestUpdateMyProfileAcceptsDatingDetails(t *testing.T) {
 		"drinking_status": "sometimes",
 		"smoking_status": "no",
 		"drug_use_status": "prefer_not_to_say",
+		"zodiac": "leo",
+		"communication_style": "better_in_person",
+		"sober_lifestyle": "in_recovery",
 		"interests": ["Hiking", "Coffee"]
 	}`)), fixedUser)
 	rec := httptest.NewRecorder()
@@ -396,6 +408,15 @@ func TestUpdateMyProfileAcceptsDatingDetails(t *testing.T) {
 	if got.DrugUseStatus == nil || *got.DrugUseStatus != "prefer_not_to_say" {
 		t.Fatalf("drug use status = %v", got.DrugUseStatus)
 	}
+	if got.Zodiac == nil || *got.Zodiac != "leo" {
+		t.Fatalf("zodiac = %v", got.Zodiac)
+	}
+	if got.CommunicationStyle == nil || *got.CommunicationStyle != "better_in_person" {
+		t.Fatalf("communication style = %v", got.CommunicationStyle)
+	}
+	if got.SoberLifestyle == nil || *got.SoberLifestyle != "in_recovery" {
+		t.Fatalf("sober lifestyle = %v", got.SoberLifestyle)
+	}
 	if !got.ReplaceInterests || len(got.Interests) != 2 || got.Interests[0] != "Coffee" || got.Interests[1] != "Hiking" {
 		t.Fatalf("interests = %v replace %v", got.Interests, got.ReplaceInterests)
 	}
@@ -404,6 +425,18 @@ func TestUpdateMyProfileAcceptsDatingDetails(t *testing.T) {
 func TestUpdateMyProfileRejectsInvalidViceStatus(t *testing.T) {
 	h := NewHandler(&mockQuerier{}, nil)
 	req := withUserID(httptest.NewRequest(http.MethodPatch, "/dating/profile", strings.NewReader(`{"drinking_status":"daily"}`)), fixedUser)
+	rec := httptest.NewRecorder()
+
+	h.UpdateMyProfile(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestUpdateMyProfileRejectsInvalidExtendedOption(t *testing.T) {
+	h := NewHandler(&mockQuerier{}, nil)
+	req := withUserID(httptest.NewRequest(http.MethodPatch, "/dating/profile", strings.NewReader(`{"communication_style":"smoke_signal"}`)), fixedUser)
 	rec := httptest.NewRecorder()
 
 	h.UpdateMyProfile(rec, req)
@@ -526,6 +559,29 @@ func TestRecordActionRejectsInvalidAction(t *testing.T) {
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+}
+
+func TestRecordActionReturnsPaymentRequiredAtDailyLikeLimit(t *testing.T) {
+	h := NewHandler(&mockQuerier{
+		recordAction: func(_ context.Context, actorID, targetID uuid.UUID, action string) (*ActionResult, error) {
+			if actorID != fixedUser || targetID != fixedOther || action != ActionLike {
+				t.Fatalf("action args = %s %s %s", actorID, targetID, action)
+			}
+			return nil, ErrDailyLikeLimit
+		},
+	}, nil)
+
+	req := withUserID(httptest.NewRequest(http.MethodPost, "/dating/actions", strings.NewReader(`{"target_profile_id":"`+fixedOther.String()+`","action":"like"}`)), fixedUser)
+	rec := httptest.NewRecorder()
+
+	h.RecordAction(rec, req)
+
+	if rec.Code != http.StatusPaymentRequired {
+		t.Fatalf("status = %d, want 402; body %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "Daily Dating like limit reached") {
+		t.Fatalf("body = %s", rec.Body.String())
 	}
 }
 

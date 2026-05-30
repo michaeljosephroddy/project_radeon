@@ -18,6 +18,7 @@ var (
 	ErrForbidden          = errors.New("forbidden")
 	ErrConflict           = errors.New("conflict")
 	ErrPlusRequired       = errors.New("plus required")
+	ErrDailyLikeLimit     = errors.New("daily dating like limit reached")
 	ErrDatingDisabled     = errors.New("dating disabled")
 	ErrTargetUnavailable  = errors.New("target unavailable")
 	ErrProfileIncomplete  = errors.New("dating profile incomplete")
@@ -95,6 +96,16 @@ type DatingProfile struct {
 	DrinkingStatus      string               `json:"drinking_status"`
 	SmokingStatus       string               `json:"smoking_status"`
 	DrugUseStatus       string               `json:"drug_use_status"`
+	Zodiac              string               `json:"zodiac"`
+	FamilyPlans         string               `json:"family_plans"`
+	CommunicationStyle  string               `json:"communication_style"`
+	LoveStyle           string               `json:"love_style"`
+	Workout             string               `json:"workout"`
+	SocialMedia         string               `json:"social_media"`
+	SoberLifestyle      string               `json:"sober_lifestyle"`
+	RecoveryApproach    string               `json:"recovery_approach"`
+	NightlifeComfort    string               `json:"nightlife_comfort"`
+	SubstanceBoundaries string               `json:"substance_boundaries"`
 	Interests           []string             `json:"interests"`
 	AgeMin              int                  `json:"age_min"`
 	AgeMax              int                  `json:"age_max"`
@@ -108,40 +119,50 @@ type DatingProfile struct {
 }
 
 type PublicDatingProfile struct {
-	ID               uuid.UUID            `json:"id"`
-	UserID           uuid.UUID            `json:"user_id,omitempty"`
-	Username         string               `json:"username"`
-	Age              *int                 `json:"age,omitempty"`
-	City             *string              `json:"city,omitempty"`
-	Country          *string              `json:"country,omitempty"`
-	Bio              *string              `json:"bio,omitempty"`
-	RelationshipGoal string               `json:"relationship_goal"`
-	HeightCm         *int                 `json:"height_cm,omitempty"`
-	JobTitle         *string              `json:"job_title,omitempty"`
-	Company          *string              `json:"company,omitempty"`
-	Work             *string              `json:"work,omitempty"`
-	School           *string              `json:"school,omitempty"`
-	Course           *string              `json:"course,omitempty"`
-	Education        *string              `json:"education,omitempty"`
-	KidsStatus       string               `json:"kids_status"`
-	ChildrenStatus   string               `json:"children_status"`
-	RelationshipType string               `json:"relationship_type"`
-	Gender           string               `json:"gender"`
-	Sexuality        string               `json:"sexuality"`
-	Pronouns         string               `json:"pronouns"`
-	Ethnicity        string               `json:"ethnicity"`
-	Pets             string               `json:"pets"`
-	ReligiousBelief  string               `json:"religious_belief"`
-	LanguagesSpoken  []string             `json:"languages_spoken"`
-	PoliticalView    string               `json:"political_view"`
-	DrinkingStatus   string               `json:"drinking_status"`
-	SmokingStatus    string               `json:"smoking_status"`
-	DrugUseStatus    string               `json:"drug_use_status"`
-	Interests        []string             `json:"interests"`
-	Photos           []DatingPhoto        `json:"photos"`
-	PromptAnswers    []DatingPromptAnswer `json:"prompt_answers"`
-	CreatedAt        time.Time            `json:"created_at"`
-	UpdatedAt        time.Time            `json:"updated_at"`
+	ID                  uuid.UUID            `json:"id"`
+	UserID              uuid.UUID            `json:"user_id,omitempty"`
+	Username            string               `json:"username"`
+	Age                 *int                 `json:"age,omitempty"`
+	City                *string              `json:"city,omitempty"`
+	Country             *string              `json:"country,omitempty"`
+	Bio                 *string              `json:"bio,omitempty"`
+	RelationshipGoal    string               `json:"relationship_goal"`
+	HeightCm            *int                 `json:"height_cm,omitempty"`
+	JobTitle            *string              `json:"job_title,omitempty"`
+	Company             *string              `json:"company,omitempty"`
+	Work                *string              `json:"work,omitempty"`
+	School              *string              `json:"school,omitempty"`
+	Course              *string              `json:"course,omitempty"`
+	Education           *string              `json:"education,omitempty"`
+	KidsStatus          string               `json:"kids_status"`
+	ChildrenStatus      string               `json:"children_status"`
+	RelationshipType    string               `json:"relationship_type"`
+	Gender              string               `json:"gender"`
+	Sexuality           string               `json:"sexuality"`
+	Pronouns            string               `json:"pronouns"`
+	Ethnicity           string               `json:"ethnicity"`
+	Pets                string               `json:"pets"`
+	ReligiousBelief     string               `json:"religious_belief"`
+	LanguagesSpoken     []string             `json:"languages_spoken"`
+	PoliticalView       string               `json:"political_view"`
+	DrinkingStatus      string               `json:"drinking_status"`
+	SmokingStatus       string               `json:"smoking_status"`
+	DrugUseStatus       string               `json:"drug_use_status"`
+	Zodiac              string               `json:"zodiac"`
+	FamilyPlans         string               `json:"family_plans"`
+	CommunicationStyle  string               `json:"communication_style"`
+	LoveStyle           string               `json:"love_style"`
+	Workout             string               `json:"workout"`
+	SocialMedia         string               `json:"social_media"`
+	SoberLifestyle      string               `json:"sober_lifestyle"`
+	RecoveryApproach    string               `json:"recovery_approach"`
+	NightlifeComfort    string               `json:"nightlife_comfort"`
+	SubstanceBoundaries string               `json:"substance_boundaries"`
+	Interests           []string             `json:"interests"`
+	Photos              []DatingPhoto        `json:"photos"`
+	PromptAnswers       []DatingPromptAnswer `json:"prompt_answers"`
+	CreatedAt           time.Time            `json:"created_at"`
+	UpdatedAt           time.Time            `json:"updated_at"`
 }
 
 type DatingPromptAnswerInput struct {
@@ -177,6 +198,16 @@ type UpdateProfileInput struct {
 	DrinkingStatus       *string
 	SmokingStatus        *string
 	DrugUseStatus        *string
+	Zodiac               *string
+	FamilyPlans          *string
+	CommunicationStyle   *string
+	LoveStyle            *string
+	Workout              *string
+	SocialMedia          *string
+	SoberLifestyle       *string
+	RecoveryApproach     *string
+	NightlifeComfort     *string
+	SubstanceBoundaries  *string
 	Interests            []string
 	ReplaceInterests     bool
 	PromptAnswers        []DatingPromptAnswerInput
