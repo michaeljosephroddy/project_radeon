@@ -468,6 +468,9 @@ func (s *pgStore) ReorderPhotos(ctx context.Context, userID uuid.UUID, photoIDs 
 }
 
 func (s *pgStore) Discover(ctx context.Context, params DiscoverParams) ([]DatingProfile, error) {
+	if err := s.requirePlusForAdvancedDiscoverFilters(ctx, params); err != nil {
+		return nil, err
+	}
 	ranked, err := s.loadDatingRankedWindow(ctx, params, time.Now().UTC())
 	if err != nil {
 		return nil, err
@@ -620,7 +623,7 @@ func (s *pgStore) loadDatingCandidatesFromSource(ctx context.Context, params Dis
 
 	rows, err := s.pool.Query(ctx, datingDiscoverCandidateSelectSQL+joinSQL+whereSQL+`
 		ORDER BY `+orderBy+`
-		LIMIT $10`,
+		LIMIT $21`,
 		datingDiscoverCandidateArgs(params, source.limit)...,
 	)
 	if err != nil {
@@ -689,11 +692,14 @@ func (s *pgStore) CountDiscover(ctx context.Context, params DiscoverParams) (int
 	} else if !ok {
 		return 0, ErrDatingDisabled
 	}
+	if err := s.requirePlusForAdvancedDiscoverFilters(ctx, params); err != nil {
+		return 0, err
+	}
 
 	var count int
 	err := s.pool.QueryRow(ctx, `SELECT COUNT(*)
 		FROM users u
-		JOIN dating_profiles dp ON dp.user_id = u.id `+datingDiscoverWhereSQL, datingDiscoverArgs(params, 0)[:9]...).Scan(&count)
+		JOIN dating_profiles dp ON dp.user_id = u.id `+datingDiscoverWhereSQL, datingDiscoverFilterArgs(params)...).Scan(&count)
 	return count, err
 }
 
@@ -958,6 +964,161 @@ func (s *pgStore) Unmatch(ctx context.Context, userID, matchID uuid.UUID) (*Dati
 	return match, nil
 }
 
+func (s *pgStore) GetSpotlightStatus(ctx context.Context, userID uuid.UUID) (*SpotlightStatus, error) {
+	return loadSpotlightStatus(ctx, s.pool, userID)
+}
+
+func (s *pgStore) ActivateSpotlight(ctx context.Context, userID uuid.UUID, kind string) (*SpotlightStatus, error) {
+	kind, ok := normalizeSpotlightKind(kind)
+	if !ok {
+		return nil, ErrNotFound
+	}
+	if err := s.ensureDatingProfile(ctx, userID); err != nil {
+		return nil, err
+	}
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+
+	complete, err := datingProfileIsComplete(ctx, tx, userID)
+	if err != nil {
+		return nil, err
+	}
+	if !complete {
+		return nil, ErrProfileIncomplete
+	}
+
+	if active, err := loadActiveSpotlight(ctx, tx, userID); err != nil {
+		return nil, err
+	} else if active != nil {
+		status, err := loadSpotlightStatus(ctx, tx, userID)
+		if err != nil {
+			return nil, err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return nil, err
+		}
+		return status, nil
+	}
+
+	var inventoryID uuid.UUID
+	var durationMinutes int
+	err = tx.QueryRow(ctx,
+		`SELECT id, duration_minutes
+		FROM dating_spotlight_inventory
+		WHERE user_id = $1
+			AND kind = $2
+			AND status = 'available'
+		ORDER BY granted_at ASC, id ASC
+		LIMIT 1
+		FOR UPDATE SKIP LOCKED`,
+		userID,
+		kind,
+	).Scan(&inventoryID, &durationMinutes)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrSpotlightRequired
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	var active ActiveSpotlight
+	err = tx.QueryRow(ctx,
+		`INSERT INTO dating_spotlight_activations (user_id, inventory_id, kind, starts_at, ends_at)
+		VALUES ($1, $2, $3, NOW(), NOW() + ($4::int * INTERVAL '1 minute'))
+		RETURNING id, inventory_id, kind, starts_at, ends_at`,
+		userID,
+		inventoryID,
+		kind,
+		durationMinutes,
+	).Scan(&active.ID, &active.InventoryID, &active.Kind, &active.StartsAt, &active.EndsAt)
+	if err != nil {
+		return nil, err
+	}
+
+	if _, err := tx.Exec(ctx,
+		`UPDATE dating_spotlight_inventory
+		SET status = 'consumed',
+			activated_at = $2,
+			consumed_at = $2,
+			updated_at = NOW()
+		WHERE id = $1`,
+		inventoryID,
+		active.StartsAt,
+	); err != nil {
+		return nil, err
+	}
+
+	status, err := loadSpotlightStatus(ctx, tx, userID)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return status, nil
+}
+
+func loadSpotlightStatus(ctx context.Context, q querier, userID uuid.UUID) (*SpotlightStatus, error) {
+	status := &SpotlightStatus{}
+	active, err := loadActiveSpotlight(ctx, q, userID)
+	if err != nil {
+		return nil, err
+	}
+	status.Active = active
+
+	rows, err := q.Query(ctx,
+		`SELECT kind, COUNT(*)::int
+		FROM dating_spotlight_inventory
+		WHERE user_id = $1
+			AND status = 'available'
+		GROUP BY kind`,
+		userID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var kind string
+		var count int
+		if err := rows.Scan(&kind, &count); err != nil {
+			return nil, err
+		}
+		switch kind {
+		case SpotlightKindStandard:
+			status.Inventory.Spotlights = count
+		case SpotlightKindSuper:
+			status.Inventory.SuperSpotlights = count
+		}
+	}
+	return status, rows.Err()
+}
+
+func loadActiveSpotlight(ctx context.Context, q querier, userID uuid.UUID) (*ActiveSpotlight, error) {
+	var active ActiveSpotlight
+	err := q.QueryRow(ctx,
+		`SELECT id, inventory_id, kind, starts_at, ends_at
+		FROM dating_spotlight_activations
+		WHERE user_id = $1
+			AND ends_at > NOW()
+		ORDER BY ends_at DESC
+		LIMIT 1`,
+		userID,
+	).Scan(&active.ID, &active.InventoryID, &active.Kind, &active.StartsAt, &active.EndsAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &active, nil
+}
+
 func (s *pgStore) LogEvents(ctx context.Context, userID uuid.UUID, events []DatingEventInput) error {
 	if len(events) == 0 {
 		return nil
@@ -1037,6 +1198,34 @@ func (s *pgStore) userHasPlus(ctx context.Context, userID uuid.UUID) (bool, erro
 		userID,
 	).Scan(&ok)
 	return ok, err
+}
+
+func (s *pgStore) requirePlusForAdvancedDiscoverFilters(ctx context.Context, params DiscoverParams) error {
+	if !hasAdvancedDiscoverFilters(params) {
+		return nil
+	}
+	ok, err := s.userHasPlus(ctx, params.CurrentUserID)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return ErrPlusRequired
+	}
+	return nil
+}
+
+func hasAdvancedDiscoverFilters(params DiscoverParams) bool {
+	return params.RelationshipGoal != "" ||
+		params.HeightMinCm != nil ||
+		params.HeightMaxCm != nil ||
+		params.FamilyPlans != "" ||
+		params.DrinkingStatus != "" ||
+		params.SmokingStatus != "" ||
+		params.DrugUseStatus != "" ||
+		params.SoberLifestyle != "" ||
+		params.RecoveryApproach != "" ||
+		params.NightlifeComfort != "" ||
+		params.SubstanceBoundary != ""
 }
 
 func validateDatingPair(ctx context.Context, q querier, actorID, targetID uuid.UUID) error {
@@ -1200,7 +1389,7 @@ func sortPair(a, b uuid.UUID) (uuid.UUID, uuid.UUID) {
 	return b, a
 }
 
-func datingDiscoverArgs(params DiscoverParams, limit int) []any {
+func datingDiscoverFilterArgs(params DiscoverParams) []any {
 	return []any{
 		params.CurrentUserID,
 		params.Gender,
@@ -1211,24 +1400,31 @@ func datingDiscoverArgs(params DiscoverParams, limit int) []any {
 		params.Lng,
 		params.DistanceKm,
 		params.Interests,
-		parseOffset(params.Cursor),
-		limit,
+		params.RelationshipGoal,
+		params.HeightMinCm,
+		params.HeightMaxCm,
+		params.FamilyPlans,
+		params.DrinkingStatus,
+		params.SmokingStatus,
+		params.DrugUseStatus,
+		params.SoberLifestyle,
+		params.RecoveryApproach,
+		params.NightlifeComfort,
+		params.SubstanceBoundary,
 	}
 }
 
-func datingDiscoverCandidateArgs(params DiscoverParams, limit int) []any {
-	return []any{
-		params.CurrentUserID,
-		params.Gender,
-		params.AgeMin,
-		params.AgeMax,
-		sobrietyMinimumDays(params.Sobriety),
-		params.Lat,
-		params.Lng,
-		params.DistanceKm,
-		params.Interests,
+func datingDiscoverArgs(params DiscoverParams, limit int) []any {
+	return append(datingDiscoverFilterArgs(params),
+		parseOffset(params.Cursor),
 		limit,
-	}
+	)
+}
+
+func datingDiscoverCandidateArgs(params DiscoverParams, limit int) []any {
+	return append(datingDiscoverFilterArgs(params),
+		limit,
+	)
 }
 
 func sobrietyMinimumDays(filter string) *int {
@@ -1341,7 +1537,8 @@ const datingCandidateColumns = datingProfileColumns + `,
 			u.sobriety_band,
 			u.profile_completeness,
 			u.last_active_at,
-			recent_impression.shown_at`
+			recent_impression.shown_at,
+			active_spotlight.kind`
 
 const datingDiscoverCandidateSelectSQL = `SELECT` + datingCandidateColumns + `
 		FROM users u
@@ -1363,7 +1560,15 @@ const datingDiscoverCandidateSelectSQL = `SELECT` + datingCandidateColumns + `
 			WHERE di.viewer_id = $1 AND di.candidate_id = u.id
 			ORDER BY di.shown_at DESC
 			LIMIT 1
-		) recent_impression ON true`
+		) recent_impression ON true
+		LEFT JOIN LATERAL (
+			SELECT dsa.kind
+			FROM dating_spotlight_activations dsa
+			WHERE dsa.user_id = u.id
+				AND dsa.ends_at > NOW()
+			ORDER BY dsa.ends_at DESC
+			LIMIT 1
+		) active_spotlight ON true`
 
 const datingBoundingBoxWhereSQL = `
 			AND u.discover_lat BETWEEN ($6::float8 - ($8::float8 / 111.0)) AND ($6::float8 + ($8::float8 / 111.0))
@@ -1451,7 +1656,18 @@ const datingDiscoverWhereSQL = `
 					WHERE dpi.profile_id = dp.id
 						AND i.name = ANY($9::text[])
 				)
-			)`
+			)
+			AND ($10 = '' OR dp.relationship_goal = $10)
+			AND ($11::int IS NULL OR (dp.height_cm IS NOT NULL AND dp.height_cm >= $11::int))
+			AND ($12::int IS NULL OR (dp.height_cm IS NOT NULL AND dp.height_cm <= $12::int))
+			AND ($13 = '' OR dp.family_plans = $13)
+			AND ($14 = '' OR dp.drinking_status = $14)
+			AND ($15 = '' OR dp.smoking_status = $15)
+			AND ($16 = '' OR dp.drug_use_status = $16)
+			AND ($17 = '' OR dp.sober_lifestyle = $17)
+			AND ($18 = '' OR dp.recovery_approach = $18)
+			AND ($19 = '' OR dp.nightlife_comfort = $19)
+			AND ($20 = '' OR dp.substance_boundaries = $20)`
 
 const datingLikesSelectSQL = `SELECT
 			da.updated_at,
@@ -1851,6 +2067,16 @@ func scanDatingCandidates(rows pgx.Rows) ([]datingCandidate, error) {
 			&candidate.Profile.DrinkingStatus,
 			&candidate.Profile.SmokingStatus,
 			&candidate.Profile.DrugUseStatus,
+			&candidate.Profile.Zodiac,
+			&candidate.Profile.FamilyPlans,
+			&candidate.Profile.CommunicationStyle,
+			&candidate.Profile.LoveStyle,
+			&candidate.Profile.Workout,
+			&candidate.Profile.SocialMedia,
+			&candidate.Profile.SoberLifestyle,
+			&candidate.Profile.RecoveryApproach,
+			&candidate.Profile.NightlifeComfort,
+			&candidate.Profile.SubstanceBoundaries,
 			&candidate.Profile.Interests,
 			&candidate.Profile.AgeMin,
 			&candidate.Profile.AgeMax,
@@ -1865,6 +2091,7 @@ func scanDatingCandidates(rows pgx.Rows) ([]datingCandidate, error) {
 			&candidate.ProfileCompleteness,
 			&candidate.LastActiveAt,
 			&candidate.RecentImpressionAt,
+			&candidate.ActiveSpotlightKind,
 		); err != nil {
 			return nil, err
 		}

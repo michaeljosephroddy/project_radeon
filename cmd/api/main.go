@@ -262,6 +262,8 @@ func main() {
 		r.Post("/dating/matches/seen", datingHandler.MarkMatchesSeen)
 		r.Get("/dating/matches/{id}", datingHandler.GetMatch)
 		r.Post("/dating/matches/{id}/unmatch", datingHandler.Unmatch)
+		r.Get("/dating/spotlights", datingHandler.GetSpotlightStatus)
+		r.Post("/dating/spotlights/activate", datingHandler.ActivateSpotlight)
 		r.Post("/dating/events", datingHandler.LogEvents)
 
 		// Meetups

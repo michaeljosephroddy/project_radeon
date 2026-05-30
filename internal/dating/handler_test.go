@@ -37,24 +37,26 @@ func testDatingProfile(id uuid.UUID, username string, createdAt time.Time) Datin
 }
 
 type mockQuerier struct {
-	getMyProfile  func(ctx context.Context, userID uuid.UUID) (*DatingProfile, error)
-	getProfile    func(ctx context.Context, viewerID, profileID uuid.UUID) (*DatingProfile, error)
-	updateProfile func(ctx context.Context, userID uuid.UUID, input UpdateProfileInput) (*DatingProfile, error)
-	listInterests func(ctx context.Context) ([]string, error)
-	addPhoto      func(ctx context.Context, userID uuid.UUID, imageURL string, width, height int) (*DatingProfile, error)
-	deletePhoto   func(ctx context.Context, userID, photoID uuid.UUID) (*DatingProfile, error)
-	reorderPhotos func(ctx context.Context, userID uuid.UUID, photoIDs []uuid.UUID) (*DatingProfile, error)
-	discover      func(ctx context.Context, params DiscoverParams) ([]DatingProfile, error)
-	countDiscover func(ctx context.Context, params DiscoverParams) (int, error)
-	listLikes     func(ctx context.Context, userID uuid.UUID, before *string, limit int) ([]DatingLike, error)
-	countLikes    func(ctx context.Context, userID uuid.UUID) (int, error)
-	recordAction  func(ctx context.Context, actorID, targetID uuid.UUID, action string) (*ActionResult, error)
-	listMatches   func(ctx context.Context, userID uuid.UUID, before *string, limit int) ([]DatingMatch, error)
-	countUnseen   func(ctx context.Context, userID uuid.UUID) (int, error)
-	markSeen      func(ctx context.Context, userID uuid.UUID) (time.Time, error)
-	getMatch      func(ctx context.Context, userID, matchID uuid.UUID) (*DatingMatch, error)
-	unmatch       func(ctx context.Context, userID, matchID uuid.UUID) (*DatingMatch, error)
-	logEvents     func(ctx context.Context, userID uuid.UUID, events []DatingEventInput) error
+	getMyProfile      func(ctx context.Context, userID uuid.UUID) (*DatingProfile, error)
+	getProfile        func(ctx context.Context, viewerID, profileID uuid.UUID) (*DatingProfile, error)
+	updateProfile     func(ctx context.Context, userID uuid.UUID, input UpdateProfileInput) (*DatingProfile, error)
+	listInterests     func(ctx context.Context) ([]string, error)
+	addPhoto          func(ctx context.Context, userID uuid.UUID, imageURL string, width, height int) (*DatingProfile, error)
+	deletePhoto       func(ctx context.Context, userID, photoID uuid.UUID) (*DatingProfile, error)
+	reorderPhotos     func(ctx context.Context, userID uuid.UUID, photoIDs []uuid.UUID) (*DatingProfile, error)
+	discover          func(ctx context.Context, params DiscoverParams) ([]DatingProfile, error)
+	countDiscover     func(ctx context.Context, params DiscoverParams) (int, error)
+	listLikes         func(ctx context.Context, userID uuid.UUID, before *string, limit int) ([]DatingLike, error)
+	countLikes        func(ctx context.Context, userID uuid.UUID) (int, error)
+	recordAction      func(ctx context.Context, actorID, targetID uuid.UUID, action string) (*ActionResult, error)
+	listMatches       func(ctx context.Context, userID uuid.UUID, before *string, limit int) ([]DatingMatch, error)
+	countUnseen       func(ctx context.Context, userID uuid.UUID) (int, error)
+	markSeen          func(ctx context.Context, userID uuid.UUID) (time.Time, error)
+	getMatch          func(ctx context.Context, userID, matchID uuid.UUID) (*DatingMatch, error)
+	unmatch           func(ctx context.Context, userID, matchID uuid.UUID) (*DatingMatch, error)
+	getSpotlights     func(ctx context.Context, userID uuid.UUID) (*SpotlightStatus, error)
+	activateSpotlight func(ctx context.Context, userID uuid.UUID, kind string) (*SpotlightStatus, error)
+	logEvents         func(ctx context.Context, userID uuid.UUID, events []DatingEventInput) error
 }
 
 func (m *mockQuerier) GetMyProfile(ctx context.Context, userID uuid.UUID) (*DatingProfile, error) {
@@ -183,6 +185,29 @@ func (m *mockQuerier) Unmatch(ctx context.Context, userID, matchID uuid.UUID) (*
 	return &DatingMatch{ID: matchID, Status: "unmatched", MatchedAt: now, UnmatchedAt: &now}, nil
 }
 
+func (m *mockQuerier) GetSpotlightStatus(ctx context.Context, userID uuid.UUID) (*SpotlightStatus, error) {
+	if m.getSpotlights != nil {
+		return m.getSpotlights(ctx, userID)
+	}
+	return &SpotlightStatus{}, nil
+}
+
+func (m *mockQuerier) ActivateSpotlight(ctx context.Context, userID uuid.UUID, kind string) (*SpotlightStatus, error) {
+	if m.activateSpotlight != nil {
+		return m.activateSpotlight(ctx, userID, kind)
+	}
+	now := time.Now().UTC()
+	return &SpotlightStatus{
+		Active: &ActiveSpotlight{
+			ID:          fixedMatch,
+			InventoryID: fixedOther,
+			Kind:        kind,
+			StartsAt:    now,
+			EndsAt:      now.Add(time.Hour),
+		},
+	}, nil
+}
+
 func (m *mockQuerier) LogEvents(ctx context.Context, userID uuid.UUID, events []DatingEventInput) error {
 	if m.logEvents != nil {
 		return m.logEvents(ctx, userID, events)
@@ -218,7 +243,7 @@ func TestDiscoverParsesDatingFilters(t *testing.T) {
 		},
 	}, nil)
 
-	req := withUserID(httptest.NewRequest(http.MethodGet, "/dating/discover?gender=woman&age_min=25&age_max=40&distance_km=30&sobriety=years_1&interest=Coffee&lat=53.34&lng=-6.26&limit=10&cursor=20", nil), fixedUser)
+	req := withUserID(httptest.NewRequest(http.MethodGet, "/dating/discover?gender=woman&age_min=25&age_max=40&height_min_cm=160&height_max_cm=190&distance_km=30&sobriety=years_1&interest=Coffee&relationship_goal=long_term&family_plans=open_to_children&drinking_status=no&smoking_status=no&drug_use_status=no&sober_lifestyle=sober&recovery_approach=meetings&nightlife_comfort=prefer_daytime&substance_boundary=no_drugs&lat=53.34&lng=-6.26&limit=10&cursor=20", nil), fixedUser)
 	rec := httptest.NewRecorder()
 
 	h.Discover(rec, req)
@@ -234,6 +259,15 @@ func TestDiscoverParsesDatingFilters(t *testing.T) {
 	}
 	if got.AgeMin == nil || *got.AgeMin != 25 || got.AgeMax == nil || *got.AgeMax != 40 || got.DistanceKm == nil || *got.DistanceKm != 30 {
 		t.Fatalf("numeric filters = %+v", got)
+	}
+	if got.HeightMinCm == nil || *got.HeightMinCm != 160 || got.HeightMaxCm == nil || *got.HeightMaxCm != 190 {
+		t.Fatalf("height filters = %+v", got)
+	}
+	if got.RelationshipGoal != "long_term" || got.FamilyPlans != "open_to_children" || got.DrinkingStatus != "no" || got.SmokingStatus != "no" || got.DrugUseStatus != "no" {
+		t.Fatalf("profile filters = %+v", got)
+	}
+	if got.SoberLifestyle != "sober" || got.RecoveryApproach != "meetings" || got.NightlifeComfort != "prefer_daytime" || got.SubstanceBoundary != "no_drugs" {
+		t.Fatalf("sober fit filters = %+v", got)
 	}
 	if got.Lat == nil || *got.Lat != 53.34 || got.Lng == nil || *got.Lng != -6.26 {
 		t.Fatalf("coords = %+v %+v", got.Lat, got.Lng)
@@ -582,6 +616,80 @@ func TestRecordActionReturnsPaymentRequiredAtDailyLikeLimit(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "Daily Dating like limit reached") {
 		t.Fatalf("body = %s", rec.Body.String())
+	}
+}
+
+func TestGetSpotlightStatusReturnsInventory(t *testing.T) {
+	h := NewHandler(&mockQuerier{
+		getSpotlights: func(_ context.Context, userID uuid.UUID) (*SpotlightStatus, error) {
+			if userID != fixedUser {
+				t.Fatalf("userID = %s, want %s", userID, fixedUser)
+			}
+			return &SpotlightStatus{
+				Inventory: SpotlightInventorySummary{Spotlights: 2, SuperSpotlights: 1},
+			}, nil
+		},
+	}, nil)
+
+	req := withUserID(httptest.NewRequest(http.MethodGet, "/dating/spotlights", nil), fixedUser)
+	rec := httptest.NewRecorder()
+
+	h.GetSpotlightStatus(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"spotlights":2`) || !strings.Contains(rec.Body.String(), `"super_spotlights":1`) {
+		t.Fatalf("body = %s", rec.Body.String())
+	}
+}
+
+func TestActivateSpotlightReturnsActiveWindow(t *testing.T) {
+	h := NewHandler(&mockQuerier{
+		activateSpotlight: func(_ context.Context, userID uuid.UUID, kind string) (*SpotlightStatus, error) {
+			if userID != fixedUser || kind != SpotlightKindSuper {
+				t.Fatalf("activation args = %s %s", userID, kind)
+			}
+			now := time.Date(2026, 5, 30, 12, 0, 0, 0, time.UTC)
+			return &SpotlightStatus{
+				Active: &ActiveSpotlight{
+					ID:          fixedMatch,
+					InventoryID: fixedOther,
+					Kind:        kind,
+					StartsAt:    now,
+					EndsAt:      now.Add(24 * time.Hour),
+				},
+			}, nil
+		},
+	}, nil)
+
+	req := withUserID(httptest.NewRequest(http.MethodPost, "/dating/spotlights/activate", strings.NewReader(`{"kind":"super_spotlight"}`)), fixedUser)
+	rec := httptest.NewRecorder()
+
+	h.ActivateSpotlight(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"kind":"super_spotlight"`) {
+		t.Fatalf("body = %s", rec.Body.String())
+	}
+}
+
+func TestActivateSpotlightReturnsPaymentRequiredWithoutInventory(t *testing.T) {
+	h := NewHandler(&mockQuerier{
+		activateSpotlight: func(context.Context, uuid.UUID, string) (*SpotlightStatus, error) {
+			return nil, ErrSpotlightRequired
+		},
+	}, nil)
+
+	req := withUserID(httptest.NewRequest(http.MethodPost, "/dating/spotlights/activate", strings.NewReader(`{"kind":"spotlight"}`)), fixedUser)
+	rec := httptest.NewRecorder()
+
+	h.ActivateSpotlight(rec, req)
+
+	if rec.Code != http.StatusPaymentRequired {
+		t.Fatalf("status = %d, want 402; body %s", rec.Code, rec.Body.String())
 	}
 }
 

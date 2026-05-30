@@ -54,6 +54,8 @@ type Querier interface {
 	MarkMatchesSeen(ctx context.Context, userID uuid.UUID) (time.Time, error)
 	GetMatch(ctx context.Context, userID, matchID uuid.UUID) (*DatingMatch, error)
 	Unmatch(ctx context.Context, userID, matchID uuid.UUID) (*DatingMatch, error)
+	GetSpotlightStatus(ctx context.Context, userID uuid.UUID) (*SpotlightStatus, error)
+	ActivateSpotlight(ctx context.Context, userID uuid.UUID, kind string) (*SpotlightStatus, error)
 	LogEvents(ctx context.Context, userID uuid.UUID, events []DatingEventInput) error
 }
 
@@ -687,6 +689,36 @@ func (h *Handler) Unmatch(w http.ResponseWriter, r *http.Request) {
 	response.Success(w, http.StatusOK, datingMatchResponse(*match))
 }
 
+func (h *Handler) GetSpotlightStatus(w http.ResponseWriter, r *http.Request) {
+	status, err := h.db.GetSpotlightStatus(r.Context(), middleware.CurrentUserID(r))
+	if err != nil {
+		writeDatingError(w, err)
+		return
+	}
+	response.Success(w, http.StatusOK, status)
+}
+
+func (h *Handler) ActivateSpotlight(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		Kind string `json:"kind"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		response.Error(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	kind, ok := normalizeSpotlightKind(input.Kind)
+	if !ok {
+		response.Error(w, http.StatusBadRequest, "kind must be spotlight or super_spotlight")
+		return
+	}
+	status, err := h.db.ActivateSpotlight(r.Context(), middleware.CurrentUserID(r), kind)
+	if err != nil {
+		writeDatingError(w, err)
+		return
+	}
+	response.Success(w, http.StatusOK, status)
+}
+
 func (h *Handler) LogEvents(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.CurrentUserID(r)
 
@@ -806,6 +838,8 @@ func writeDatingError(w http.ResponseWriter, err error) {
 		response.Error(w, http.StatusConflict, "dating action already recorded")
 	case errors.Is(err, ErrDailyLikeLimit):
 		response.Error(w, http.StatusPaymentRequired, "Daily Dating like limit reached. SoberSpace Plus unlocks unlimited likes")
+	case errors.Is(err, ErrSpotlightRequired):
+		response.Error(w, http.StatusPaymentRequired, "No Spotlight is available to activate")
 	case errors.Is(err, ErrPlusRequired):
 		response.Error(w, http.StatusPaymentRequired, "SoberSpace Plus is required for this Dating feature")
 	default:
@@ -896,6 +930,18 @@ func normalizeDatingOption(value *string) *string {
 	}
 	normalized := strings.TrimSpace(strings.ToLower(*value))
 	return &normalized
+}
+
+func normalizeSpotlightKind(value string) (string, bool) {
+	normalized := strings.TrimSpace(strings.ToLower(value))
+	switch normalized {
+	case SpotlightKindStandard, "standard":
+		return SpotlightKindStandard, true
+	case SpotlightKindSuper, "super":
+		return SpotlightKindSuper, true
+	default:
+		return "", false
+	}
 }
 
 func normalizeKidsStatus(value *string) *string {
@@ -1250,11 +1296,20 @@ func parseDiscoverRequest(r *http.Request) (DiscoverParams, error) {
 	}
 
 	params := DiscoverParams{
-		Gender:    strings.TrimSpace(query.Get("gender")),
-		Sobriety:  strings.TrimSpace(query.Get("sobriety")),
-		Interests: query["interest"],
-		Cursor:    strings.TrimSpace(query.Get("cursor")),
-		Limit:     limit,
+		Gender:            strings.TrimSpace(query.Get("gender")),
+		Sobriety:          strings.TrimSpace(query.Get("sobriety")),
+		Interests:         query["interest"],
+		RelationshipGoal:  strings.TrimSpace(query.Get("relationship_goal")),
+		FamilyPlans:       strings.TrimSpace(query.Get("family_plans")),
+		DrinkingStatus:    strings.TrimSpace(query.Get("drinking_status")),
+		SmokingStatus:     strings.TrimSpace(query.Get("smoking_status")),
+		DrugUseStatus:     strings.TrimSpace(query.Get("drug_use_status")),
+		SoberLifestyle:    strings.TrimSpace(query.Get("sober_lifestyle")),
+		RecoveryApproach:  strings.TrimSpace(query.Get("recovery_approach")),
+		NightlifeComfort:  strings.TrimSpace(query.Get("nightlife_comfort")),
+		SubstanceBoundary: strings.TrimSpace(query.Get("substance_boundary")),
+		Cursor:            strings.TrimSpace(query.Get("cursor")),
+		Limit:             limit,
 	}
 	decodedCursor := decodeDatingCursor(params.Cursor)
 	params.CursorOffset = decodedCursor.Offset
@@ -1269,6 +1324,33 @@ func parseDiscoverRequest(r *http.Request) (DiscoverParams, error) {
 	if params.Sobriety != "" && params.Sobriety != "days_30" && params.Sobriety != "days_90" && params.Sobriety != "years_1" && params.Sobriety != "years_5" {
 		return DiscoverParams{}, fmt.Errorf("sobriety must be 30+ days, 90+ days, 1+ year, or 5+ years")
 	}
+	if !validDiscoverOption(params.RelationshipGoal, "long_term", "life_partner", "short_term_open_to_long_term", "still_figuring_it_out", "new_sober_connections", "casual", "open_to_explore") {
+		return DiscoverParams{}, fmt.Errorf("relationship_goal is not valid")
+	}
+	if !validDiscoverOption(params.FamilyPlans, "want_children", "dont_want_children", "open_to_children", "not_sure", "prefer_not_to_say") {
+		return DiscoverParams{}, fmt.Errorf("family_plans is not valid")
+	}
+	if !validDiscoverOption(params.DrinkingStatus, "yes", "sometimes", "no", "prefer_not_to_say") {
+		return DiscoverParams{}, fmt.Errorf("drinking_status is not valid")
+	}
+	if !validDiscoverOption(params.SmokingStatus, "yes", "sometimes", "no", "prefer_not_to_say") {
+		return DiscoverParams{}, fmt.Errorf("smoking_status is not valid")
+	}
+	if !validDiscoverOption(params.DrugUseStatus, "yes", "sometimes", "no", "prefer_not_to_say") {
+		return DiscoverParams{}, fmt.Errorf("drug_use_status is not valid")
+	}
+	if !validDiscoverOption(params.SoberLifestyle, "sober", "sober_curious", "in_recovery", "supportive_ally") {
+		return DiscoverParams{}, fmt.Errorf("sober_lifestyle is not valid")
+	}
+	if !validDiscoverOption(params.RecoveryApproach, "meetings", "therapy", "community", "private", "spiritual", "self_guided") {
+		return DiscoverParams{}, fmt.Errorf("recovery_approach is not valid")
+	}
+	if !validDiscoverOption(params.NightlifeComfort, "dry_spaces_only", "calm_venues", "okay_with_bars", "depends_on_company", "prefer_daytime") {
+		return DiscoverParams{}, fmt.Errorf("nightlife_comfort is not valid")
+	}
+	if !validDiscoverOption(params.SubstanceBoundary, "no_substances_around_me", "no_drugs", "no_smoking", "ask_me_first", "flexible") {
+		return DiscoverParams{}, fmt.Errorf("substance_boundary is not valid")
+	}
 
 	var err error
 	if params.AgeMin, err = parseOptionalInt(query.Get("age_min"), "age_min"); err != nil {
@@ -1279,6 +1361,21 @@ func parseDiscoverRequest(r *http.Request) (DiscoverParams, error) {
 	}
 	if params.AgeMin != nil && params.AgeMax != nil && *params.AgeMin > *params.AgeMax {
 		return DiscoverParams{}, fmt.Errorf("age_min cannot be greater than age_max")
+	}
+	if params.HeightMinCm, err = parseOptionalInt(query.Get("height_min_cm"), "height_min_cm"); err != nil {
+		return DiscoverParams{}, err
+	}
+	if params.HeightMaxCm, err = parseOptionalInt(query.Get("height_max_cm"), "height_max_cm"); err != nil {
+		return DiscoverParams{}, err
+	}
+	if params.HeightMinCm != nil && (*params.HeightMinCm < 90 || *params.HeightMinCm > 230) {
+		return DiscoverParams{}, fmt.Errorf("height_min_cm must be between 90 and 230")
+	}
+	if params.HeightMaxCm != nil && (*params.HeightMaxCm < 90 || *params.HeightMaxCm > 230) {
+		return DiscoverParams{}, fmt.Errorf("height_max_cm must be between 90 and 230")
+	}
+	if params.HeightMinCm != nil && params.HeightMaxCm != nil && *params.HeightMinCm > *params.HeightMaxCm {
+		return DiscoverParams{}, fmt.Errorf("height_min_cm cannot be greater than height_max_cm")
 	}
 	if params.DistanceKm, err = parseOptionalInt(query.Get("distance_km"), "distance_km"); err != nil {
 		return DiscoverParams{}, err
@@ -1293,6 +1390,18 @@ func parseDiscoverRequest(r *http.Request) (DiscoverParams, error) {
 		return DiscoverParams{}, fmt.Errorf("lat and lng are required when distance_km is set")
 	}
 	return params, nil
+}
+
+func validDiscoverOption(value string, allowed ...string) bool {
+	if value == "" {
+		return true
+	}
+	for _, option := range allowed {
+		if value == option {
+			return true
+		}
+	}
+	return false
 }
 
 func parsePositiveInt(raw string, fallback int) int {

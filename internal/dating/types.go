@@ -19,6 +19,7 @@ var (
 	ErrConflict           = errors.New("conflict")
 	ErrPlusRequired       = errors.New("plus required")
 	ErrDailyLikeLimit     = errors.New("daily dating like limit reached")
+	ErrSpotlightRequired  = errors.New("dating spotlight inventory required")
 	ErrDatingDisabled     = errors.New("dating disabled")
 	ErrTargetUnavailable  = errors.New("target unavailable")
 	ErrProfileIncomplete  = errors.New("dating profile incomplete")
@@ -33,6 +34,17 @@ type DiscoverParams struct {
 	DistanceKm        *int
 	Sobriety          string
 	Interests         []string
+	RelationshipGoal  string
+	HeightMinCm       *int
+	HeightMaxCm       *int
+	FamilyPlans       string
+	DrinkingStatus    string
+	SmokingStatus     string
+	DrugUseStatus     string
+	SoberLifestyle    string
+	RecoveryApproach  string
+	NightlifeComfort  string
+	SubstanceBoundary string
 	Lat               *float64
 	Lng               *float64
 	Cursor            string
@@ -45,6 +57,29 @@ type DiscoverParams struct {
 
 type PreviewResponse struct {
 	ExactCount int `json:"exact_count"`
+}
+
+const (
+	SpotlightKindStandard = "spotlight"
+	SpotlightKindSuper    = "super_spotlight"
+)
+
+type ActiveSpotlight struct {
+	ID          uuid.UUID `json:"id"`
+	InventoryID uuid.UUID `json:"inventory_id"`
+	Kind        string    `json:"kind"`
+	StartsAt    time.Time `json:"starts_at"`
+	EndsAt      time.Time `json:"ends_at"`
+}
+
+type SpotlightInventorySummary struct {
+	Spotlights      int `json:"spotlights"`
+	SuperSpotlights int `json:"super_spotlights"`
+}
+
+type SpotlightStatus struct {
+	Inventory SpotlightInventorySummary `json:"inventory"`
+	Active    *ActiveSpotlight          `json:"active"`
 }
 
 type DatingPhoto struct {
