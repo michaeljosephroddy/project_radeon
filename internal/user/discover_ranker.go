@@ -19,7 +19,6 @@ const (
 	discoverInterestSourceBonus = 0.12
 	discoverSobrietySourceBonus = 0.08
 	discoverActiveSourceBonus   = 0.04
-	discoverIntentSourceBonus   = 0.08
 )
 
 func scoreDiscoverCandidate(viewer discoverViewerFeatures, candidate discoverCandidate, now time.Time) float64 {
@@ -68,9 +67,6 @@ func scoreDiscoverCandidate(viewer discoverViewerFeatures, candidate discoverCan
 	}
 	if slices.Contains(candidate.Sources, discoverSourceInterest) {
 		score += discoverInterestSourceBonus
-	}
-	if slices.Contains(candidate.Sources, discoverSourceIntent) {
-		score += discoverIntentSourceBonus
 	}
 	if slices.Contains(candidate.Sources, discoverSourceSobriety) {
 		score += discoverSobrietySourceBonus

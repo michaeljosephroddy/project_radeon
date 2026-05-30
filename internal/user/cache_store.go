@@ -65,8 +65,8 @@ func (s *cachedStore) UsernameExistsForOthers(ctx context.Context, username stri
 	return s.inner.UsernameExistsForOthers(ctx, username, userID)
 }
 
-func (s *cachedStore) UpdateUser(ctx context.Context, userID uuid.UUID, username, city, country, gender, bio *string, soberSince *time.Time, replaceSoberSince bool, birthDate *time.Time, replaceBirthDate bool, interests []string, replaceInterests bool, connectionIntents []string, replaceConnectionIntents bool, lat, lng *float64) error {
-	if err := s.inner.UpdateUser(ctx, userID, username, city, country, gender, bio, soberSince, replaceSoberSince, birthDate, replaceBirthDate, interests, replaceInterests, connectionIntents, replaceConnectionIntents, lat, lng); err != nil {
+func (s *cachedStore) UpdateUser(ctx context.Context, userID uuid.UUID, username, city, country, gender, bio *string, soberSince *time.Time, replaceSoberSince bool, birthDate *time.Time, replaceBirthDate bool, interests []string, replaceInterests bool, lat, lng *float64) error {
+	if err := s.inner.UpdateUser(ctx, userID, username, city, country, gender, bio, soberSince, replaceSoberSince, birthDate, replaceBirthDate, interests, replaceInterests, lat, lng); err != nil {
 		return err
 	}
 
@@ -148,11 +148,7 @@ func (s *cachedStore) DiscoverUsers(ctx context.Context, params DiscoverUsersPar
 		"viewer", params.CurrentUserID.String(),
 		"city", encodePart(params.City),
 		"query", encodePart(params.Query),
-		"gender", encodePart(params.Gender),
-		"intent", encodePart(params.Intent),
 		"sobriety", encodePart(params.Sobriety),
-		"age_min", intPart(params.AgeMin),
-		"age_max", intPart(params.AgeMax),
 		"distance_km", intPart(params.DistanceKm),
 		"interests", stringSlicePart(params.Interests),
 		"lat", floatPart(params.Lat),
@@ -188,11 +184,7 @@ func (s *cachedStore) discoverUsersFromRankedWindowCache(ctx context.Context, st
 		"viewer", params.CurrentUserID.String(),
 		"city", encodePart(params.City),
 		"query", encodePart(params.Query),
-		"gender", encodePart(params.Gender),
-		"intent", encodePart(params.Intent),
 		"sobriety", encodePart(params.Sobriety),
-		"age_min", intPart(params.AgeMin),
-		"age_max", intPart(params.AgeMax),
 		"distance_km", intPart(params.DistanceKm),
 		"interests", stringSlicePart(params.Interests),
 		"lat", floatPart(params.Lat),
@@ -239,11 +231,7 @@ func (s *cachedStore) CountDiscoverUsers(ctx context.Context, params DiscoverUse
 		"viewer", params.CurrentUserID.String(),
 		"city", encodePart(params.City),
 		"query", encodePart(params.Query),
-		"gender", encodePart(params.Gender),
-		"intent", encodePart(params.Intent),
 		"sobriety", encodePart(params.Sobriety),
-		"age_min", intPart(params.AgeMin),
-		"age_max", intPart(params.AgeMax),
 		"distance_km", intPart(params.DistanceKm),
 		"interests", stringSlicePart(params.Interests),
 		"lat", floatPart(params.Lat),

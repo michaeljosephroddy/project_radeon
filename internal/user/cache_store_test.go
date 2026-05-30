@@ -30,7 +30,7 @@ func (s *stubQuerier) UsernameExistsForOthers(context.Context, string, uuid.UUID
 	return false, nil
 }
 
-func (s *stubQuerier) UpdateUser(context.Context, uuid.UUID, *string, *string, *string, *string, *string, *time.Time, bool, *time.Time, bool, []string, bool, []string, bool, *float64, *float64) error {
+func (s *stubQuerier) UpdateUser(context.Context, uuid.UUID, *string, *string, *string, *string, *string, *time.Time, bool, *time.Time, bool, []string, bool, *float64, *float64) error {
 	return nil
 }
 
@@ -70,7 +70,7 @@ func (s *stubQuerier) DiscoverUsers(_ context.Context, params DiscoverUsersParam
 	s.discoverUsersCalls++
 	return []User{{
 		ID:               params.CurrentUserID,
-		Username:         params.Query + params.City + params.Gender + params.Sobriety,
+		Username:         params.Query + params.City + params.Sobriety,
 		CreatedAt:        time.Unix(int64(s.discoverUsersCalls), 0).UTC(),
 		FriendshipStatus: "none",
 	}}, nil
@@ -111,7 +111,7 @@ func TestCachedStoreGetUserCachesAndInvalidates(t *testing.T) {
 		t.Fatalf("expected cached response to preserve CreatedAt, got %v and %v", first.CreatedAt, second.CreatedAt)
 	}
 
-	if err := cached.UpdateUser(context.Background(), userID, nil, nil, nil, nil, nil, nil, false, nil, false, nil, false, nil, false, nil, nil); err != nil {
+	if err := cached.UpdateUser(context.Background(), userID, nil, nil, nil, nil, nil, nil, false, nil, false, nil, false, nil, nil); err != nil {
 		t.Fatalf("UpdateUser: %v", err)
 	}
 
@@ -166,7 +166,6 @@ func TestCachedStoreDiscoverUsersKeysByFilters(t *testing.T) {
 	firstParams := DiscoverUsersParams{
 		CurrentUserID: viewerID,
 		City:          "Dublin",
-		Gender:        "woman",
 		Sobriety:      "years_1",
 		Interests:     []string{"fitness"},
 		Limit:         20,
@@ -175,7 +174,6 @@ func TestCachedStoreDiscoverUsersKeysByFilters(t *testing.T) {
 	secondParams := DiscoverUsersParams{
 		CurrentUserID: viewerID,
 		City:          "Dublin",
-		Gender:        "man",
 		Sobriety:      "years_1",
 		Interests:     []string{"meetups"},
 		Limit:         20,
@@ -203,7 +201,6 @@ func TestCachedStoreCountDiscoverUsersCachesAndInvalidates(t *testing.T) {
 	viewerID := uuid.New()
 	params := DiscoverUsersParams{
 		CurrentUserID: viewerID,
-		Gender:        "woman",
 		Interests:     []string{"fitness"},
 	}
 
@@ -222,7 +219,7 @@ func TestCachedStoreCountDiscoverUsersCachesAndInvalidates(t *testing.T) {
 		t.Fatalf("expected one underlying CountDiscoverUsers call after cache hit, got %d", inner.countDiscoverCalls)
 	}
 
-	if err := cached.UpdateUser(context.Background(), viewerID, nil, nil, nil, nil, nil, nil, false, nil, false, nil, false, nil, false, nil, nil); err != nil {
+	if err := cached.UpdateUser(context.Background(), viewerID, nil, nil, nil, nil, nil, nil, false, nil, false, nil, false, nil, nil); err != nil {
 		t.Fatalf("UpdateUser: %v", err)
 	}
 

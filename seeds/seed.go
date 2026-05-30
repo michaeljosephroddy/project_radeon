@@ -76,7 +76,7 @@ type seededUser struct {
 	LastActiveAt       time.Time
 	SubscriptionTier   string
 	SubscriptionStatus string
-	ConnectionIntents  []string
+	IsDating           bool
 	Lat                float64
 	Lng                float64
 	CurrentLat         float64
@@ -459,7 +459,7 @@ func buildUsers(interestNames []string) []seededUser {
 		LastActiveAt:       now.Add(-90 * time.Minute),
 		SubscriptionTier:   "plus",
 		SubscriptionStatus: "active",
-		ConnectionIntents:  []string{"friends", "dating"},
+		IsDating:           true,
 		Lat:                testLat,
 		Lng:                testLng,
 		CurrentLat:         testLat,
@@ -526,7 +526,6 @@ func buildUsers(interestNames []string) []seededUser {
 			LastActiveAt:       lastActiveAt,
 			SubscriptionTier:   subscriptionTier,
 			SubscriptionStatus: subscriptionStatus,
-			ConnectionIntents:  []string{"friends"},
 			Lat:                lat,
 			Lng:                lng,
 			CurrentLat:         lat,
@@ -614,7 +613,7 @@ func buildDatingUsers(
 			LastActiveAt:       lastActiveAt,
 			SubscriptionTier:   subscriptionTier,
 			SubscriptionStatus: subscriptionStatus,
-			ConnectionIntents:  []string{"friends", "dating"},
+			IsDating:           true,
 			Lat:                lat,
 			Lng:                lng,
 			CurrentLat:         lat,
@@ -1110,39 +1109,31 @@ func jitterCoords(city citySeed) (float64, float64) {
 func insertUsers(ctx context.Context, tx pgx.Tx, users []seededUser, passwordHash string) error {
 	for _, user := range users {
 		sobrietyBand := computeSobrietyBand(user.SoberSince)
-		connectionIntents := connectionIntentsOrDefault(user.ConnectionIntents)
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO users (
 				id, username, email, password_hash, avatar_url,
 				city, country, bio, gender, birth_date, sober_since,
 				subscription_tier, subscription_status,
 				lat, lng, current_lat, current_lng, current_city, location_updated_at,
-				discover_lat, discover_lng, connection_intents, sobriety_band, profile_completeness, last_active_at, created_at
+				discover_lat, discover_lng, sobriety_band, profile_completeness, last_active_at, created_at
 			)
 			VALUES (
 				$1, $2, $3, $4, $5,
 				$6, $7, $8, $9, $10, $11,
 				$12, $13,
 				$14, $15, $16, $17, $18, $19,
-				$20, $21, $22, $23, $24, $25, $26
+				$20, $21, $22, $23, $24, $25
 			)`,
 			user.ID, user.Username, user.Email, passwordHash, user.AvatarURL,
 			user.City, user.Country, user.Bio, user.Gender, user.BirthDate, user.SoberSince,
 			user.SubscriptionTier, user.SubscriptionStatus,
 			user.Lat, user.Lng, user.CurrentLat, user.CurrentLng, user.CurrentCity, user.LocationUpdatedAt,
-			user.DiscoverLat, user.DiscoverLng, connectionIntents, sobrietyBand, 8, user.LastActiveAt, user.CreatedAt,
+			user.DiscoverLat, user.DiscoverLng, sobrietyBand, 8, user.LastActiveAt, user.CreatedAt,
 		); err != nil {
 			return fmt.Errorf("insert user %s: %w", user.Username, err)
 		}
 	}
 	return nil
-}
-
-func connectionIntentsOrDefault(intents []string) []string {
-	if len(intents) == 0 {
-		return []string{"friends"}
-	}
-	return intents
 }
 
 func insertUserInterests(ctx context.Context, tx pgx.Tx, users []seededUser, interestIDs map[string]uuid.UUID) error {
@@ -1278,7 +1269,7 @@ func insertFriendships(ctx context.Context, tx pgx.Tx, users []seededUser) (map[
 }
 
 func insertDatingActions(ctx context.Context, tx pgx.Tx, users []seededUser) error {
-	if len(users) == 0 || !hasConnectionIntent(users[0], "dating") {
+	if len(users) == 0 || !users[0].IsDating {
 		return nil
 	}
 
@@ -1287,7 +1278,7 @@ func insertDatingActions(ctx context.Context, tx pgx.Tx, users []seededUser) err
 		if incomingLikes >= 16 {
 			break
 		}
-		if !hasConnectionIntent(user, "dating") || !isLocalDatingCity(user.City) {
+		if !user.IsDating || !isLocalDatingCity(user.City) {
 			continue
 		}
 		createdAt := time.Now().UTC().Add(-time.Duration(incomingLikes+2) * time.Hour)
@@ -1310,15 +1301,6 @@ func insertDatingAction(ctx context.Context, tx pgx.Tx, actorID, targetID uuid.U
 		return fmt.Errorf("insert dating action %s -> %s: %w", actorID, targetID, err)
 	}
 	return nil
-}
-
-func hasConnectionIntent(user seededUser, intent string) bool {
-	for _, candidate := range user.ConnectionIntents {
-		if candidate == intent {
-			return true
-		}
-	}
-	return false
 }
 
 func isLocalDatingCity(city string) bool {
