@@ -75,6 +75,7 @@ func (s *pgStore) GetUser(ctx context.Context, viewerID, userID uuid.UUID) (*Use
 			oc.cnt AS outgoing_friend_request_count,
 			u.current_city,
 			u.current_country,
+			u.current_place_id,
 			u.location_updated_at
 		FROM users u
 		LEFT JOIN friendships f
@@ -112,7 +113,7 @@ func (s *pgStore) GetUser(ctx context.Context, viewerID, userID uuid.UUID) (*Use
 		&u.OnboardingCompletedAt, &u.IdentityVerificationStatus, &u.IdentityVerifiedAt, &u.IdentityVerificationLastError,
 		&u.City, &u.Country, &u.Bio, &u.Interests, &u.Gender, &u.BirthDate, &u.SoberSince, &u.CreatedAt,
 		&u.FriendshipStatus, &u.FriendCount, &u.IncomingFriendRequestCt, &u.OutgoingFriendRequestCt,
-		&u.CurrentCity, &u.CurrentCountry, &u.LocationUpdatedAt,
+		&u.CurrentCity, &u.CurrentCountry, &u.CurrentPlaceID, &u.LocationUpdatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
@@ -203,6 +204,25 @@ func (s *pgStore) UpdateCurrentLocation(ctx context.Context, userID uuid.UUID, l
 				current_lng = $3,
 				current_city = $4,
 				current_country = $5,
+				current_place_id = (
+					SELECT p.id
+					FROM places p
+					WHERE LOWER(COALESCE(p.country_name, '')) = LOWER($5)
+						AND p.latitude BETWEEN $2 - 1.5 AND $2 + 1.5
+						AND p.longitude BETWEEN $3 - 1.5 AND $3 + 1.5
+					ORDER BY
+						CASE
+							WHEN p.name_normalized = LOWER($4) OR p.ascii_name_normalized = LOWER($4) THEN 0
+							ELSE 1
+						END,
+						(6371 * 2 * ASIN(SQRT(
+							POWER(SIN(RADIANS((p.latitude - $2) / 2)), 2)
+							+ COS(RADIANS($2)) * COS(RADIANS(p.latitude))
+							* POWER(SIN(RADIANS((p.longitude - $3) / 2)), 2)
+						))) ASC,
+						p.population DESC
+					LIMIT 1
+				),
 				location_updated_at = NOW(),
 				discover_lat = $2,
 				discover_lng = $3

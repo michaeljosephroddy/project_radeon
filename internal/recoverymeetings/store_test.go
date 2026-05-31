@@ -168,6 +168,34 @@ func TestBuildRecoveryMeetingListQueryCombinesExplicitAndSearchFellowships(t *te
 	}
 }
 
+func TestBuildRecoveryMeetingListQueryUsesSelectedPlaceDefaultRadius(t *testing.T) {
+	placeID := uuid.New()
+	query, args, _ := buildRecoveryMeetingListQuery(ListParams{
+		PlaceID: &placeID,
+	})
+
+	for _, fragment := range []string{
+		"WITH selected_place AS",
+		"JOIN selected_place ON selected_place.id = rmpm.place_id",
+		"JOIN recovery_meeting_place_matches rmpm ON rmpm.place_id = matched_place.id",
+		"selected_place.id = rmpm.place_id",
+		"UPPER(TRIM(rm.country_code)) = selected_place.country_code",
+		"LOWER(TRIM(COALESCE(rm.country, ''))) = LOWER(COALESCE(selected_place.country_name, ''))",
+		"matched_place.country_code = selected_place.country_code",
+		"AS sort_distance_km",
+		"sort_distance_km ASC",
+		"6371.0 * 2.0 * ASIN",
+		"BETWEEN selected_place.latitude -",
+	} {
+		if !strings.Contains(query, fragment) {
+			t.Fatalf("query missing selected-place fragment %q:\n%s", fragment, query)
+		}
+	}
+	if !containsArg(args, placeID) || !containsArg(args, defaultSelectedPlaceSearchRadiusKM) {
+		t.Fatalf("args missing place id or default radius: %#v", args)
+	}
+}
+
 func TestParseMeetingSearchQueryHandlesDottedFellowship(t *testing.T) {
 	fellowship, terms := parseMeetingSearchQuery("C.A. Carlow")
 	if fellowship != "ca" {

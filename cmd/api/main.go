@@ -28,6 +28,7 @@ import (
 	"github.com/project_radeon/api/internal/meetups"
 	"github.com/project_radeon/api/internal/moderation"
 	"github.com/project_radeon/api/internal/notifications"
+	"github.com/project_radeon/api/internal/places"
 	"github.com/project_radeon/api/internal/recoverymeetings"
 	"github.com/project_radeon/api/internal/reports"
 	"github.com/project_radeon/api/internal/support"
@@ -100,6 +101,8 @@ func main() {
 	friendsStore := friends.NewCachedStore(friends.NewPgStore(db), cacheStore)
 	groupsStore := groups.NewCachedStore(groups.NewPgStore(db), cacheStore)
 	datingStore := dating.NewCachedStore(dating.NewPgStore(db), cacheStore)
+	recoveryMeetingsStore := recoverymeetings.NewCachedStore(recoverymeetings.NewPgStore(db), cacheStore)
+	placesStore := places.NewCachedStore(places.NewPgStore(db), cacheStore)
 
 	userHandler := user.NewHandler(userStore, uploader)
 	userHandler.UseModerator(moderator)
@@ -121,7 +124,8 @@ func main() {
 	meetupsHandler := meetups.NewHandler(meetupsStore, uploader)
 	meetupsHandler.UseModerator(moderator)
 	reportsHandler := reports.NewHandler(reports.NewPgStore(db))
-	recoveryMeetingsHandler := recoverymeetings.NewHandler(recoverymeetings.NewPgStore(db))
+	placesHandler := places.NewHandler(placesStore)
+	recoveryMeetingsHandler := recoverymeetings.NewHandler(recoveryMeetingsStore)
 	supportHandler := support.NewHandlerWithChatBroadcaster(supportStore, chatsHandler, notificationsService)
 	supportHandler.UseModerator(moderator)
 
@@ -280,11 +284,10 @@ func main() {
 		r.Get("/meetups/{id}/attendees", meetupsHandler.GetAttendees)
 		r.Get("/meetups/{id}/waitlist", meetupsHandler.GetWaitlist)
 
+		// Places
+		r.Get("/places/autocomplete", placesHandler.AutocompletePlaces)
+
 		// Recovery meetings
-		r.Get("/recovery-meetings/filter-options", recoveryMeetingsHandler.ListFilterOptions)
-		r.Get("/recovery-meetings/locations", recoveryMeetingsHandler.ListLocationSuggestions)
-		r.Get("/recovery-meetings/regions", recoveryMeetingsHandler.ListRegionSuggestions)
-		r.Get("/recovery-meetings/countries", recoveryMeetingsHandler.ListCountrySuggestions)
 		r.Get("/recovery-meetings", recoveryMeetingsHandler.ListRecoveryMeetings)
 		r.Get("/recovery-meetings/{id}", recoveryMeetingsHandler.GetRecoveryMeeting)
 

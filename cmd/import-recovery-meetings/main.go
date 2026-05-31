@@ -6,10 +6,13 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/joho/godotenv"
 	"github.com/project_radeon/api/internal/recoverymeetings"
+	"github.com/project_radeon/api/pkg/cache"
 	"github.com/project_radeon/api/pkg/database"
 )
 
@@ -49,6 +52,15 @@ func main() {
 	if err != nil {
 		log.Fatalf("import recovery meetings failed: %v", err)
 	}
+	if !result.DryRun {
+		cacheStore, err := newImportCache(ctx)
+		if err != nil {
+			log.Fatalf("cache initialization failed after import: %v", err)
+		}
+		if err := recoverymeetings.BumpCacheVersion(ctx, cacheStore); err != nil {
+			log.Fatalf("bump recovery meetings cache version failed after import: %v", err)
+		}
+	}
 
 	mode := "committed"
 	if result.DryRun {
@@ -64,4 +76,32 @@ func main() {
 	fmt.Printf("Occurrences written: %d\n", result.OccurrencesWritten)
 	fmt.Printf("Marked stale: %d\n", result.StaleMarked)
 	fmt.Printf("Marked inactive: %d\n", result.InactiveMarked)
+}
+
+func newImportCache(ctx context.Context) (cache.Store, error) {
+	return cache.New(ctx, cache.Config{
+		Enabled:  parseBoolEnv("CACHE_ENABLED"),
+		Addr:     strings.TrimSpace(os.Getenv("REDIS_ADDR")),
+		Password: os.Getenv("REDIS_PASSWORD"),
+		DB:       parseIntEnv("REDIS_DB"),
+		TLS:      parseBoolEnv("REDIS_TLS"),
+		Prefix:   strings.TrimSpace(os.Getenv("REDIS_PREFIX")),
+	})
+}
+
+func parseBoolEnv(key string) bool {
+	value := strings.TrimSpace(strings.ToLower(os.Getenv(key)))
+	return value == "1" || value == "true" || value == "yes" || value == "on"
+}
+
+func parseIntEnv(key string) int {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return 0
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		return 0
+	}
+	return parsed
 }

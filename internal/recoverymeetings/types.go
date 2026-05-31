@@ -112,60 +112,6 @@ type MeetingOccurrence struct {
 	Timezone       string    `json:"timezone"`
 }
 
-type LocationSuggestion struct {
-	Label        string  `json:"label"`
-	Location     string  `json:"location"`
-	Region       *string `json:"region,omitempty"`
-	RegionCode   *string `json:"region_code,omitempty"`
-	Country      *string `json:"country,omitempty"`
-	CountryCode  *string `json:"country_code,omitempty"`
-	MeetingCount int     `json:"meeting_count"`
-}
-
-type RegionSuggestion struct {
-	Label        string `json:"label"`
-	Region       string `json:"region"`
-	RegionCode   string `json:"region_code,omitempty"`
-	Country      string `json:"country"`
-	CountryCode  string `json:"country_code,omitempty"`
-	MeetingCount int    `json:"meeting_count"`
-}
-
-type CountrySuggestion struct {
-	Label        string `json:"label"`
-	Country      string `json:"country"`
-	CountryCode  string `json:"country_code,omitempty"`
-	MeetingCount int    `json:"meeting_count"`
-}
-
-type FilterOptionLevel string
-
-const (
-	FilterOptionLevelCountry  FilterOptionLevel = "country"
-	FilterOptionLevelRegion   FilterOptionLevel = "region"
-	FilterOptionLevelLocality FilterOptionLevel = "locality"
-)
-
-type FilterOption struct {
-	Label        string  `json:"label"`
-	Level        string  `json:"level"`
-	Country      *string `json:"country,omitempty"`
-	CountryCode  *string `json:"country_code,omitempty"`
-	Region       *string `json:"region,omitempty"`
-	RegionCode   *string `json:"region_code,omitempty"`
-	Locality     *string `json:"locality,omitempty"`
-	MeetingCount int     `json:"meeting_count"`
-}
-
-type FilterOptionsParams struct {
-	Level       FilterOptionLevel
-	Query       string
-	Fellowships []string
-	Country     string
-	Region      string
-	Limit       int
-}
-
 type CursorPage[T any] struct {
 	Items      []T     `json:"items"`
 	Limit      int     `json:"limit"`
@@ -180,6 +126,7 @@ type ListParams struct {
 	Region      string
 	City        string
 	Location    string
+	PlaceID     *uuid.UUID
 	MeetingType string
 	DayOfWeek   *int
 	Cursor      string
