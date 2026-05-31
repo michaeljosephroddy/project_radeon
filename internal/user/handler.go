@@ -126,6 +126,7 @@ type User struct {
 	OutgoingFriendRequestCt       int        `json:"outgoing_friend_request_count"`
 	CurrentCity                   *string    `json:"current_city,omitempty"`
 	CurrentCountry                *string    `json:"current_country,omitempty"`
+	CurrentPlaceID                *uuid.UUID `json:"current_place_id,omitempty"`
 	LocationUpdatedAt             *time.Time `json:"location_updated_at,omitempty"`
 	DistanceKm                    *float64   `json:"distance_km,omitempty"`
 	HasActiveReachOut             bool       `json:"has_active_reach_out,omitempty"`

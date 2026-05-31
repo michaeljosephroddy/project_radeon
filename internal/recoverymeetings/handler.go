@@ -40,94 +40,6 @@ func (h *Handler) ListRecoveryMeetings(w http.ResponseWriter, r *http.Request) {
 	response.Success(w, http.StatusOK, meetings)
 }
 
-func (h *Handler) ListFilterOptions(w http.ResponseWriter, r *http.Request) {
-	params, errs := parseFilterOptionsParams(r)
-	if len(errs) > 0 {
-		response.ValidationError(w, errs)
-		return
-	}
-	if len([]rune(params.Query)) < 2 {
-		response.Success(w, http.StatusOK, []FilterOption{})
-		return
-	}
-	if (params.Level == FilterOptionLevelRegion || params.Level == FilterOptionLevelLocality) && params.Country == "" {
-		response.Success(w, http.StatusOK, []FilterOption{})
-		return
-	}
-	options, err := h.db.ListFilterOptions(r.Context(), params)
-	if err != nil {
-		response.Error(w, http.StatusInternalServerError, "could not fetch recovery meeting filter options")
-		return
-	}
-	response.Success(w, http.StatusOK, options)
-}
-
-func (h *Handler) ListLocationSuggestions(w http.ResponseWriter, r *http.Request) {
-	query := strings.TrimSpace(r.URL.Query().Get("q"))
-	country := strings.TrimSpace(r.URL.Query().Get("country"))
-	if len([]rune(query)) < 2 {
-		response.Success(w, http.StatusOK, []LocationSuggestion{})
-		return
-	}
-	if country == "" {
-		response.Success(w, http.StatusOK, []LocationSuggestion{})
-		return
-	}
-	suggestions, err := h.db.ListLocationSuggestions(
-		r.Context(),
-		query,
-		country,
-		strings.TrimSpace(r.URL.Query().Get("region")),
-		strings.TrimSpace(strings.ToLower(r.URL.Query().Get("fellowship"))),
-		parseSuggestionLimit(r),
-	)
-	if err != nil {
-		response.Error(w, http.StatusInternalServerError, "could not fetch recovery meeting locations")
-		return
-	}
-	response.Success(w, http.StatusOK, suggestions)
-}
-
-func (h *Handler) ListRegionSuggestions(w http.ResponseWriter, r *http.Request) {
-	query := strings.TrimSpace(r.URL.Query().Get("q"))
-	country := strings.TrimSpace(r.URL.Query().Get("country"))
-	if len([]rune(query)) < 2 || country == "" {
-		response.Success(w, http.StatusOK, []RegionSuggestion{})
-		return
-	}
-	suggestions, err := h.db.ListRegionSuggestions(
-		r.Context(),
-		query,
-		country,
-		strings.TrimSpace(strings.ToLower(r.URL.Query().Get("fellowship"))),
-		parseSuggestionLimit(r),
-	)
-	if err != nil {
-		response.Error(w, http.StatusInternalServerError, "could not fetch recovery meeting regions")
-		return
-	}
-	response.Success(w, http.StatusOK, suggestions)
-}
-
-func (h *Handler) ListCountrySuggestions(w http.ResponseWriter, r *http.Request) {
-	query := strings.TrimSpace(r.URL.Query().Get("q"))
-	if len([]rune(query)) < 2 {
-		response.Success(w, http.StatusOK, []CountrySuggestion{})
-		return
-	}
-	suggestions, err := h.db.ListCountrySuggestions(
-		r.Context(),
-		query,
-		strings.TrimSpace(strings.ToLower(r.URL.Query().Get("fellowship"))),
-		parseSuggestionLimit(r),
-	)
-	if err != nil {
-		response.Error(w, http.StatusInternalServerError, "could not fetch recovery meeting countries")
-		return
-	}
-	response.Success(w, http.StatusOK, suggestions)
-}
-
 func (h *Handler) GetRecoveryMeeting(w http.ResponseWriter, r *http.Request) {
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
@@ -145,60 +57,6 @@ func (h *Handler) GetRecoveryMeeting(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	response.Success(w, http.StatusOK, meeting)
-}
-
-func parseSuggestionLimit(r *http.Request) int {
-	limit := 8
-	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
-		parsed, err := strconv.Atoi(raw)
-		if err == nil && parsed > 0 {
-			limit = parsed
-		}
-	}
-	if limit > 15 {
-		return 15
-	}
-	return limit
-}
-
-func parseFilterOptionLimit(r *http.Request) int {
-	limit := 10
-	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
-		parsed, err := strconv.Atoi(raw)
-		if err == nil && parsed > 0 {
-			limit = parsed
-		}
-	}
-	if limit > 15 {
-		return 15
-	}
-	return limit
-}
-
-func parseFilterOptionsParams(r *http.Request) (FilterOptionsParams, map[string]string) {
-	query := r.URL.Query()
-	errs := map[string]string{}
-	level := FilterOptionLevel(strings.TrimSpace(strings.ToLower(query.Get("level"))))
-	switch level {
-	case FilterOptionLevelCountry, FilterOptionLevelRegion, FilterOptionLevelLocality:
-	default:
-		errs["level"] = "invalid"
-	}
-	fellowships, fellowshipErr := parseFellowshipFilters(query["fellowship"])
-	if fellowshipErr != "" {
-		errs["fellowship"] = fellowshipErr
-	}
-	if len(errs) > 0 {
-		return FilterOptionsParams{}, errs
-	}
-	return FilterOptionsParams{
-		Level:       level,
-		Query:       strings.TrimSpace(query.Get("q")),
-		Fellowships: fellowships,
-		Country:     strings.TrimSpace(query.Get("country")),
-		Region:      strings.TrimSpace(query.Get("region")),
-		Limit:       parseFilterOptionLimit(r),
-	}, nil
 }
 
 func parseListParams(r *http.Request) (ListParams, map[string]string) {
@@ -251,6 +109,16 @@ func parseListParams(r *http.Request) (ListParams, map[string]string) {
 		location = city
 	}
 
+	var placeID *uuid.UUID
+	if raw := strings.TrimSpace(query.Get("place_id")); raw != "" {
+		parsed, err := uuid.Parse(raw)
+		if err != nil {
+			errs["place_id"] = "invalid"
+		} else {
+			placeID = &parsed
+		}
+	}
+
 	if len(errs) > 0 {
 		return ListParams{}, errs
 	}
@@ -262,6 +130,7 @@ func parseListParams(r *http.Request) (ListParams, map[string]string) {
 		Region:      strings.TrimSpace(query.Get("region")),
 		City:        city,
 		Location:    location,
+		PlaceID:     placeID,
 		MeetingType: meetingType,
 		DayOfWeek:   dayOfWeek,
 		Cursor:      strings.TrimSpace(query.Get("cursor")),
